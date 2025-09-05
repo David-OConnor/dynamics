@@ -1,0 +1,12 @@
+[package]
+name = "bio_files_py"
+version = "0.2.10"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+
+[dependencies]
+bio_files_rs = { package = "bio_files", path = ".." }
+pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py310"] }
