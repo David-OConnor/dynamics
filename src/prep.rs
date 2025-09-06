@@ -21,23 +21,20 @@
 //
 // Best guess: Type 1 identifies labels within the residue only. Type 2 (AA) and Type 3 (small mol) are the FF types.
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::Instant,
-};
+use std::collections::{HashMap, HashSet};
 
 use bio_files::{
     AtomGeneric, BondGeneric,
     amber_params::{
-        AngleBendingParams, BondStretchingParams, ForceFieldParamsKeyed, MassParams, VdwParams,
+        AngleBendingParams, BondStretchingParams, ForceFieldParamsKeyed, LjParams, MassParams,
     },
 };
 use itertools::Itertools;
 use na_seq::Element;
 
-use crate::{ForceFieldParamsIndexed, MdState, ParamError, neighbors::build_neighbors};
+use crate::{MdState, ParamError, neighbors::build_neighbors, params::ForceFieldParamsIndexed};
 
-/// Build a single lookup table in which ligand-specific parameters
+/// Build a single lookup table in which molecule-specific parameters
 /// (when given) replace or add to the generic ones.
 pub fn merge_params(
     generic: &ForceFieldParamsKeyed,
@@ -49,14 +46,12 @@ pub fn merge_params(
     if let Some(lig) = lig_specific {
         merged.mass.extend(lig.mass.clone());
         // merged.partial_charges.extend(lig.partial_charges.clone());
-        merged.van_der_waals.extend(lig.van_der_waals.clone());
+        merged.lennard_jones.extend(lig.lennard_jones.clone());
 
         merged.bond.extend(lig.bond.clone());
         merged.angle.extend(lig.angle.clone());
         merged.dihedral.extend(lig.dihedral.clone());
-        merged
-            .dihedral_improper
-            .extend(lig.dihedral_improper.clone());
+        merged.improper.extend(lig.improper.clone());
     }
 
     merged
@@ -223,8 +218,8 @@ impl ForceFieldParamsIndexed {
             }
 
             // Lennard-Jones / van der Waals
-            if let Some(vdw) = params.van_der_waals.get(ff_type) {
-                result.van_der_waals.insert(i, vdw.clone());
+            if let Some(vdw) = params.lennard_jones.get(ff_type) {
+                result.lennard_jones.insert(i, vdw.clone());
                 // If the key is missing for the given FF type in our loaded data, check for certain
                 // special cases.
             } else {
@@ -233,33 +228,33 @@ impl ForceFieldParamsIndexed {
                 // for all 4 of these are present in frcmod.ff19sb.
                 if ff_type == "2C" || ff_type == "3C" || ff_type == "C8" {
                     result
-                        .van_der_waals
-                        .insert(i, params.van_der_waals.get("CT").unwrap().clone());
+                        .lennard_jones
+                        .insert(i, params.lennard_jones.get("CT").unwrap().clone());
                 } else if ff_type == "CO" {
                     result
-                        .van_der_waals
-                        .insert(i, params.van_der_waals.get("C").unwrap().clone());
+                        .lennard_jones
+                        .insert(i, params.lennard_jones.get("C").unwrap().clone());
                 } else if ff_type == "OXT" {
                     result
-                        .van_der_waals
-                        .insert(i, params.van_der_waals.get("O2").unwrap().clone());
+                        .lennard_jones
+                        .insert(i, params.lennard_jones.get("O2").unwrap().clone());
                 } else if ff_type.starts_with("N") {
                     result
-                        .van_der_waals
-                        .insert(i, params.van_der_waals.get("N").unwrap().clone());
+                        .lennard_jones
+                        .insert(i, params.lennard_jones.get("N").unwrap().clone());
                     println!("Using N fallback VdW for {atom}");
                 } else if ff_type.starts_with("O") {
                     result
-                        .van_der_waals
-                        .insert(i, params.van_der_waals.get("O").unwrap().clone());
+                        .lennard_jones
+                        .insert(i, params.lennard_jones.get("O").unwrap().clone());
                     println!("Using O fallback VdW for {atom}");
                 } else {
                     println!("Missing Vdw params for {atom}; setting to 0.");
                     // 0. no interaction.
                     // todo: If this is "CG" etc, fall back to other carbon params instead.
-                    result.van_der_waals.insert(
+                    result.lennard_jones.insert(
                         i,
-                        VdwParams {
+                        LjParams {
                             atom_type: "".to_string(),
                             sigma: 0.,
                             eps: 0.,

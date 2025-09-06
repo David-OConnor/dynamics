@@ -18,9 +18,8 @@ use crate::{
     AtomDynamics, ComputationDevice, MdState,
     ambient::SimBox,
     forces::force_e_lj,
-    water_opc::{O_EPS, O_SIGMA, WaterMol, WaterSite},
+    water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };
-use crate::water_opc::ForcesOnWaterMol;
 
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.

@@ -1,275 +1,156 @@
 use std::str::FromStr;
 
-use bio_files_rs;
+use dynamics_rs;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
 
-mod mmcif;
-mod mol2;
-mod pdbqt;
-mod sdf;
+use lin_alg::f64::Vec3;
 
-fn map_io<T>(r: std::io::Result<T>) -> PyResult<T> {
-    r.map_err(|e| PyValueError::new_err(e.to_string()))
-}
+/// Candidate for standalone helper lib.
+#[macro_export]
+macro_rules! make_enum {
+    ($Py:ident, $Native:path, $( $Var:ident ),+ $(,)?) => {
+        #[pyclass]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum $Py { $( $Var ),+ }
 
-#[pyclass]
-struct AtomGeneric {
-    inner: bio_files_rs::AtomGeneric,
-}
-
-#[pymethods]
-impl AtomGeneric {
-    #[getter]
-    fn serial_number(&self) -> u32 {
-        self.inner.serial_number
-    }
-
-    #[getter]
-    fn posit(&self) -> [f64; 3] {
-        self.inner.posit.to_arr()
-    }
-
-    #[getter]
-    // todo: String for now
-    fn element(&self) -> String {
-        self.inner.element.to_string()
-    }
-
-    #[getter]
-    // todo: String for now
-    fn type_in_res(&self) -> Option<String> {
-        self.inner.type_in_res.as_ref().map(|v| v.to_string())
-    }
-
-    #[getter]
-    fn force_field_type(&self) -> Option<String> {
-        self.inner.force_field_type.clone()
-    }
-
-    #[getter]
-    fn partial_charge(&self) -> Option<f32> {
-        self.inner.partial_charge
-    }
-
-    #[getter]
-    fn hetero(&self) -> bool {
-        self.inner.hetero
-    }
-
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
-
-#[pyclass]
-struct BondType {
-    // todo: Sort out enum variants.
-    inner: bio_files_rs::BondType,
-}
-
-#[pymethods]
-impl BondType {
-    fn to_str_sdf(&self) -> String {
-        self.inner.to_str_sdf()
-    }
-
-    #[classmethod]
-    fn from_str(_cls: &Bound<'_, PyType>, str: &str) -> PyResult<Self> {
-        Ok(Self {
-            inner: map_io(bio_files_rs::BondType::from_str(str))?,
-        })
-    }
-    fn __str__(&self) -> String {
-        self.inner.to_string()
-    }
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
-
-#[pyclass]
-struct BondGeneric {
-    inner: bio_files_rs::BondGeneric,
-}
-
-#[pymethods]
-impl BondGeneric {
-    #[getter]
-    fn bond_type<'py>(&self, py: Python<'py>) -> PyResult<Py<BondType>> {
-        Py::new(
-            py,
-            BondType {
-                inner: self.inner.bond_type,
-            },
-        )
-    }
-
-    #[getter]
-    fn atom_0_sn(&self) -> u32 {
-        self.inner.atom_0_sn
-    }
-
-    #[getter]
-    fn atom_1_sn(&self) -> u32 {
-        self.inner.atom_1_sn
-    }
-
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
-
-#[pyclass]
-// todo: Enum fields
-struct ResidueType {
-    inner: bio_files_rs::ResidueType,
-}
-
-#[pymethods]
-impl ResidueType {
-    #[classmethod]
-    fn from_str(_cls: &Bound<'_, PyType>, str: &str) -> Self {
-        Self {
-            inner: bio_files_rs::ResidueType::from_str(str),
+        impl ::core::convert::From<$Py> for $Native {
+            fn from(v: $Py) -> Self { match v { $( $Py::$Var => <$Native>::$Var ),+ } }
         }
+
+        impl ::core::convert::From<$Native> for $Py {
+            fn from(v: $Native) -> Self { match v { $( <$Native>::$Var => $Py::$Var ),+ } }
+        }
+
+        impl $Py {
+            pub fn to_native(self) -> $Native {
+                self.into()
+            }
+
+            pub fn from_native(native: $Native) -> Self {
+               native.into()
+            }
+        }
+    };
+}
+
+// todo: Blocked by PyO3 on macros.
+/// Candidate for standalone helper lib.
+macro_rules! field {
+    ($name:ident, $ty:ty) => {
+        #[getter]
+        fn $name(&self) -> $ty {
+            self.inner.$name.into()
+        }
+
+        // #[setter($name)]
+        // // todo: Do we need to use paste! here?
+        // fn $name##_set(&mut self, val: $ty) -> $ty {
+        //     self.inner.$name = val.into();
+        //     val
+        // }
+    };
+}
+
+
+// #[classmethod]
+// fn from_str(_cls: &Bound<'_, PyType>, str: &str) -> PyResult<Self> {
+//     Ok(bio_files_rs::BondType::from_str(str)?.into())
+// }
+
+make_enum!(MdMode, dynamics_rs::MdMode, Docking, Peptide);
+
+#[pyclass]
+struct AtomDynamics {
+    inner: dynamics_rs::AtomDynamics,
+}
+
+#[pymethods]
+impl AtomDynamics {
+    // field!(serial_number, u32);
+    // field!(force_field_type, String);
+
+    // todo: Sort out how you import this.
+    // field!(element, Element);
+
+    #[getter]
+    fn posit(&self) -> [f32; 3] {
+        self.inner.posit.to_array()
     }
-    fn __str__(&self) -> String {
-        self.inner.to_string()
+    #[setter(posit)]
+    fn posit_set(&mut self, posit: [f32; 3])  {
+        self.inner.posit = Vec3::from_slice(&posit)
     }
+    #[getter]
+    fn vel(&self) -> [f32; 3] {
+        self.inner.vel.to_array()
+    }
+    #[setter(vel)]
+    fn vel_set(&mut self, vel: [f32; 3])  {
+        self.inner.vel = Vec3::from_slice(&vel)
+    }
+    #[getter]
+    fn accel(&self) -> [f32; 3] {
+        self.inner.accel.to_array()
+    }
+    #[setter(accel)]
+    fn accel_set(&mut self, accel: [f32; 3])  {
+        self.inner.accel = Vec3::from_slice(&accel)
+    }
+
+    // field!(mass, f64);
+    // field!(partial_charge, f64);
+    // field!(lj_sigma, f64);
+    // field!(lj_eps, f64);
+
     fn __repr__(&self) -> String {
         format!("{:?}", self.inner)
+    }
+}
+
+#[pymethods]
+impl MdMode {
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.to_native())
     }
 }
 
 #[pyclass]
-struct ResidueGeneric {
-    inner: bio_files_rs::ResidueGeneric,
+struct MdState {
+    inner: dynamics_rs::MdState,
 }
 
 #[pymethods]
-impl ResidueGeneric {
-    #[getter]
-    fn serial_number(&self) -> u32 {
-        self.inner.serial_number
-    }
-
-    #[getter]
-    fn res_type<'py>(&self, py: Python<'py>) -> PyResult<Py<ResidueType>> {
-        Py::new(
-            py,
-            ResidueType {
-                inner: self.inner.res_type.clone(),
-            },
-        )
-    }
-
-    #[getter]
-    fn atom_sns(&self) -> Vec<u32> {
-        self.inner.atom_sns.clone()
-    }
+impl MdState {
+    // #[new]
+    // fn new(
+    //     mode: MdMode,
+    //     atoms_dy: Vec<AtomDynamics>,
+    //     atoms_static: Vec<AtomDynamics>,
+    //     ff_params_non_static: ForceFieldParamsIndexed,
+    //     temp_target: f64,     // K
+    //     pressure_target: f64, // k
+    //     hydrogen_md_type: HydrogenMdType,
+    //     adjacency_list: Vec<Vec<usize>>,
+    // ) -> Self {
+    //     Self { inner: dynamics_rs::MdState::new(
+    //         mode.into(), atoms_dy, atoms_static, ff_params_non_static,
+    //         temp_target, pressure_target, hydrogen_md_type.into(), adjacency_list,
+    //     )}
+    // }
 
     fn __repr__(&self) -> String {
         format!("{:?}", self.inner)
     }
 }
 
-#[pyclass]
-struct ChainGeneric {
-    inner: bio_files_rs::ChainGeneric,
-}
-
-#[pymethods]
-impl ChainGeneric {
-    #[getter]
-    fn id(&self) -> String {
-        self.inner.id.clone()
-    }
-
-    #[getter]
-    fn residue_sns(&self) -> Vec<u32> {
-        self.inner.residue_sns.clone()
-    }
-
-    #[getter]
-    fn atom_sns(&self) -> Vec<u32> {
-        self.inner.atom_sns.clone()
-    }
-
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
-
-#[pyclass]
-struct SecondaryStructure {
-    // todo: Enum variants
-    inner: bio_files_rs::SecondaryStructure,
-}
-
-#[pymethods]
-impl SecondaryStructure {
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
-
-#[pyclass]
-struct BackboneSS {
-    inner: bio_files_rs::BackboneSS,
-}
-
-#[pymethods]
-impl BackboneSS {
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
-
-#[pyclass]
-struct ExperimentalMethod {
-    // todo: Enum variants
-    inner: bio_files_rs::ExperimentalMethod,
-}
-
-#[pymethods]
-impl ExperimentalMethod {
-    fn to_str_short(&self) -> String {
-        self.inner.to_str_short()
-    }
-    #[classmethod]
-    fn from_str(_cls: &Bound<'_, PyType>, str: &str) -> PyResult<Self> {
-        Ok(Self {
-            inner: bio_files_rs::ExperimentalMethod::from_str(str)?,
-        })
-    }
-    fn __str__(&self) -> String {
-        self.inner.to_string()
-    }
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.inner)
-    }
-}
 
 #[pymodule]
 fn bio_files(py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     // General
-    m.add_class::<AtomGeneric>()?;
-    m.add_class::<BondType>()?;
-    m.add_class::<BondGeneric>()?;
-    m.add_class::<ResidueType>()?;
-    m.add_class::<ResidueGeneric>()?;
-    m.add_class::<ChainGeneric>()?;
-    m.add_class::<SecondaryStructure>()?;
-    m.add_class::<BackboneSS>()?;
-    m.add_class::<ExperimentalMethod>()?;
+    m.add_class::<AtomDynamics>()?;
+    m.add_class::<MdMode>()?;
+    m.add_class::<MdState>()?;
 
-    // Small molecules
-    m.add_class::<mmcif::MmCif>()?;
-    m.add_class::<mol2::Mol2>()?;
-    m.add_class::<sdf::Sdf>()?;
-    m.add_class::<pdbqt::Pdbqt>()?;
-
-    // m.add_class::<mol2::MolType>()?;
 
     Ok(())
 }

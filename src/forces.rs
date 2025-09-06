@@ -11,6 +11,7 @@ use lin_alg::{
     f32::{Vec3x8, f32x8},
     f64::f64x4,
 };
+
 use crate::water_opc::ForcesOnWaterMol;
 
 /// Handles both LJ, and Coulomb (SPME short range) force.

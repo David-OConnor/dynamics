@@ -83,40 +83,29 @@ mod bonded_forces;
 mod forces;
 mod neighbors;
 mod non_bonded;
-mod params;
+pub mod params;
 mod prep;
+mod util;
 mod water_init;
 mod water_opc;
 mod water_settle;
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::Instant,
-};
-
-use ambient::SimBox;
-use bio_files::{
-    AtomGeneric,
-    amber_params::{
-        AngleBendingParams, BondStretchingParams, DihedralParams, MassParams, VdwParams,
-    },
-};
-
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
+use std::{collections::HashSet, time::Instant};
 
+use ambient::SimBox;
+pub use bio_files as files;
+use bio_files::{AtomGeneric, BondGeneric, amber_params::ForceFieldParamsKeyed};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
-
 use ewald::{PmeRecip, ewald_comp_force};
 use lin_alg::f64::Vec3;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use lin_alg::f64::{Vec3x4, f64x4};
 use na_seq::Element;
 use neighbors::NeighborsNb;
-
-pub use params::*;
-pub use prep::{merge_params, HydrogenMdType};
+pub use prep::{HydrogenMdType, merge_params};
 pub use water_opc::ForcesOnWaterMol;
 
 use crate::{
@@ -124,6 +113,7 @@ use crate::{
     non_bonded::{
         CHARGE_UNIT_SCALER, EWALD_ALPHA, LjTableIndices, LjTables, SCALE_COUL_14, SPME_N,
     },
+    params::{FfParamSet, ForceFieldParamsIndexed},
     water_init::make_water_mols,
     water_opc::WaterMol,
 };
@@ -156,7 +146,9 @@ pub enum ComputationDevice {
     Gpu((Arc<CudaStream>, Arc<CudaModule>)),
 }
 
-#[derive(Debug)]
+/// Represents problems loading parameters. For example, if an atom is missing a force field type
+/// or partial charge, or has a force field type that hasn't been loaded.
+#[derive(Clone, Debug)]
 pub struct ParamError {
     pub descrip: String,
 }
@@ -169,52 +161,63 @@ impl ParamError {
     }
 }
 
-/// Todo: Experimenting with using indices. This is a derivative of the `Keyed` variant.
-/// This variant of forcefield parameters offers the fastest lookups. Unlike the Vec and Hashmap
-/// based parameter structs, this is specific to the atom in our docking setup: The incdices are provincial
-/// to specific sets of atoms.
-///
-/// Note: The single-atom fields of `mass` and `partial_charges` are omitted: They're part of our
-/// `AtomDynamics` struct.`
-#[derive(Clone, Debug, Default)]
-pub struct ForceFieldParamsIndexed {
-    pub mass: HashMap<usize, MassParams>,
-    pub bond_stretching: HashMap<(usize, usize), BondStretchingParams>,
-    pub angle: HashMap<(usize, usize, usize), AngleBendingParams>,
-    pub dihedral: HashMap<(usize, usize, usize, usize), DihedralParams>,
-    /// Generally only for planar hub and spoke arrangements, and always hold a planar dihedral shape.
-    /// (e.g. τ/2 with symmetry 2)
-    pub improper: HashMap<(usize, usize, usize, usize), DihedralParams>,
-    /// We use this to determine which 1-2 exclusions to apply for non-bonded forces. We use this
-    /// instead of `bond_stretching`, because `bond_stretching` omits bonds to Hydrogen, which we need
-    /// to account when applying excusions.
-    pub bonds_topology: HashSet<(usize, usize)>,
-
-    // Dihedrals are represented in Amber params as a fourier series; this Vec indlues all matches.
-    // e.g. X-ca-ca-X may be present multiple times in gaff2.dat. (Although seems to be uncommon)
-    //
-    // X -nh-sx-X    4    3.000         0.000          -2.000
-    // X -nh-sx-X    4    0.400       180.000           3.000
-    pub van_der_waals: HashMap<usize, VdwParams>,
-}
-
+/// This stores the positions and velocities of all atoms in the system, and the total energy.
 #[derive(Debug, Default)]
-pub struct SnapshotDynamics {
+pub struct Snapshot {
     pub time: f64,
+    // todo: You will need to store this by molecule, when we support that.
     pub atom_posits: Vec<Vec3>,
     pub atom_velocities: Vec<Vec3>,
     pub water_o_posits: Vec<Vec3>,
     pub water_h0_posits: Vec<Vec3>,
     pub water_h1_posits: Vec<Vec3>,
+    /// Single velocity per water molecule, as it's rigid.
+    pub water_velocities: Vec<Vec3>,
     pub energy_kinetic: f32,
     pub energy_potential: f32,
     // For now, I believe velocities are unused, but tracked here for non-water atoms.
     // We can add water velocities if needed.
 }
 
+/// This is used to assign the correct force field parameters to a molecule.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FfMolType {
+    /// Protein or other construct of amino acids
+    Peptide,
+    /// E.g. a ligand.
+    SmallOrganic,
+    Dna,
+    Rna,
+    Lipid,
+    Carbohydrate,
+}
+
+/// Packages information required to perform dynamics on a Molecule. The significance
+/// of breaking the simulation into molecules is due to a few things:
+///-  The fixed covalent bond model we use.
 #[derive(Clone, Debug)]
+pub struct MolDynamics<'a> {
+    pub ff_mol_type: FfMolType,
+    /// These must hold force field type and partial charge.
+    // pub atoms: Vec<AtomGeneric>,
+    pub atoms: &'a [AtomGeneric],
+    /// Separate from `atoms`; this may be more convenient than mutating the atoms
+    /// as they may move! If None, we use the positions stored in the atoms.
+    // pub atom_posits: Vec<Vec3>,
+    pub atom_posits: Option<&'a [Vec3]>,
+    pub bonds: &'a [BondGeneric],
+    /// If None, will be generated automatically
+    pub adjacency_list: Option<&'a [Vec<usize>]>,
+    /// If true,
+    pub static_: bool,
+    /// If present, any values here override molecule-type general parameters.
+    // pub mol_specific_params: Option<ForceFieldParamsKeyed>
+    pub mol_specific_params: Option<&'a ForceFieldParamsKeyed>,
+}
+
 /// A trimmed-down atom for use with molecular dynamics. Contains parameters for single-atom,
 /// but we use ParametersIndex for multi-atom parameters.
+#[derive(Clone, Debug)]
 pub struct AtomDynamics {
     pub serial_number: u32,
     pub force_field_type: String,
@@ -265,8 +268,8 @@ impl AtomDynamics {
             // We get partial charge for ligands from (e.g. Amber-provided) Mol files, so we load it from the atom, vice
             // the loaded FF params. They are not in the dat or frcmod files that angle, bond-length etc params are from.
             partial_charge: CHARGE_UNIT_SCALER * atom.partial_charge.unwrap_or_default() as f64,
-            lj_sigma: ff_params.van_der_waals.get(&i).unwrap().sigma as f64,
-            lj_eps: ff_params.van_der_waals.get(&i).unwrap().eps as f64,
+            lj_sigma: ff_params.lennard_jones.get(&i).unwrap().sigma as f64,
+            lj_eps: ff_params.lennard_jones.get(&i).unwrap().eps as f64,
             force_field_type: ff_type,
         })
     }
@@ -314,17 +317,10 @@ impl AtomDynamicsx4 {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
-pub enum MdMode {
-    #[default]
-    Docking,
-    Peptide,
-}
-
 #[derive(Default)]
 pub struct MdState {
     // todo: Update how we handle mode A/R.
-    pub mode: MdMode,
+    // todo: You need to rework this state in light of arbitrary mol count.
     pub atoms: Vec<AtomDynamics>,
     pub adjacency_list: Vec<Vec<usize>>,
     /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
@@ -332,22 +328,21 @@ pub struct MdState {
     /// and VDW) only.
     pub atoms_static: Vec<AtomDynamics>,
     pub force_field_params: ForceFieldParamsIndexed,
-    /// `lj_lut`, `lj_sigma`, and `lj_eps` are Lennard Jones parameters. Flat here, with outer loop receptor.
-    /// Flattened. Separate single-value array facilitate use in CUDA and SIMD, vice a tuple.
-    /// todo: These are from our built-in table. Generalize, e.g. organize appropriately w/Amber.
-    ///     pub lj_lut: LjTable,
-    pub lj_sigma: Vec<f64>,
-    pub lj_eps: Vec<f64>,
+    // /// `lj_lut`, `lj_sigma`, and `lj_eps` are Lennard Jones parameters. Flat here, with outer loop receptor.
+    // /// Flattened. Separate single-value array facilitate use in CUDA and SIMD, vice a tuple.
+    // pub lj_sigma: Vec<f64>,
+    // pub lj_eps: Vec<f64>,
     // todo: Implment these SIMD variants A/R, bearing in mind the caveat about our built-in ones vs
     // todo ones loaded from [e.g. Amber] files.
     // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     // pub lj_sigma_x8: Vec<f64x4>,
     // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     // pub lj_eps_x8: Vec<f64x4>,
-    /// In picoseconds.
+    /// Current simulation time, in picoseconds.
     pub time: f64,
     pub step_count: usize, // increments.
-    pub snapshots: Vec<SnapshotDynamics>,
+    /// This stores
+    pub snapshots: Vec<Snapshot>,
     pub cell: SimBox,
     pub neighbors_nb: NeighborsNb,
     // max_disp_sq: f64,           // track atom displacements²
@@ -373,27 +368,104 @@ pub struct MdState {
 
 impl MdState {
     pub fn new(
-        mode: MdMode,
-        atoms_dy: Vec<AtomDynamics>,
-        atoms_static: Vec<AtomDynamics>,
-        ff_params_non_static: ForceFieldParamsIndexed,
+        // todo: Support multiple molecules.
+        mols: &[MolDynamics],
         temp_target: f64,     // K
         pressure_target: f64, // k
-        hydrogen_md_type: HydrogenMdType,
-        adjacency_list: Vec<Vec<usize>>,
-    ) -> Self {
+        ff_params: &FfParamSet,
+        mut hydrogen_md_type: HydrogenMdType,
+    ) -> Result<Self, ParamError> {
+        // todo: QC how you handle hydrogen_md_type.
+
+        if mols.is_empty() {
+            return Err(ParamError::new(&"We require at least one dynamic mol"));
+        }
+
+        // todo: For now, just a single molecule.
+
+        for mol in mols {
+            let params_general = match mol.ff_mol_type {
+                FfMolType::Peptide => &ff_params.peptide,
+                FfMolType::SmallOrganic => &ff_params.small_mol,
+                FfMolType::Dna => &ff_params.dna,
+                FfMolType::Rna => &ff_params.rna,
+                FfMolType::Lipid => &ff_params.lipids,
+                FfMolType::Carbohydrate => &ff_params.carbohydrates,
+            };
+
+            let Some(params_general) = params_general else {
+                return Err(ParamError::new(&format!(
+                    "Missing general parameters for {:?}",
+                    mol.ff_mol_type
+                )));
+            };
+
+            // Set up Indexed params
+            let ff_params = ForceFieldParamsIndexed::new(
+                params_general,
+                mol.mol_specific_params,
+                mol.atoms,
+                adjacency_list,
+                &mut hydrogen_md_type,
+            )?;
+
+            if mol.static_ {
+            } else {
+            }
+        }
+
+        // This assumes nonbonded interactions only with external atoms; this is fine for
+        // rigid protein models, and is how this is currently structured.
+        let bonds_static = Vec::new();
+        let adj_list_static = Vec::new();
+
+        println!("\nBuilding FF params indexed static for docking...");
+        let ff_params_static = ForceFieldParamsIndexed::new(
+            ff_params_protein,
+            None,
+            &atoms_static_,
+            &bonds_static,
+            &adj_list_static,
+            &mut hydrogen_md_type,
+        )?;
+
+        // Convert from AtomGeneric to AtomDynamics
+
+        // We are using this approach instead of `.into`, so we can use the atom_posits from
+        // the positioned ligand. (its atom coords are relative; we need absolute)
+        let mut atoms_dy = Vec::with_capacity(atoms_dy_.len());
+        for (i, atom) in atoms_dy_.iter().enumerate() {
+            atoms_dy.push(AtomDynamics::new(
+                &atom,
+                atom_posits,
+                &ff_params_dynamic,
+                i,
+            )?);
+        }
+
+        let mut atoms_static = Vec::with_capacity(atoms_static_.len());
+        let atom_posits_static: Vec<_> = atoms_static_.iter().map(|a| a.posit).collect();
+
+        for (i, atom) in atoms_static_.iter().enumerate() {
+            atoms_static.push(AtomDynamics::new(
+                &atom,
+                &atom_posits_static,
+                &ff_params_static,
+                i,
+            )?);
+        }
+
         // let cell = SimBox::new_padded(&atoms_dy);
         let cell = SimBox::new_fixed_size(&atoms_dy);
 
         let mut result = Self {
-            mode,
             atoms: atoms_dy,
             adjacency_list: adjacency_list.to_vec(),
             atoms_static,
             cell,
             pairs_excluded_12_13: HashSet::new(),
             pairs_14_scaled: HashSet::new(),
-            force_field_params: ff_params_non_static,
+            force_field_params: ff_params_dynamic,
             temp_target,
             hydrogen_md_type,
             ..Default::default()
@@ -468,7 +540,7 @@ impl MdState {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Reset acceleration and virial pair. Do this each step after the first half-step and drift, and
@@ -807,7 +879,7 @@ impl MdState {
             water_h1_posits.push(water.h1.posit);
         }
 
-        self.snapshots.push(SnapshotDynamics {
+        self.snapshots.push(Snapshot {
             time: self.time,
             atom_posits: self.atoms.iter().map(|a| a.posit).collect(),
             atom_velocities: self.atoms.iter().map(|a| a.vel).collect(),
