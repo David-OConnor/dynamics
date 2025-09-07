@@ -9,9 +9,9 @@ use crate::ParamError;
 ///
 /// Note: If you store bonds with atom indices directly, you may wish to build this in a faster
 /// way and cache it, vice this serial-number lookup.
-pub fn build_adjacency_list(
-    bonds: &Vec<BondGeneric>,
+pub(crate) fn build_adjacency_list(
     atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
 ) -> Result<Vec<Vec<usize>>, ParamError> {
     let mut result = vec![Vec::new(); atoms.len()];
 

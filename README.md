@@ -121,71 +121,197 @@ files as well, e.g. to load dihedral angles from *.frcmod* that aren't present i
 
 Example use (Python):
 ```python
-from dynamics_py import MdState, Mol2, Mmcif
+from mol_dynamics import *
 
-mol = Mol2.load("CPB.mol2")
-protein = Mmcif::load("1c8k.cif")
+TEMP_TGT: f32 = 310.  # K
+PRESSURE_TGT: f32 = 310.  # Bar
 
-let ff_params_dynamic = ForceFieldParamsIndexed::new(
-    ff_params_lig_keyed,
-    Some(ff_params_keyed_lig_specific),
-    &mol.atoms,
-    &mol.bonds,
-    adjacency_list,
-    &mut hydrogen_md_type,
-).unwrap();
+fn setup_dynamics(mol: Mol2, protein: Mmcif, param_set: FfParamSet) -> MdState:
+    """
+    Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
+    which acts on the system, but doesn't move.
+    """
 
-let ff_params_static = ForceFieldParamsIndexed::new(
-    ff_params_prot_keyed,
-    None, // No molecule-specific parameters are required for proteins.
-    &protein.atoms, // Ideally, filter for ones near the site.
-    &protein.bonds,
-    &adj_list_static,
-    &mut hydrogen_md_type,
-).unwrap();
+    protein.add_params_and_q(param_set.peptide)
 
+    mols = [
+        MolDynamics(
+            ff_mol_type: FfMolType::SmallOrganic,
+            atoms: mol.atoms,
+            # Pass a [Vec3] of starting atom positions. If absent,
+            # will use the positions stored in atoms.
+            atom_posits: None,
+            bonds: mol.bonds,
+            # Pass your own from cache if you want, or it will build.
+            adjacency_list: None,
+            static_: False,
+            # This is usually mandatory for small organic molecules. Provided, for example,
+            # in Amber FRCMOD files. Overrides general params.
+            mol_specific_params: Some(lig_specific_params),
+        ),
+        MolDynamics(
+            ff_mol_type: FfMolType::Peptide,
+            atoms: protein.atoms,
+            atom_posits: None,
+            bonds: [], // Not required if static.
+            adjacency_list: None,
+            static_: true,
+            mol_specific_params: None,
+        ),
+    ]
+
+    return MdState(
+        mols,
+        TEMP_TGT,
+        PRESSURE_TGT,
+        param_set,
+        # Or flexible, with a smaller time step.
+        HydrogenMdType::Fixed(Vec::new()),
+        1, # Take a snapshot every this many steps.
+    )
+
+
+def main():
+    mol = Mol2.load("CPB.mol2")
+    mut protein = Mmcif.load("1c8k.cif")
+
+    # Add force field type, and partial charge to atoms in the protein; these usually aren't
+    # included from RSCB PDB.
+    populate_peptide_ff_and_q(mut protein.atoms, protein.residues, ff_map)
+    
+    param_paths = ParamGeneralPaths(
+        peptide=Some("parm19.dat"),
+        peptide_mod=Some("frcmod.ff19SB"),
+        peptide_ff_q=Some("amino19.lib"),
+        peptide_ff_q_c=Some("aminoct12.lib"),
+        peptide_ff_q_n=Some("aminont12.lib"),
+        small_organic=Some("gaff2.dat")),
+    )
+    
+    let param_set = FfParamSet(param_paths)
+    let mut md = setup_dynamics(mol, protein, param_set)
+    
+    let n_steps = 100
+    let dt = 0.002  # picoseconds.
+    
+    for _ in range(n_steps):
+        md.step(dt)
+    
+    snap = md.snapshots[len(md.snapshots) - 1] // A/R.
+    print(f"KE: {snap.energy_kinetic}, PE: {snap.energy_potential}, Atom posits:")
+    for atom in snap.atom_posits {
+        print("Posit: {snap.posit}")
+        # Also keeps track of velocities, and water molecule positions/velocity
+    }
+    
+    for snap in md.snapshots:
+        pass
+        # Do something with snapshot data, like displaying atom positions in your UI,
+        # Or saving to a file.
+        
+        
+main()
+}
 ```
 
 
 Example use (Rust):
 ```rust
 use dynamics::{
-    MdState,
-    params::{ForceFieldParamsIndexed, ProtFFTypeChargeMap, FfParamSet},
+    ComputationDevice, MdState, MolDynamics, FfMolType, HydrogenMdType,
+    params::{ForceFieldParamsIndexed, ProtFFTypeChargeMap, FfParamSet, ParamGeneralPaths, populate_peptide_ff_and_q},
     files::{Mol2, Mmcif}, // re-export of the bio-files lib.
 };
 
+const TEMP_TGT: f32 = 310.; // K
+const PRESSURE_TGT: f32 = 310.; // Bar
+
 /// Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
 /// which acts on the system, but doesn't move.
-fn setup_dynamics() -> MdState {
-    let mol = Mol2::load("CPB.mol2").unwrap();
-    let protein = Mmcif::load("1c8k.cif").unwrap();
-    // todo: Move bond inference algo to bio_files.
-    
-    let ff_params_dynamic = ForceFieldParamsIndexed::new(
-        ff_params_lig_keyed,
-        Some(ff_params_keyed_lig_specific),
-        &mol.atoms,
-        &mol.bonds,
-        adjacency_list,
-        &mut hydrogen_md_type,
-    ).unwrap();
+fn setup_dynamics(mol: &Mol2, protein: &Mmcif, param_set: &FfParamSet) -> MdState {
+    // Note: We assume you've already added hydrogens to any mmCif of other files
+    // that don't include them.
+    // todo: Include H addition in this lib?
+    protein.add_params_and_q(&param_set.peptide);
 
-    // An optional set of atoms which don't move.
-    let ff_params_static = ForceFieldParamsIndexed::new(
-        ff_params_prot_keyed,
-        None, // No molecule-specific parameters are required for proteins.
-        &protein.atoms, // Ideally, filter for ones near the site.
-        &protein.bonds,
-        &adj_list_static,
-        &mut hydrogen_md_type,
-    ).unwrap();
+    let mols = vec![
+        MolDynamics {
+            ff_mol_type: FfMolType::SmallOrganic,
+            atoms: &mol.atoms,
+            // Pass a &[Vec3] of starting atom positions. If absent,
+            // will use the positions stored in atoms.
+            atom_posits: None,
+            bonds: &mol.bonds,
+            // Pass your own from cache if you want, or it will build.
+            adjacency_list: None,
+            static_: false,
+            // This is usually mandatory for small organic molecules. Provided, for example,
+            // in Amber FRCMOD files. Overrides general params.
+            mol_specific_params: Some(&lig_specific_params),
+        },
+        MolDynamics {
+            ff_mol_type: FfMolType::Peptide,
+            atoms: &protein.atoms,
+            atom_posits: None,
+            bonds: &[], // Not required if static.
+            adjacency_list: None,
+            static_: true,
+            mol_specific_params: None,
+        },
+    ];
 
-    // Convert from the plain 
-    
-    
+    MdState::new(
+        &mols,
+        TEMP_TGT,
+        PRESSURE_TGT,
+        param_set,
+        // Or flexible, with a smaller time step.
+        HydrogenMdType::Fixed(Vec::new()),
+        1, // Take a snapshot every this many steps.
+    ).unwrap()
+
 }
 
+fn main() {
+    let mol = Mol2::load("CPB.mol2").unwrap();
+    let mut protein = Mmcif::load("1c8k.cif").unwrap();
+
+    // Add force field type, and partial charge to atoms in the protein; these usually aren't
+    // included from RSCB PDB.
+    populate_peptide_ff_and_q(&mut protein.atoms, &protein.residues, ff_map).unwrap();
+    
+    let param_paths = ParamGeneralPaths {
+        peptide: Some(&Path::new("parm19.dat")),
+        peptide_mod: Some(&Path::new("frcmod.ff19SB")),
+        peptide_ff_q: Some(&Path::new("amino19.lib")),
+        peptide_ff_q_c: Some(&Path::new("aminoct12.lib")),
+        peptide_ff_q_n: Some(&Path::new("aminont12.lib")),
+        small_organic: Some(&Path::new("gaff2.dat")),
+        ..default()
+    };
+    
+    let param_set = FfParamSet::new(&param_paths);
+    let mut md = setup_dynamics(&mol, &protein, &param_set);
+    
+    let n_steps = 100;
+    let dt = 0.002; // picoseconds.
+    
+    for _ in 0..n_steps {
+        md.step(&ComputationDevice.Cpu, dt);
+    }
+    
+    let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
+    println!("KE: {}, PE: {}, Atom posits:", snap.energy_kinetic, snap.energy_potential);
+    for atom in &snap.atom_posits {
+        println!("Posit: {}", snap.posit);
+        // Also keeps track of velocities, and water molecule positions/velocity
+    }
+    
+    for snap in &md.snapshots {
+        // Do something with snapshot data, like displaying atom positions in your UI,
+        // Or saving to a file.
+    }
+}
 ```
 
 

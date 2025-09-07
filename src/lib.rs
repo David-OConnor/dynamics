@@ -105,6 +105,7 @@ use lin_alg::f64::Vec3;
 use lin_alg::f64::{Vec3x4, f64x4};
 use na_seq::Element;
 use neighbors::NeighborsNb;
+pub use params::{ProtFFTypeChargeMap, ProtFfMap};
 pub use prep::{HydrogenMdType, merge_params};
 pub use water_opc::ForcesOnWaterMol;
 
@@ -114,11 +115,10 @@ use crate::{
         CHARGE_UNIT_SCALER, EWALD_ALPHA, LjTableIndices, LjTables, SCALE_COUL_14, SPME_N,
     },
     params::{FfParamSet, ForceFieldParamsIndexed},
+    util::build_adjacency_list,
     water_init::make_water_mols,
     water_opc::WaterMol,
 };
-
-const SNAPSHOT_RATIO: usize = 1;
 
 /// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all bonded
 /// accelerations by this. TODO: we are currently multiplying *all* accelerations by this.
@@ -162,6 +162,7 @@ impl ParamError {
 }
 
 /// This stores the positions and velocities of all atoms in the system, and the total energy.
+/// It represents the output of the simulation. A set of these can be used to play it back over time.
 #[derive(Debug, Default)]
 pub struct Snapshot {
     pub time: f64,
@@ -203,10 +204,11 @@ pub struct MolDynamics<'a> {
     pub atoms: &'a [AtomGeneric],
     /// Separate from `atoms`; this may be more convenient than mutating the atoms
     /// as they may move! If None, we use the positions stored in the atoms.
-    // pub atom_posits: Vec<Vec3>,
     pub atom_posits: Option<&'a [Vec3]>,
+    /// Not required if static.
     pub bonds: &'a [BondGeneric],
-    /// If None, will be generated automatically
+    /// If None, will be generated automatically from atoms and bonds. Use this
+    /// if you wish to cache.
     pub adjacency_list: Option<&'a [Vec<usize>]>,
     /// If true,
     pub static_: bool,
@@ -327,6 +329,9 @@ pub struct MdState {
     /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
     /// and VDW) only.
     pub atoms_static: Vec<AtomDynamics>,
+    // todo: Make this a vec. For each dynamic atom.
+    // todo: We don't need it for static, as they use partial charge and LJ data, which
+    // todo are assigned to each atom.
     pub force_field_params: ForceFieldParamsIndexed,
     // /// `lj_lut`, `lj_sigma`, and `lj_eps` are Lennard Jones parameters. Flat here, with outer loop receptor.
     // /// Flattened. Separate single-value array facilitate use in CUDA and SIMD, vice a tuple.
@@ -363,7 +368,10 @@ pub struct MdState {
     pub water_pme_sites_forces: Vec<[Vec3; 3]>, // todo: A/R
     pme_recip: Option<PmeRecip>,
     /// kcal/mol
+    pub kinetic_energy: f64,
     pub potential_energy: f64,
+    // Save a snapshot every this many steps.
+    snapshot_ratio: usize,
 }
 
 impl MdState {
@@ -372,25 +380,46 @@ impl MdState {
         mols: &[MolDynamics],
         temp_target: f64,     // K
         pressure_target: f64, // k
-        ff_params: &FfParamSet,
+        param_set: &FfParamSet,
         mut hydrogen_md_type: HydrogenMdType,
+        snapshot_ratio: usize,
     ) -> Result<Self, ParamError> {
         // todo: QC how you handle hydrogen_md_type.
 
-        if mols.is_empty() {
-            return Err(ParamError::new(&"We require at least one dynamic mol"));
+        if mols.iter().filter(|m| !m.static_).count() != 1 {
+            return Err(ParamError::new(
+                &"We currently only support exactly 1 dynamic molecule. Sorry!",
+            ));
         }
 
-        // todo: For now, just a single molecule.
+        let mut atoms_md_dyn: Vec<AtomDynamics> = Vec::new();
+        let mut atoms_md_static: Vec<AtomDynamics> = Vec::new();
+        let mut ff_params: ForceFieldParamsIndexed = Default::default(); // over-written.
+        let mut adjacency_list = Vec::new();
 
         for mol in mols {
+            // Use the included adjacency list if available. If not, construct it.
+            let adjacency_list_ = match mol.adjacency_list {
+                Some(a) => a,
+                None => &build_adjacency_list(mol.atoms, mol.bonds)?,
+            };
+
+            let mut p = Vec::new(); // to store in memory.
+            let atom_posits = match mol.atom_posits {
+                Some(a) => a,
+                None => {
+                    p = mol.atoms.iter().map(|a| a.posit).collect();
+                    &p
+                }
+            };
+
             let params_general = match mol.ff_mol_type {
-                FfMolType::Peptide => &ff_params.peptide,
-                FfMolType::SmallOrganic => &ff_params.small_mol,
-                FfMolType::Dna => &ff_params.dna,
-                FfMolType::Rna => &ff_params.rna,
-                FfMolType::Lipid => &ff_params.lipids,
-                FfMolType::Carbohydrate => &ff_params.carbohydrates,
+                FfMolType::Peptide => &param_set.peptide,
+                FfMolType::SmallOrganic => &param_set.small_mol,
+                FfMolType::Dna => &param_set.dna,
+                FfMolType::Rna => &param_set.rna,
+                FfMolType::Lipid => &param_set.lipids,
+                FfMolType::Carbohydrate => &param_set.carbohydrates,
             };
 
             let Some(params_general) = params_general else {
@@ -400,74 +429,47 @@ impl MdState {
                 )));
             };
 
-            // Set up Indexed params
-            let ff_params = ForceFieldParamsIndexed::new(
+            // Combines general parameters of the correct molecule type withmolecule-specific ones,
+            // if available.
+            let params = ForceFieldParamsIndexed::new(
                 params_general,
                 mol.mol_specific_params,
                 mol.atoms,
-                adjacency_list,
+                mol.bonds,
+                adjacency_list_,
                 &mut hydrogen_md_type,
             )?;
 
+            let mut atoms_md = Vec::with_capacity(mol.atoms.len());
+            for (i, atom) in mol.atoms.iter().enumerate() {
+                atoms_md.push(AtomDynamics::new(&atom, atom_posits, &params, i)?);
+            }
+
             if mol.static_ {
+                atoms_md_static.extend(atoms_md);
             } else {
+                atoms_md_dyn.extend(atoms_md);
+                // Set up Indexed params. Merges general with atom-specific if available.
+                // Not required for static atoms. (Only bonded forces.)
+                ff_params = params;
+                adjacency_list = adjacency_list_.to_vec();
             }
         }
 
-        // This assumes nonbonded interactions only with external atoms; this is fine for
-        // rigid protein models, and is how this is currently structured.
-        let bonds_static = Vec::new();
-        let adj_list_static = Vec::new();
-
-        println!("\nBuilding FF params indexed static for docking...");
-        let ff_params_static = ForceFieldParamsIndexed::new(
-            ff_params_protein,
-            None,
-            &atoms_static_,
-            &bonds_static,
-            &adj_list_static,
-            &mut hydrogen_md_type,
-        )?;
-
-        // Convert from AtomGeneric to AtomDynamics
-
-        // We are using this approach instead of `.into`, so we can use the atom_posits from
-        // the positioned ligand. (its atom coords are relative; we need absolute)
-        let mut atoms_dy = Vec::with_capacity(atoms_dy_.len());
-        for (i, atom) in atoms_dy_.iter().enumerate() {
-            atoms_dy.push(AtomDynamics::new(
-                &atom,
-                atom_posits,
-                &ff_params_dynamic,
-                i,
-            )?);
-        }
-
-        let mut atoms_static = Vec::with_capacity(atoms_static_.len());
-        let atom_posits_static: Vec<_> = atoms_static_.iter().map(|a| a.posit).collect();
-
-        for (i, atom) in atoms_static_.iter().enumerate() {
-            atoms_static.push(AtomDynamics::new(
-                &atom,
-                &atom_posits_static,
-                &ff_params_static,
-                i,
-            )?);
-        }
-
         // let cell = SimBox::new_padded(&atoms_dy);
-        let cell = SimBox::new_fixed_size(&atoms_dy);
+        let cell = SimBox::new_fixed_size(&atoms_md_dyn);
 
         let mut result = Self {
-            atoms: atoms_dy,
+            atoms: atoms_md_dyn,
             adjacency_list: adjacency_list.to_vec(),
-            atoms_static,
+            atoms_static: atoms_md_static,
             cell,
             pairs_excluded_12_13: HashSet::new(),
             pairs_14_scaled: HashSet::new(),
-            force_field_params: ff_params_dynamic,
+            force_field_params: ff_params,
             temp_target,
             hydrogen_md_type,
+            snapshot_ratio,
             ..Default::default()
         };
 
@@ -482,9 +484,7 @@ impl MdState {
         result.water_pme_sites_forces = vec![[Vec3::new_zero(); 3]; result.water.len()];
 
         result.setup_nonbonded_exclusion_scale_flags();
-
         result.init_neighbors();
-
         // Initializes the FFT planner[s], among other things.
         result.regen_pme();
 
@@ -703,7 +703,9 @@ impl MdState {
             self.regen_pme();
         }
 
-        if self.step_count % SNAPSHOT_RATIO == 0 {
+        if self.step_count % self.snapshot_ratio == 0 {
+            // We can update this out of the snapshot ratio if desired.
+            self.kinetic_energy = self.current_kinetic_energy();
             self.take_snapshot();
         }
     }
@@ -872,11 +874,12 @@ impl MdState {
         let mut water_o_posits = Vec::with_capacity(self.water.len());
         let mut water_h0_posits = Vec::with_capacity(self.water.len());
         let mut water_h1_posits = Vec::with_capacity(self.water.len());
+        let mut water_velocities = Vec::with_capacity(self.water.len());
 
         for water in &self.water {
             water_o_posits.push(water.o.posit);
             water_h0_posits.push(water.h0.posit);
-            water_h1_posits.push(water.h1.posit);
+            water_velocities.push(water.o.vel); // Can be from any atom; they should be the same.
         }
 
         self.snapshots.push(Snapshot {
@@ -886,8 +889,8 @@ impl MdState {
             water_o_posits,
             water_h0_posits,
             water_h1_posits,
-            // todo: Calculate and store kinetic energy elsewhere, A/R.
-            energy_kinetic: self.current_kinetic_energy() as f32,
+            water_velocities,
+            energy_kinetic: self.kinetic_energy as f32,
             energy_potential: self.potential_energy as f32,
         })
     }

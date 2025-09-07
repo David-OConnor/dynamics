@@ -38,12 +38,12 @@ use crate::{MdState, ParamError, neighbors::build_neighbors, params::ForceFieldP
 /// (when given) replace or add to the generic ones.
 pub fn merge_params(
     generic: &ForceFieldParamsKeyed,
-    lig_specific: Option<&ForceFieldParamsKeyed>,
+    specific: Option<&ForceFieldParamsKeyed>,
 ) -> ForceFieldParamsKeyed {
     // Start with a deep copy of the generic parameters.
     let mut merged = generic.clone();
 
-    if let Some(lig) = lig_specific {
+    if let Some(lig) = specific {
         merged.mass.extend(lig.mass.clone());
         // merged.partial_charges.extend(lig.partial_charges.clone());
         merged.lennard_jones.extend(lig.lennard_jones.clone());

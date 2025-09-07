@@ -1,12 +1,21 @@
 //! For Amber and other parameters.
 
-use std::collections::{HashMap, HashSet};
-
-use bio_files::amber_params::{
-    AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParamsKeyed,
-    LjParams, MassParams, VdwParams,
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    path::PathBuf,
 };
-use na_seq::AminoAcidGeneral;
+
+use bio_files::{
+    AtomGeneric, ResidueEnd, ResidueGeneric, ResidueType,
+    amber_params::{
+        AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParams,
+        ForceFieldParamsKeyed, LjParams, MassParams, load_amino_charges, parse_amino_charges,
+    },
+};
+use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes};
+
+use crate::{ParamError, merge_params};
 
 pub type ProtFfMap = HashMap<AminoAcidGeneral, Vec<ChargeParams>>;
 
@@ -21,9 +30,95 @@ pub struct FfParamSet {
     pub lipids: Option<ForceFieldParamsKeyed>,
     pub carbohydrates: Option<ForceFieldParamsKeyed>,
     /// In addition to charge, this also contains the mapping of res type to FF type; required to map
-    /// other parameters to protein atoms. From `amino19.lib`, and its N and C-terminus variants.
-    // todo: Should this go here? Look into how it's used.
-    pub prot_ff_q_map: Option<ProtFFTypeChargeMap>,
+    /// other parameters to protein atoms. E.g. from `amino19.lib`, and its N and C-terminus variants.
+    pub peptide_ff_q_map: Option<ProtFFTypeChargeMap>,
+}
+
+/// Paths for to general parameter files. Used to create a FfParamSet.
+#[derive(Clone, Debug, Default)]
+pub struct ParamGeneralPaths {
+    /// E.g. parm19.dat
+    pub peptide: Option<PathBuf>,
+    /// E.g. ff19sb.dat
+    pub peptide_mod: Option<PathBuf>,
+    /// E.g. amino19.lib
+    pub peptide_ff_q: Option<PathBuf>,
+    /// E.g. aminoct12.lib
+    pub peptide_ff_q_c: Option<PathBuf>,
+    /// E.g. aminont12.lib
+    pub peptide_ff_q_n: Option<PathBuf>,
+    /// e.g. gaff2.dat
+    pub small_organic: Option<PathBuf>,
+    /// e.g. ff-nucleic-OL24.lib
+    pub dna: Option<PathBuf>,
+    /// e.g. ff-nucleic-OL24.frcmod
+    pub dna_mod: Option<PathBuf>,
+    /// e.g. RNA.lib
+    pub rna: Option<PathBuf>,
+    pub lipid: Option<PathBuf>,
+    pub carbohydrate: Option<PathBuf>,
+}
+
+impl FfParamSet {
+    /// Load general parameter files for proteins, and small organic molecules.
+    /// This also populates ff type and charge for protein atoms.
+    pub fn new(paths: &ParamGeneralPaths) -> io::Result<Self> {
+        let mut result = FfParamSet::default();
+
+        if let Some(p) = &paths.peptide {
+            let peptide = ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?);
+
+            if let Some(p_mod) = &paths.peptide_mod {
+                let frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::load_frcmod(p_mod)?);
+                result.peptide = Some(merge_params(&peptide, Some(&frcmod)));
+            } else {
+                result.peptide = Some(peptide);
+            }
+        }
+
+        let mut ff_map = ProtFFTypeChargeMap::default();
+        if let Some(p) = &paths.peptide_ff_q {
+            ff_map.internal = load_amino_charges(p)?;
+        }
+        if let Some(p) = &paths.peptide_ff_q_c {
+            ff_map.internal = load_amino_charges(p)?;
+        }
+        if let Some(p) = &paths.peptide_ff_q_n {
+            ff_map.internal = load_amino_charges(p)?;
+        }
+
+        result.peptide_ff_q_map = Some(ff_map);
+
+        if let Some(p) = &paths.small_organic {
+            result.small_mol = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+        }
+
+        if let Some(p) = &paths.dna {
+            let peptide = ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?);
+
+            if let Some(p_mod) = &paths.dna_mod {
+                let frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::load_frcmod(p_mod)?);
+                result.dna = Some(merge_params(&peptide, Some(&frcmod)));
+            } else {
+                result.dna = Some(peptide);
+            }
+        }
+
+        if let Some(p) = &paths.rna {
+            result.rna = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+        }
+
+        if let Some(p) = &paths.lipid {
+            result.lipids = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+        }
+
+        if let Some(p) = &paths.carbohydrate {
+            result.carbohydrates =
+                Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+        }
+
+        Ok(result)
+    }
 }
 
 /// This variant of forcefield parameters offers the fastest lookups. Unlike the Vec and Hashmap
@@ -62,4 +157,129 @@ pub struct ProtFFTypeChargeMap {
     pub internal: ProtFfMap,
     pub n_terminus: ProtFfMap,
     pub c_terminus: ProtFfMap,
+}
+
+/// Populate forcefield type, and partial charge on atoms. This should be run on mmCIF
+/// files prior to running molecular dynamics on them. These files from RCSB PDB do not
+/// natively have this data.
+///
+/// `residues` must be the full set; this is relevant to how we index it.
+pub fn populate_peptide_ff_and_q(
+    atoms: &mut [AtomGeneric],
+    residues: &[ResidueGeneric],
+    ff_type_charge: &ProtFFTypeChargeMap,
+) -> Result<(), ParamError> {
+    // Tis is slower than if we had an index map already.
+    let mut index_map = HashMap::new();
+    for (i, atom) in atoms.iter().enumerate() {
+        index_map.insert(atom.serial_number, i);
+    }
+
+    for res in residues {
+        for sn in &res.atom_sns {
+            let atom = match atoms.get_mut(index_map[&sn]) {
+                Some(a) => a,
+                None => {
+                    return Err(ParamError::new(&format!(
+                        "Unable to populate Charge or FF type for atom {sn}"
+                    )));
+                }
+            };
+
+            if atom.hetero {
+                continue;
+            }
+
+            let Some(type_in_res) = &atom.type_in_res else {
+                return Err(ParamError::new(&format!(
+                    "MD failure: Missing type in residue for atom: {atom}"
+                )));
+            };
+
+            let ResidueType::AminoAcid(aa) = &res.res_type else {
+                // e.g. water or other hetero atoms; skip.
+                continue;
+            };
+
+            // todo: Eventually, determine how to load non-standard AA variants from files; set up your
+            // todo state to use those labels. They are available in the params.
+            let aa_gen = AminoAcidGeneral::Standard(*aa);
+
+            let charge_map = match res.end {
+                ResidueEnd::Internal => &ff_type_charge.internal,
+                ResidueEnd::NTerminus => &ff_type_charge.n_terminus,
+                ResidueEnd::CTerminus => &ff_type_charge.c_terminus,
+                ResidueEnd::Hetero => {
+                    return Err(ParamError::new(&format!(
+                        "Error: Encountered hetero atom when parsing amino acid FF types: {atom}"
+                    )));
+                }
+            };
+
+            let charges = match charge_map.get(&aa_gen) {
+                Some(c) => c,
+                // A specific workaround to plain "HIS" being absent from amino19.lib (2025.
+                // Choose one of "HID", "HIE", "HIP arbitrarily.
+                // todo: Re-evaluate this, e.g. which one of the three to load.
+                None if aa_gen == AminoAcidGeneral::Standard(AminoAcid::His) => charge_map
+                    .get(&AminoAcidGeneral::Variant(AminoAcidProtenationVariant::Hid))
+                    .ok_or_else(|| ParamError::new("Unable to find AA mapping"))?,
+                None => return Err(ParamError::new("Unable to find AA mapping")),
+            };
+
+            let mut found = false;
+
+            for charge in charges {
+                // todo: Note that we have multiple branches in some case, due to Amber names like
+                // todo: "HYP" for variants on AAs for different protenation states. Handle this.
+                if charge.type_in_res == *type_in_res {
+                    atom.force_field_type = Some(charge.ff_type.clone());
+                    atom.partial_charge = Some(charge.charge);
+
+                    found = true;
+                    break;
+                }
+            }
+
+            // Code below is mainly for the case of missing data; otherwise, the logic for this operation
+            // is complete.
+
+            if !found {
+                match type_in_res {
+                    // todo: This is a workaround for having trouble with H types. LIkely
+                    // todo when we create them. For now, this meets the intent.
+                    AtomTypeInRes::H(_) => {
+                        // Note: We've witnessed this due to errors in the mmCIF file, e.g. on ASP #88 on 9GLS.
+                        eprintln!(
+                            "Error assigning FF type and q based on atom type in res: Failed to match H type. #{}, {type_in_res}, {aa_gen:?}. \
+                         Falling back to a generic H",
+                            res.serial_number
+                        );
+
+                        for charge in charges {
+                            if &charge.type_in_res == &AtomTypeInRes::H("H".to_string())
+                                || &charge.type_in_res == &AtomTypeInRes::H("HA".to_string())
+                            {
+                                atom.force_field_type = Some("HB2".to_string());
+                                atom.partial_charge = Some(charge.charge);
+
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    _ => (),
+                }
+
+                // i.e. if still not found after our specific workarounds above.
+                if !found {
+                    return Err(ParamError::new(&format!(
+                        "Error assigning FF type and q based on atom type in res: {atom}",
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
