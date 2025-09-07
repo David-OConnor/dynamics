@@ -225,16 +225,16 @@ fn calc_force(
                 (
                     vec![Vec3::new_zero(); n_dyn],
                     vec![ForcesOnWaterMol::default(); n_wat],
-                    0.0_f64,
-                    0.0_f64,
+                    0.0_f64, // Virial sum
+                    0.0_f64, // Energy sum
                 )
             },
-            |(mut acc_d, mut acc_w, mut w_local, energy), p| {
+            |(mut acc_d, mut acc_w, mut virial, mut energy), p| {
                 let a_t = p.tgt.get(atoms_dyn, atoms_static, water);
                 let a_s = p.src.get(atoms_dyn, atoms_static, water);
 
-                let (f, mut energy) = f_nonbonded(
-                    &mut w_local,
+                let (f, e_pair) = f_nonbonded(
+                    &mut virial,
                     a_t,
                     a_s,
                     cell,
@@ -255,11 +255,11 @@ fn calc_force(
                 let involves_dyn =
                     matches!(p.tgt, BodyRef::Dyn(_)) || matches!(p.src, BodyRef::Dyn(_));
 
-                if !involves_dyn {
-                    energy = 0.;
+                if involves_dyn {
+                    energy += e_pair;
                 }
 
-                (acc_d, acc_w, w_local, energy)
+                (acc_d, acc_w, virial, energy)
             },
         )
         .reduce(

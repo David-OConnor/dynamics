@@ -40,7 +40,6 @@ const RNA_LIB: &str = include_str!("../param_data/RNA.lib");
 // todo, and not required. YIL: Yildirim torsion refit. CI: Legacy Cornell-style. SHAW: incomplete,
 // todo from a person named Shaw.
 
-
 #[derive(Default, Debug)]
 /// A set of general parameters that aren't molecule-specific. E.g. from GAFF2, OL3, RNA, or amino19.
 /// These are used as a baseline, and in some cases, overridden by molecule-specific parameters.
@@ -88,10 +87,10 @@ impl FfParamSet {
         let mut result = FfParamSet::default();
 
         if let Some(p) = &paths.peptide {
-            let peptide = ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?);
+            let peptide = ForceFieldParamsKeyed::load_dat(p)?;
 
             if let Some(p_mod) = &paths.peptide_mod {
-                let frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::load_frcmod(p_mod)?);
+                let frcmod = ForceFieldParamsKeyed::load_frcmod(p_mod)?;
                 result.peptide = Some(merge_params(&peptide, Some(&frcmod)));
             } else {
                 result.peptide = Some(peptide);
@@ -112,14 +111,14 @@ impl FfParamSet {
         result.peptide_ff_q_map = Some(ff_map);
 
         if let Some(p) = &paths.small_organic {
-            result.small_mol = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+            result.small_mol = Some(ForceFieldParamsKeyed::load_dat(p)?);
         }
 
         if let Some(p) = &paths.dna {
-            let peptide = ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?);
+            let peptide = ForceFieldParamsKeyed::load_dat(p)?;
 
             if let Some(p_mod) = &paths.dna_mod {
-                let frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::load_frcmod(p_mod)?);
+                let frcmod = ForceFieldParamsKeyed::load_frcmod(p_mod)?;
                 result.dna = Some(merge_params(&peptide, Some(&frcmod)));
             } else {
                 result.dna = Some(peptide);
@@ -127,16 +126,15 @@ impl FfParamSet {
         }
 
         if let Some(p) = &paths.rna {
-            result.rna = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+            result.rna = Some(ForceFieldParamsKeyed::load_dat(p)?);
         }
 
         if let Some(p) = &paths.lipid {
-            result.lipids = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+            result.lipids = Some(ForceFieldParamsKeyed::load_dat(p)?);
         }
 
         if let Some(p) = &paths.carbohydrate {
-            result.carbohydrates =
-                Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
+            result.carbohydrates = Some(ForceFieldParamsKeyed::load_dat(p)?);
         }
 
         Ok(result)
@@ -148,8 +146,8 @@ impl FfParamSet {
     pub fn new_amber() -> io::Result<Self> {
         let mut result = FfParamSet::default();
 
-        let peptide = ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(PARM_19)?);
-        let peptide_frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::from_frcmod(FRCMOD_FF19SB)?);
+        let peptide = ForceFieldParamsKeyed::from_dat(PARM_19)?;
+        let peptide_frcmod = ForceFieldParamsKeyed::from_frcmod(FRCMOD_FF19SB)?;
         result.peptide = Some(merge_params(&peptide, Some(&peptide_frcmod)));
 
         let internal = parse_amino_charges(AMINO_19)?;
@@ -162,13 +160,16 @@ impl FfParamSet {
             c_terminus,
         });
 
-        result.small_mol = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(GAFF2)?));
+        result.small_mol = Some(ForceFieldParamsKeyed::from_dat(GAFF2)?);
 
-        let dna = ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(OL24_LIB)?);
-        let dna_frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::from_frcmod(OL24_FRCMOD)?);
-        result.dna = Some(merge_params(&dna, Some(&dna_frcmod)));
+        // todo: Load these, and get them working. They currently trigger a mass-parsing error.
+        // todo: You must update your Lib parser in bio_files to handle this variant.
 
-        result.rna = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(RNA_LIB)?));
+        // let dna = ForceFieldParamsKeyed::from_dat(OL24_LIB)?;
+        // let dna_frcmod = ForceFieldParamsKeyed::from_frcmod(OL24_FRCMOD)?;
+        // result.dna = Some(merge_params(&dna, Some(&dna_frcmod)));
+        //
+        // result.rna = Some(ForceFieldParamsKeyed::from_dat(RNA_LIB)?);
 
         Ok(result)
     }
@@ -181,7 +182,7 @@ impl FfParamSet {
 /// Note: The single-atom fields of `mass` and `partial_charges` are omitted: They're part of our
 /// `AtomDynamics` struct.`
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ForceFieldParamsIndexed {
+pub struct ForceFieldParamsIndexed {
     pub mass: HashMap<usize, MassParams>,
     pub bond_stretching: HashMap<(usize, usize), BondStretchingParams>,
     pub angle: HashMap<(usize, usize, usize), AngleBendingParams>,

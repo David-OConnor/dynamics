@@ -92,10 +92,9 @@ mod water_settle;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
-use std::{collections::HashSet, time::Instant};
+use std::{collections::HashSet, fmt, time::Instant};
 
 use ambient::SimBox;
-pub use bio_files as files;
 use bio_files::{AtomGeneric, BondGeneric, amber_params::ForceFieldParamsKeyed};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
@@ -193,14 +192,12 @@ pub enum FfMolType {
     Carbohydrate,
 }
 
-/// Packages information required to perform dynamics on a Molecule. The significance
-/// of breaking the simulation into molecules is due to a few things:
-///-  The fixed covalent bond model we use.
+/// Packages information required to perform dynamics on a Molecule. This is used to initialize
+/// the simulation with atoms and related; one or more of these is passed at init.
 #[derive(Clone, Debug)]
 pub struct MolDynamics<'a> {
     pub ff_mol_type: FfMolType,
     /// These must hold force field type and partial charge.
-    // pub atoms: Vec<AtomGeneric>,
     pub atoms: &'a [AtomGeneric],
     /// Separate from `atoms`; this may be more convenient than mutating the atoms
     /// as they may move! If None, we use the positions stored in the atoms.
@@ -210,10 +207,10 @@ pub struct MolDynamics<'a> {
     /// If None, will be generated automatically from atoms and bonds. Use this
     /// if you wish to cache.
     pub adjacency_list: Option<&'a [Vec<usize>]>,
-    /// If true,
+    /// If true, the atoms in the molecule don't move, but exert LJ and Coulomb forces
+    /// on other atoms in the system.
     pub static_: bool,
     /// If present, any values here override molecule-type general parameters.
-    // pub mol_specific_params: Option<ForceFieldParamsKeyed>
     pub mol_specific_params: Option<&'a ForceFieldParamsKeyed>,
 }
 
@@ -374,6 +371,20 @@ pub struct MdState {
     snapshot_ratio: usize,
 }
 
+impl fmt::Display for MdState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "MdState. # Snapshots: {}. # steps: {}  Current time: {}. # of dynamic atoms: {}. # Water mols: {}",
+            self.snapshots.len(),
+            self.step_count,
+            self.time,
+            self.atoms.len(),
+            self.water.len()
+        )
+    }
+}
+
 impl MdState {
     pub fn new(
         // todo: Support multiple molecules.
@@ -398,10 +409,36 @@ impl MdState {
         let mut adjacency_list = Vec::new();
 
         for mol in mols {
+            // Filter out hetero atoms in proteins. These are often example ligands which we do
+            // not wish to model.
+            // We must perform this filter prior to most of the other steps in this function.
+
+            let atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
+                FfMolType::Peptide => mol
+                    .atoms
+                    .into_iter()
+                    .filter(|a| !a.hetero)
+                    .map(|a| a.clone())
+                    .collect(),
+                _ => mol.atoms.to_vec(),
+            };
+
+            // If the atoms list isn't already filtered by Hetero, and a manual
+            // adjacency list or atom posits is passed, this will get screwed up.
+            if mol.ff_mol_type == FfMolType::Peptide
+                && atoms.len() != mol.atoms.len()
+                && (mol.adjacency_list.is_some() || mol.atom_posits.is_some())
+            {
+                return Err(ParamError::new(
+                    "Unable to perform MD on this peptide: If passing atom positions or an adjacency list,\
+                 you must already have filtered out hetero atoms. We found one or more hetero atoms in the input.",
+                ));
+            }
+
             // Use the included adjacency list if available. If not, construct it.
             let adjacency_list_ = match mol.adjacency_list {
                 Some(a) => a,
-                None => &build_adjacency_list(mol.atoms, mol.bonds)?,
+                None => &build_adjacency_list(&atoms, mol.bonds)?,
             };
 
             let mut p = Vec::new(); // to store in memory.
@@ -429,19 +466,19 @@ impl MdState {
                 )));
             };
 
-            // Combines general parameters of the correct molecule type withmolecule-specific ones,
+            // Combines general parameters of the correct molecule type with molecule-specific ones,
             // if available.
             let params = ForceFieldParamsIndexed::new(
                 params_general,
                 mol.mol_specific_params,
-                mol.atoms,
+                &atoms,
                 mol.bonds,
                 adjacency_list_,
                 &mut hydrogen_md_type,
             )?;
 
-            let mut atoms_md = Vec::with_capacity(mol.atoms.len());
-            for (i, atom) in mol.atoms.iter().enumerate() {
+            let mut atoms_md = Vec::with_capacity(atoms.len());
+            for (i, atom) in atoms.iter().enumerate() {
                 atoms_md.push(AtomDynamics::new(&atom, atom_posits, &params, i)?);
             }
 
@@ -853,7 +890,7 @@ impl MdState {
     }
 
     /// Run this at init, and whenever you update the sim box.
-    pub fn regen_pme(&mut self) {
+    fn regen_pme(&mut self) {
         let [lx, ly, lz] = self.cell.extent.to_arr();
         self.pme_recip = Some(PmeRecip::new(
             (SPME_N, SPME_N, SPME_N),
@@ -870,7 +907,7 @@ impl MdState {
             .sum()
     }
 
-    pub fn take_snapshot(&mut self) {
+    fn take_snapshot(&mut self) {
         let mut water_o_posits = Vec::with_capacity(self.water.len());
         let mut water_h0_posits = Vec::with_capacity(self.water.len());
         let mut water_h1_posits = Vec::with_capacity(self.water.len());
@@ -898,7 +935,7 @@ impl MdState {
 
 #[inline]
 /// Mutable aliasing helpers.
-pub fn split2_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
+pub(crate) fn split2_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     assert!(i != j);
     let (low, high) = if i < j { (i, j) } else { (j, i) };
     let (left, right) = v.split_at_mut(high);
@@ -922,7 +959,7 @@ fn split3_mut<T>(v: &mut [T], i: usize, j: usize, k: usize) -> (&mut T, &mut T, 
 }
 
 #[inline]
-pub fn split4_mut<T>(
+pub(crate) fn split4_mut<T>(
     slice: &mut [T],
     i0: usize,
     i1: usize,

@@ -36,6 +36,7 @@ use crate::{MdState, ParamError, neighbors::build_neighbors, params::ForceFieldP
 
 /// Build a single lookup table in which molecule-specific parameters
 /// (when given) replace or add to the generic ones.
+/// todo: IDeally this function doesn't accept an option, but this simplifies upstream APIs in some cases.
 pub fn merge_params(
     generic: &ForceFieldParamsKeyed,
     specific: Option<&ForceFieldParamsKeyed>,
@@ -72,7 +73,7 @@ fn ff_type_from_idx<'a>(
     })
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Debug)]
 pub struct HydrogenRigidConstraint {
     /// Atom indices, of the dynamic set.
     pub atom_0: usize,
@@ -83,7 +84,7 @@ pub struct HydrogenRigidConstraint {
     pub inv_mass: Option<f64>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, Debug)]
 pub enum HydrogenMdType {
     /// Uses Shake and Rattle to fix the hydrogen positions. This allows for a larger timestep,
     /// e.g. 2fs instead of 1fs.

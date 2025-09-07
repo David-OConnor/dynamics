@@ -1,10 +1,12 @@
 # Molecular Dynamics
 [![Crate](https://img.shields.io/crates/v/dynamics.svg)](https://crates.io/crates/dynamics)
 [![Docs](https://docs.rs/dynamics/badge.svg)](https://docs.rs/dynamics)
-[![PyPI](https://img.shields.io/pypi/v/dynamics.svg)](https://pypi.org/project/dynamics)
+[![PyPI](https://img.shields.io/pypi/v/mol_dynamics.svg)](https://pypi.org/project/mol_dynamics)
 
 A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac.
 Uses CPU with threadpools and SIMD, or an nVidia GPU.
+
+## Warning: Very early release! Lots of missing features. If you see something, post a Github issue.
 
 It uses traditional forcefield-based molecular dynamics, and is inspired by Amber.
 It does not use quantum-mechanics, nor ab-initio methods.
@@ -27,7 +29,7 @@ as well.
 
 
 ## Installation
-Python: `pip install mol_dynamics`
+Python: `pip install mol_dynamics biology_files`
 
 Rust: `Ad dynamics` to `Cargo.toml`
 
@@ -75,7 +77,7 @@ forces represent electric forces occurring from dipoles and similar effects, or 
 partial charges for these. They occur within a molecule, between molecules, and between molecules and solvents.
 
 We use a neighbors list (Sometimes called Verlet neighbors; not directly related to the Verlet integrator) to reduce
-computational effort. We use the SPME Ewald (todo: link) approximation to reduce computation time. This algorithm
+computational effort. We use the [SPME Ewald](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html) approximation to reduce computation time. This algorithm
 is suited for periodic boundary conditions, which we use for the solvent.
 
 We use Amber's scaling and exclusion rules: LJ and Coulomb force is reduced between atoms separated by 1 and 2
@@ -121,18 +123,17 @@ files as well, e.g. to load dihedral angles from *.frcmod* that aren't present i
 
 Example use (Python):
 ```python
+from biology_files import Mol2, MmCif, ForceFieldParamsKeyed
 from mol_dynamics import *
 
 TEMP_TGT: f32 = 310.  # K
 PRESSURE_TGT: f32 = 310.  # Bar
 
-fn setup_dynamics(mol: Mol2, protein: Mmcif, param_set: FfParamSet) -> MdState:
+def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParamsKeyed) -> MdState:
     """
     Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
     which acts on the system, but doesn't move.
     """
-
-    protein.add_params_and_q(param_set.peptide)
 
     mols = [
         MolDynamics(
@@ -166,41 +167,34 @@ fn setup_dynamics(mol: Mol2, protein: Mmcif, param_set: FfParamSet) -> MdState:
         PRESSURE_TGT,
         param_set,
         # Or flexible, with a smaller time step.
-        HydrogenMdType::Fixed(Vec::new()),
+        HydrogenMdType.Fixed,
         1, # Take a snapshot every this many steps.
     )
 
 
 def main():
     mol = Mol2.load("CPB.mol2")
-    mut protein = Mmcif.load("1c8k.cif")
+    mut protein = MmCif.load("1c8k.cif")
 
+    params = FfParamSet.new_amber()
+    lig_specific = ForceFieldParamsKeyed.load_frcmod("CPB.frcmod")
+    
     # Add force field type, and partial charge to atoms in the protein; these usually aren't
-    # included from RSCB PDB.
-    populate_peptide_ff_and_q(mut protein.atoms, protein.residues, ff_map)
+    # included from RSCB PDB. Make sure you add Hydrogens as well.
+    populate_peptide_ff_and_q(mut protein.atoms, protein.residues, params.ff_map)
     
-    param_paths = ParamGeneralPaths(
-        peptide=Some("parm19.dat"),
-        peptide_mod=Some("frcmod.ff19SB"),
-        peptide_ff_q=Some("amino19.lib"),
-        peptide_ff_q_c=Some("aminoct12.lib"),
-        peptide_ff_q_n=Some("aminont12.lib"),
-        small_organic=Some("gaff2.dat")),
-    )
+    md = setup_dynamics(mol, protein, param_set, lig_specific)
     
-    let param_set = FfParamSet(param_paths)
-    let mut md = setup_dynamics(mol, protein, param_set)
-    
-    let n_steps = 100
-    let dt = 0.002  # picoseconds.
+    n_steps = 100
+    dt = 0.002  # picoseconds.
     
     for _ in range(n_steps):
         md.step(dt)
     
     snap = md.snapshots[len(md.snapshots) - 1] // A/R.
     print(f"KE: {snap.energy_kinetic}, PE: {snap.energy_potential}, Atom posits:")
-    for atom in snap.atom_posits {
-        print("Posit: {snap.posit}")
+    for posit in snap.atom_posits {
+        print(f"Posit: {posit}")
         # Also keeps track of velocities, and water molecule positions/velocity
     }
     
@@ -211,29 +205,25 @@ def main():
         
         
 main()
-}
 ```
 
 
 Example use (Rust):
 ```rust
+use std::path::Path;
+
+use bio_files::{Mol2, MmCif, amber_params::ForceFieldParamsKeyed};
 use dynamics::{
     ComputationDevice, MdState, MolDynamics, FfMolType, HydrogenMdType,
-    params::{ForceFieldParamsIndexed, ProtFFTypeChargeMap, FfParamSet, ParamGeneralPaths, populate_peptide_ff_and_q},
-    files::{Mol2, Mmcif}, // re-export of the bio-files lib.
+    params::{FfParamSet, populate_peptide_ff_and_q},
 };
 
-const TEMP_TGT: f32 = 310.; // K
-const PRESSURE_TGT: f32 = 310.; // Bar
+const TEMP_TGT: f64 = 310.; // K
+const PRESSURE_TGT: f64 = 310.; // Bar
 
 /// Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
 /// which acts on the system, but doesn't move.
-fn setup_dynamics(mol: &Mol2, protein: &Mmcif, param_set: &FfParamSet) -> MdState {
-    // Note: We assume you've already added hydrogens to any mmCif of other files
-    // that don't include them.
-    // todo: Include H addition in this lib?
-    protein.add_params_and_q(&param_set.peptide);
-
+fn setup_dynamics(mol: &Mol2, protein: &MmCif, param_set: &FfParamSet, lig_specific: &ForceFieldParamsKeyed) -> MdState {
     let mols = vec![
         MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
@@ -247,7 +237,7 @@ fn setup_dynamics(mol: &Mol2, protein: &Mmcif, param_set: &FfParamSet) -> MdStat
             static_: false,
             // This is usually mandatory for small organic molecules. Provided, for example,
             // in Amber FRCMOD files. Overrides general params.
-            mol_specific_params: Some(&lig_specific_params),
+            mol_specific_params: Some(lig_specific),
         },
         MolDynamics {
             ff_mol_type: FfMolType::Peptide,
@@ -269,17 +259,57 @@ fn setup_dynamics(mol: &Mol2, protein: &Mmcif, param_set: &FfParamSet) -> MdStat
         HydrogenMdType::Fixed(Vec::new()),
         1, // Take a snapshot every this many steps.
     ).unwrap()
-
 }
 
 fn main() {
-    let mol = Mol2::load("CPB.mol2").unwrap();
-    let mut protein = Mmcif::load("1c8k.cif").unwrap();
+    let mol = Mol2::load(Path::new("CPB.mol2")).unwrap();
+    let mut protein = MmCif::load(Path::new("1c8k.cif")).unwrap();
+
+    let param_set = FfParamSet::new_amber().unwrap();
+    let lig_specific = ForceFieldParamsKeyed::load_frcmod(Path::new("CPB.frcmod")).unwrap();
 
     // Add force field type, and partial charge to atoms in the protein; these usually aren't
-    // included from RSCB PDB.
-    populate_peptide_ff_and_q(&mut protein.atoms, &protein.residues, ff_map).unwrap();
+    // included from RSCB PDB. Make sure you add Hydrogens as well.
+    populate_peptide_ff_and_q(&mut protein.atoms, &protein.residues, &param_set.peptide_ff_q_map.as_ref().unwrap()).unwrap();
+
+    let mut md = setup_dynamics(&mol, &protein, &param_set, &lig_specific);
+
+    let n_steps = 100;
+    let dt = 0.002; // picoseconds.
+
+    for _ in 0..n_steps {
+        md.step(&ComputationDevice::Cpu, dt);
+    }
+
+    let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
+    println!("KE: {}, PE: {}, Atom posits:", snap.energy_kinetic, snap.energy_potential);
+    for posit in &snap.atom_posits {
+        println!("Posit: {posit}");
+        // Also keeps track of velocities, and water molecule positions/velocity
+    }
+
+    for snap in &md.snapshots {
+        // Do something with snapshot data, like displaying atom positions in your UI,
+        // Or saving to a file.
+    }
+}
+```
+
+Example of loading your own parameter files:
+```python
+    param_paths = ParamGeneralPaths(
+        peptide=Some("parm19.dat"),
+        peptide_mod=Some("frcmod.ff19SB"),
+        peptide_ff_q=Some("amino19.lib"),
+        peptide_ff_q_c=Some("aminoct12.lib"),
+        peptide_ff_q_n=Some("aminont12.lib"),
+        small_organic=Some("gaff2.dat")),
+    )
     
+    param_set = FfParamSet(param_paths)
+```
+
+```rust
     let param_paths = ParamGeneralPaths {
         peptide: Some(&Path::new("parm19.dat")),
         peptide_mod: Some(&Path::new("frcmod.ff19SB")),
@@ -291,27 +321,6 @@ fn main() {
     };
     
     let param_set = FfParamSet::new(&param_paths);
-    let mut md = setup_dynamics(&mol, &protein, &param_set);
-    
-    let n_steps = 100;
-    let dt = 0.002; // picoseconds.
-    
-    for _ in 0..n_steps {
-        md.step(&ComputationDevice.Cpu, dt);
-    }
-    
-    let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
-    println!("KE: {}, PE: {}, Atom posits:", snap.energy_kinetic, snap.energy_potential);
-    for atom in &snap.atom_posits {
-        println!("Posit: {}", snap.posit);
-        // Also keeps track of velocities, and water molecule positions/velocity
-    }
-    
-    for snap in &md.snapshots {
-        // Do something with snapshot data, like displaying atom positions in your UI,
-        // Or saving to a file.
-    }
-}
 ```
 
 
@@ -331,6 +340,32 @@ intended to *just work*. OpenMM itself is easy to install with Pip, but the addi
 it requires to load force fields and files are higher-friction.
 
 
+
+## Compiling from source
+It requires these Amber parameter files to be present under the project's `resources` folder at compile time.
+These are available in [Amber tools](https://ambermd.org/GetAmber.php). Download, unpack, then copy these files from
+`dat/leap/parm` and `dat/leap/lib`:
+
+- `amino19.lib`
+- `aminoct12.lib`
+- `aminont12.lib`
+- `parm19.dat`
+- `frcmod.ff19SB`
+- `gaff2.dat`
+- `ff-nucleic-OL24.lib`
+- `ff-nucleic-OL24.frcmod`
+- `RNA.lib`
+
+We provide a [copy of these files](https://github.com/David-OConnor/daedalus/releases/download/0.1.3/amber_params_sept_2025.zip)
+for convenience; this is a much smaller download than the entire Amber package, and prevents needing to locate the specific files.
+Unpack, and place these under `resources` prior to compiling.
+
+(todo: Notes on compiling with GPU support A/R)
+
+To build the Python library wheel, from the `python` subdirectory, run `maturin build`. You can load the library
+locally for testing, once built, by running `pip install .`
+
+
 ## Eratta
 - Only a single dynamic molecule is supported
 - Python is CPU-only
@@ -340,5 +375,5 @@ it requires to load force fields and files are higher-friction.
 ## References
 - [Amber forcefields](https://ambermd.org/antechamber/gaff.html)
 - [Amber reference manual](https://ambermd.org/doc12/Amber25.pdf)
-- SPME
+- [Ewald Summation/SPME](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html)
 - [OPC water model](https://arxiv.org/abs/1408.1679)
