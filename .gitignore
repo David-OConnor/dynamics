@@ -6,6 +6,8 @@
 Cargo.lock
 /python/target/
 
+/param_data
+
 # CUDA
 *.exe
 *.exp

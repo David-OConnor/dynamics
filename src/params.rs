@@ -19,6 +19,28 @@ use crate::{ParamError, merge_params};
 
 pub type ProtFfMap = HashMap<AminoAcidGeneral, Vec<ChargeParams>>;
 
+// We include Amber parameter files with this package.
+// Proteins and amino acids:
+const PARM_19: &str = include_str!("../param_data/parm19.dat"); // Bonded, and LJ
+const FRCMOD_FF19SB: &str = include_str!("../param_data/frcmod.ff19SB"); // Bonded, and LJ: overrides and new types
+const AMINO_19: &str = include_str!("../param_data/amino19.lib"); // Charge; internal residues
+const AMINO_NT12: &str = include_str!("../param_data/aminont12.lib"); // Charge; protonated N-terminus residues
+const AMINO_CT12: &str = include_str!("../param_data/aminoct12.lib"); // Charge; protonated C-terminus residues
+
+// Ligands/small organic molecules: *General Amber Force Fields*.
+const GAFF2: &str = include_str!("../param_data/gaff2.dat");
+
+// DNA (OL24) and RNA (OL3)
+const OL24_LIB: &str = include_str!("../param_data/ff-nucleic-OL24.lib");
+const OL24_FRCMOD: &str = include_str!("../param_data/ff-nucleic-OL24.frcmod");
+// todo: frcmod.protonated_nucleic?
+// RNA (I believe this is the OL3 Amber's FF page recommends?)
+const RNA_LIB: &str = include_str!("../param_data/RNA.lib");
+// todo: RNA.YIL.lib? RNA_CI.lib? RNA_Shaw.lib? These are, I believe, "alternative" libraries,
+// todo, and not required. YIL: Yildirim torsion refit. CI: Legacy Cornell-style. SHAW: incomplete,
+// todo from a person named Shaw.
+
+
 #[derive(Default, Debug)]
 /// A set of general parameters that aren't molecule-specific. E.g. from GAFF2, OL3, RNA, or amino19.
 /// These are used as a baseline, and in some cases, overridden by molecule-specific parameters.
@@ -116,6 +138,37 @@ impl FfParamSet {
             result.carbohydrates =
                 Some(ForceFieldParamsKeyed::new(&ForceFieldParams::load_dat(p)?));
         }
+
+        Ok(result)
+    }
+
+    /// Create a parameter set using Amber parameters included with this library. This uses
+    /// the param sets recommended by Amber, CAO Sept 2025: ff19SB, OL24, OL3, GLYCAM_06j, lipids21,
+    /// and gaff2.
+    pub fn new_amber() -> io::Result<Self> {
+        let mut result = FfParamSet::default();
+
+        let peptide = ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(PARM_19)?);
+        let peptide_frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::from_frcmod(FRCMOD_FF19SB)?);
+        result.peptide = Some(merge_params(&peptide, Some(&peptide_frcmod)));
+
+        let internal = parse_amino_charges(AMINO_19)?;
+        let n_terminus = parse_amino_charges(AMINO_NT12)?;
+        let c_terminus = parse_amino_charges(AMINO_CT12)?;
+
+        result.peptide_ff_q_map = Some(ProtFFTypeChargeMap {
+            internal,
+            n_terminus,
+            c_terminus,
+        });
+
+        result.small_mol = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(GAFF2)?));
+
+        let dna = ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(OL24_LIB)?);
+        let dna_frcmod = ForceFieldParamsKeyed::new(&ForceFieldParams::from_frcmod(OL24_FRCMOD)?);
+        result.dna = Some(merge_params(&dna, Some(&dna_frcmod)));
+
+        result.rna = Some(ForceFieldParamsKeyed::new(&ForceFieldParams::from_dat(RNA_LIB)?));
 
         Ok(result)
     }
