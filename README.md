@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/mol_dynamics.svg)](https://pypi.org/project/mol_dynamics)
 
 A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac.
-Uses CPU with threadpools and SIMD, or an nVidia GPU.
+Uses CPU with threadpools and SIMD, or an Nvidia GPU.
 
 ## Warning: Very early release! Lots of missing features. If you see something, post a Github issue.
 
@@ -34,7 +34,8 @@ Python: `pip install mol_dynamics biology_files`
 
 Rust: `Ad dynamics` to `Cargo.toml`
 
-For a GUI application that uses this library, download the [Daedalus molecule viewer](https://github.com/david-oconnor/daedalus)
+For a GUI application that uses this library, download the [Daedalus molecule viewer](https://github.com/david-oconnor/daedalus) This
+provides an easy-to-use way to set up the simulation, and play back trajectories.
 
 
 ## Parameters
@@ -348,7 +349,9 @@ let cfg = MdConfig {
     // Take a snapshot every this number of steps, in the output `Vec<Snapshot>`.
     snapshot_ratio_memory: 1,
     // Take a snapshot every this number of steps, in the output file.
-    snapshot_ratio_file: 2
+    snapshot_ratio_file: 2,
+    sim_box: SimBoxInit::Pad(10.),
+    // Or sim_box: SimBoxInit::Fixed((Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.)),
 };
 ```
 
@@ -365,24 +368,26 @@ cfg.temp_target = 310.
 
 **Note: Currently GPU isn't supported in the python bindings**
 
-To use with an nVidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions
-as a publicly exposed string. Set up your application to use it from `dynamics::PTX`.
+To use with an Nvidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions
+as a publicly exposed string. Set up your application to use it from `dynamics::PTX`. It requires
+CUDA 13 support, which requires Nvidia driver version 580 or higher.
 
 
 ## Why this when OpenMM exists?
-This library exists as part of a larger Rust biology infrastructure effort. It was not possible to use
-[OpenMM](todo: URL) there due to language barriers. We've exposed Python bindings using the PyO3 library,
-as it was convenient to do so. This currently only has a limited subset of the functionality of OpenMM.
+This library exists as part of a larger Rust biology infrastructure effort. It's not possible to use
+[OpenMM](https://openmm.org/) there due to the language barrier. This library currently only has a limited subset of the 
+functionality of OpenMM. It's unfortunate that, as a society, we've embraced a model of computing replete with obstacles. In this case, the major
+the obstacle is the one placed between programming languages.
 
-It's unfortunate that we've embraced a model of computing replete with obstacles. In this case, the major
-obstacle is the one placed between programming languages. We repeat efforts to make molecular dynamics
-accessible to applications written using Rust.
+While going around this obstacle, but would like to jump over others in the process to making molecular dynamics accessible.
+This includes operating systems, software distribution, and user experience. We hope that this is easier to install and use
+than OpenMM; it can be used on any
+Operating system, and any Python version >= 3.10, installable using `pip` or `cargo`.
 
-In the process, we hope to jump over other obstacles as well: That of operating systems and distribution
-methods. We hope that this is a bit easier to install and use than OpenMM; it can be used on any
-Operating system, and any Python version >= 3.10, installable using `pip` or `cargo`, with no additional package managers. It's
-intended to *just work*. OpenMM itself is easy to install with Pip, but the additional libraries
-it requires to load force fields and files are higher-friction.
+This library is intended to *just work*. OpenMM itself is easy to install with Pip, but the additional libraries
+it requires to load force fields and files are higher-friction. Additionally, it's easy to run into errors when
+using it with proteins from RCSB PDB, and small molecules broadly. Getting a functional OpenMM configuration
+involves work which we hope to eschew here.
 
 
 

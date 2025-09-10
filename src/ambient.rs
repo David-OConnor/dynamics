@@ -9,19 +9,7 @@ use lin_alg::f64::Vec3;
 use na_seq::Element;
 use rand::prelude::ThreadRng;
 
-use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, KB, MdState,
-    prep::HydrogenConstraintInner,
-};
-
-// If we are setting up as a pad around all relevant atoms
-const SIMBOX_PAD: f64 = 7.0; // Å
-
-// If we are setting up as a fixed size.
-
-// "The ewald real-space cutoff (and neighbor-list radius) must be 1/2 of the smallest box edge length
-const SIMBOX_WIDTH: f64 = 26.; // Å
-const SIMBOX_WIDTH_DIV2: f64 = SIMBOX_WIDTH / 2.0;
+use crate::{ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, KB, MdState, SimBoxInit};
 
 const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 
@@ -36,40 +24,35 @@ pub struct SimBox {
 }
 
 impl SimBox {
-    /// Set up to surround all atoms, with a pad. `atoms` is whichever we use to center the bix.
-    pub fn new_padded(atoms: &[AtomDynamics]) -> Self {
-        let (mut min, mut max) = (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
-        for a in atoms {
-            min = min.min(a.posit);
-            max = max.max(a.posit);
-        }
+    /// Set up to surround all atoms, with a pad, or with fixed dimensions. `atoms` is whichever we use to center the bix.
+    pub fn new(atoms: &[AtomDynamics], box_type: &SimBoxInit) -> Self {
+        match box_type {
+            SimBoxInit::Pad(pad) => {
+                let (mut min, mut max) =
+                    (Vec3::splat(f64::INFINITY), Vec3::splat(f64::NEG_INFINITY));
+                for a in atoms {
+                    min = min.min(a.posit);
+                    max = max.max(a.posit);
+                }
 
-        let bounds_low = min - Vec3::splat(SIMBOX_PAD);
-        let bounds_high = max + Vec3::splat(SIMBOX_PAD);
+                let bounds_low = min - Vec3::splat(*pad as f64);
+                let bounds_high = max + Vec3::splat(*pad as f64);
 
-        Self {
-            bounds_low,
-            bounds_high,
-            extent: bounds_high - bounds_low,
-        }
-    }
-
-    /// It may be worth this calculation determining the center, as we run it no more than once a step, and
-    /// doing so may allow a much bigger savings by reducing the simbox size required.
-    pub fn new_fixed_size(atoms: &[AtomDynamics]) -> Self {
-        let mut center = Vec3::new_zero();
-        for atom in atoms {
-            center += atom.posit;
-        }
-        center /= atoms.len() as f64;
-
-        let bounds_low = center - Vec3::splat(SIMBOX_WIDTH_DIV2);
-        let bounds_high = center + Vec3::splat(SIMBOX_WIDTH_DIV2);
-
-        Self {
-            bounds_low,
-            bounds_high,
-            extent: bounds_high - bounds_low,
+                Self {
+                    bounds_low,
+                    bounds_high,
+                    extent: bounds_high - bounds_low,
+                }
+            }
+            SimBoxInit::Fixed((bounds_low, bounds_high)) => {
+                let bounds_low: Vec3 = (*bounds_low).into();
+                let bounds_high: Vec3 = (*bounds_high).into();
+                Self {
+                    bounds_low,
+                    bounds_high,
+                    extent: bounds_high - bounds_low,
+                }
+            }
         }
     }
 

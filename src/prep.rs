@@ -21,8 +21,13 @@
 //
 // Best guess: Type 1 identifies labels within the residue only. Type 2 (AA) and Type 3 (small mol) are the FF types.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
+#[cfg(feature = "encode")]
+use bincode::{Decode, Encode};
 use bio_files::{
     AtomGeneric, BondGeneric,
     md_params::{AngleBendingParams, BondStretchingParams, ForceFieldParams, LjParams, MassParams},
@@ -44,7 +49,6 @@ pub fn merge_params(
 
     if let Some(lig) = specific {
         merged.mass.extend(lig.mass.clone());
-        // merged.partial_charges.extend(lig.partial_charges.clone());
         merged.lennard_jones.extend(lig.lennard_jones.clone());
 
         merged.bond.extend(lig.bond.clone());
@@ -99,6 +103,7 @@ impl Default for HydrogenConstraintInner {
 
 /// We use this variant in the configuration API. Deferrs to `HydrogenConstraintInner` for holding
 /// constraints.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub enum HydrogenConstraint {
     /// Uses Shake and Rattle to fix the hydrogen positions. This allows for a larger timestep,
@@ -109,6 +114,15 @@ pub enum HydrogenConstraint {
     Flexible,
 }
 
+impl fmt::Display for HydrogenConstraint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HydrogenConstraint::Constrained => write!(f, "Constrained"),
+            HydrogenConstraint::Flexible => write!(f, "Flexible"),
+        }
+    }
+}
+
 /// Associate loaded Force field data (e.g. from Amber) into the atom indices used in a specific
 /// dynamics sim. This handles combining general and molecule-specific parameter sets, and converting
 /// between atom name, and the specific indices of the atoms we're using.
@@ -117,8 +131,8 @@ pub enum HydrogenConstraint {
 /// missing parameters.
 impl ForceFieldParamsIndexed {
     pub fn new(
-        params_general: &ForceFieldParams,
-        params_specific: Option<&ForceFieldParams>,
+        params: &ForceFieldParams,
+        // params_specific: Option<&ForceFieldParams>,
         atoms: &[AtomGeneric],
         bonds: &[BondGeneric],
         adjacency_list: &[Vec<usize>],
@@ -130,7 +144,7 @@ impl ForceFieldParamsIndexed {
 
         // Combine the two force field sets. When a value is present in both, refer the lig-specific
         // one.
-        let params = merge_params(params_general, params_specific);
+        // let params = merge_params(params_general, params_specific);
 
         for (i, atom) in atoms.iter().enumerate() {
             let ff_type = match &atom.force_field_type {

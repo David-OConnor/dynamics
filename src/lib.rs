@@ -93,17 +93,19 @@ mod water_settle;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
-use std::{collections::HashSet, fmt, io, time::Instant};
+use std::{collections::HashSet, fmt, io, path::PathBuf, time::Instant};
 
 pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals};
 use ambient::SimBox;
+#[cfg(feature = "encode")]
+use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, md_params::ForceFieldParams, mmcif::MmCif, mol2::Mol2};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
 use ewald::{PmeRecip, ewald_comp_force};
-use lin_alg::f64::Vec3;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use lin_alg::f64::{Vec3x4, f64x4};
+use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use params::{ProtFFTypeChargeMap, ProtFfMap};
@@ -374,6 +376,10 @@ pub struct MolDynamics<'a> {
 #[derive(Clone, Debug)]
 pub struct AtomDynamics {
     pub serial_number: u32,
+    /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
+    /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
+    /// and VDW) only.
+    pub static_: bool,
     pub force_field_type: String,
     pub element: Element,
     // pub name: String,
@@ -398,8 +404,10 @@ impl AtomDynamics {
     pub fn new(
         atom: &AtomGeneric,
         atom_posits: &[Vec3],
-        ff_params: &ForceFieldParamsIndexed,
+        // ff_params: &ForceFieldParamsIndexed,
+        ff_params: &ForceFieldParams,
         i: usize,
+        static_: bool,
     ) -> Result<Self, ParamError> {
         let ff_type = match &atom.force_field_type {
             Some(ff_type) => ff_type.clone(),
@@ -413,17 +421,21 @@ impl AtomDynamics {
 
         Ok(Self {
             serial_number: atom.serial_number,
+            static_,
             element: atom.element,
             // name: atom.type_in_res.clone().unwrap_or_default(),
             posit: atom_posits[i],
             vel: Vec3::new_zero(),
             accel: Vec3::new_zero(),
-            mass: ff_params.mass.get(&i).unwrap().mass as f64,
+            // mass: ff_params.mass.get(&i).unwrap().mass as f64,
+            mass: ff_params.mass.get(&ff_type).unwrap().mass as f64,
             // We get partial charge for ligands from (e.g. Amber-provided) Mol files, so we load it from the atom, vice
             // the loaded FF params. They are not in the dat or frcmod files that angle, bond-length etc params are from.
             partial_charge: CHARGE_UNIT_SCALER * atom.partial_charge.unwrap_or_default() as f64,
-            lj_sigma: ff_params.lennard_jones.get(&i).unwrap().sigma as f64,
-            lj_eps: ff_params.lennard_jones.get(&i).unwrap().eps as f64,
+            // lj_sigma: ff_params.lennard_jones.get(&i).unwrap().sigma as f64,
+            lj_sigma: ff_params.lennard_jones.get(&ff_type).unwrap().sigma as f64,
+            // lj_eps: ff_params.lennard_jones.get(&i).unwrap().eps as f64,
+            lj_eps: ff_params.lennard_jones.get(&ff_type).unwrap().eps as f64,
             force_field_type: ff_type,
         })
     }
@@ -471,7 +483,8 @@ impl AtomDynamicsx4 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Integrator {
     #[default]
     VerletVelocity,
@@ -479,6 +492,35 @@ pub enum Integrator {
     LangevinCenter,
 }
 
+impl fmt::Display for Integrator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Integrator::VerletVelocity => write!(f, "Verlet Velocity"),
+            Integrator::Langevin => write!(f, "Langevin"),
+            Integrator::LangevinCenter => write!(f, "Langevin Center"),
+        }
+    }
+}
+
+// todo: FIgure out how to apply this to python.
+/// Note: The shortest edge should be > 2(r_cutoff + r_skin), to prevent atoms
+/// from interacting with their own image in the real-space component.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Debug, Clone)]
+pub enum SimBoxInit {
+    /// Distance in Å from the edge to the molecule, at init.
+    Pad(f32),
+    /// Coordinate boundaries, at opposite corners
+    Fixed((Vec3F32, Vec3F32)),
+}
+
+impl Default for SimBoxInit {
+    fn default() -> Self {
+        Self::Pad(10.)
+    }
+}
+
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone)]
 pub struct MdConfig {
     /// Defaults to Velocity Verlet.
@@ -497,18 +539,23 @@ pub struct MdConfig {
     pub snapshot_ratio_memory: usize,
     /// Take a snapshot every this number of steps, in the output file.
     pub snapshot_ratio_file: usize,
+    /// Consider a tuple with a snapshot type, like DCD, and a path.
+    pub snapshot_path: Option<PathBuf>,
+    pub sim_box: SimBoxInit,
 }
 
 impl Default for MdConfig {
     fn default() -> Self {
         Self {
-            integrator: Integrator::VerletVelocity,
+            integrator: Default::default(),
             zero_com_drift: false, // todo: True?
             temp_target: 310.,
             pressure_target: 1.,
             hydrogen_constraint: Default::default(),
             snapshot_ratio_memory: 1,
             snapshot_ratio_file: 2,
+            snapshot_path: None,
+            sim_box: Default::default(),
         }
     }
 }
@@ -521,10 +568,10 @@ pub struct MdState {
     pub atoms: Vec<AtomDynamics>,
     pub adjacency_list: Vec<Vec<usize>>,
     h_constraints: Vec<HydrogenConstraintInner>,
-    /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
-    /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
-    /// and VDW) only.
-    pub atoms_static: Vec<AtomDynamics>,
+    // /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
+    // /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
+    // /// and VDW) only.
+    // pub atoms_static: Vec<AtomDynamics>,
     // todo: Make this a vec. For each dynamic atom.
     // todo: We don't need it for static, as they use partial charge and LJ data, which
     // todo are assigned to each atom.
@@ -594,18 +641,33 @@ impl MdState {
             ));
         }
 
-        let mut atoms_md_dyn: Vec<AtomDynamics> = Vec::new();
-        let mut atoms_md_static: Vec<AtomDynamics> = Vec::new();
-        let mut ff_params: ForceFieldParamsIndexed = Default::default(); // over-written.
+        // We create a flattened atom list, which simplifies our workflow, and is conducive to
+        // parallel operations.
+        // These Vecs all share indices, and all include all molecules.
+        let mut atoms_md = Vec::new();
         let mut adjacency_list = Vec::new();
+        let mut h_constraints = Vec::new();
 
-        let mut h_constraints_ = Vec::new();
+        // let mut atoms_md_static: Vec<AtomDynamics> = Vec::new();
 
-        for mol in mols {
-            // Filter out hetero atoms in proteins. These are often example ligands which we do
+        // todo: Sort this out. One set for all molecules now. Assumes unique FF names between
+        // todo differenet set types.
+        // let mut ff_params: ForceFieldParamsIndexed = Default::default();
+
+        // We combine all molecule general and specific params into this set, then
+        // create Indexed params from it.
+        let mut params = ForceFieldParams::default();
+
+        // todo: Make sure you don't use atom SN anywhere in the MD pipeline.
+        // let mut last_mol_sn = 0;
+
+        // Used for updating indices for tracking purposes.
+        let mut total_atom_count = 0;
+
+        for (i, mol) in mols.iter().enumerate() {
+            // Filter out hetero atoms in proteins. These are often example ligands that we do
             // not wish to model.
             // We must perform this filter prior to most of the other steps in this function.
-
             let atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
                 FfMolType::Peptide => mol
                     .atoms
@@ -628,13 +690,43 @@ impl MdState {
                 ));
             }
 
-            // Use the included adjacency list if available. If not, construct it.
-            let adjacency_list_ = match mol.adjacency_list {
-                Some(a) => a,
-                None => &build_adjacency_list(&atoms, mol.bonds)?,
-            };
+            {
+                let params_general = match mol.ff_mol_type {
+                    FfMolType::Peptide => &param_set.peptide,
+                    FfMolType::SmallOrganic => &param_set.small_mol,
+                    FfMolType::Dna => &param_set.dna,
+                    FfMolType::Rna => &param_set.rna,
+                    FfMolType::Lipid => &param_set.lipids,
+                    FfMolType::Carbohydrate => &param_set.carbohydrates,
+                };
 
-            let mut p = Vec::new(); // to store in memory.
+                let Some(params_general) = params_general else {
+                    return Err(ParamError::new(&format!(
+                        "Missing general parameters for {:?}",
+                        mol.ff_mol_type
+                    )));
+                };
+
+                // todo: If there are multiple molecules of a given type, this is unnecessary.
+                // todo: Make sure overrides from one individual molecule don't affect others, todo,
+                // todo and don't affect general params.
+                merge_params(&mut params, Some(&params_general));
+            }
+
+            // // Combines general parameters of the correct molecule type with molecule-specific ones,
+            // // if available.
+            // let params = ForceFieldParamsIndexed::new(
+            //     &params,
+            //     // mol.mol_specific_params,
+            //     &atoms,
+            //     mol.bonds,
+            //     adjacency_list_,
+            //     &mut h_constraints,
+            // )?;
+
+            // let mut atoms_md = Vec::with_capacity(atoms.len());
+
+            let mut p = Vec::new(); // to store the ref.
             let atom_posits = match mol.atom_posits {
                 Some(a) => a,
                 None => {
@@ -643,69 +735,85 @@ impl MdState {
                 }
             };
 
-            let params_general = match mol.ff_mol_type {
-                FfMolType::Peptide => &param_set.peptide,
-                FfMolType::SmallOrganic => &param_set.small_mol,
-                FfMolType::Dna => &param_set.dna,
-                FfMolType::Rna => &param_set.rna,
-                FfMolType::Lipid => &param_set.lipids,
-                FfMolType::Carbohydrate => &param_set.carbohydrates,
-            };
-
-            let Some(params_general) = params_general else {
-                return Err(ParamError::new(&format!(
-                    "Missing general parameters for {:?}",
-                    mol.ff_mol_type
-                )));
-            };
-
-            let mut h_constraints = match cfg.hydrogen_constraint {
+            // todo: Where do we populate these?
+            let h_constraints_ = match cfg.hydrogen_constraint {
                 HydrogenConstraint::Constrained => HydrogenConstraintInner::Constrained(Vec::new()),
                 HydrogenConstraint::Flexible => HydrogenConstraintInner::Flexible,
             };
 
-            // Combines general parameters of the correct molecule type with molecule-specific ones,
-            // if available.
-            let params = ForceFieldParamsIndexed::new(
-                params_general,
-                mol.mol_specific_params,
-                &atoms,
-                mol.bonds,
-                adjacency_list_,
-                &mut h_constraints,
-            )?;
+            // todo: Populate first
+            for _ in 0..atoms.len() {
+                h_constraints
+            }
 
-            let mut atoms_md = Vec::with_capacity(atoms.len());
             for (i, atom) in atoms.iter().enumerate() {
-                atoms_md.push(AtomDynamics::new(&atom, atom_posits, &params, i)?);
+                // atom.serial_number += last_mol_sn;
+                atoms_md.push(AtomDynamics::new(
+                    &atom,
+                    atom_posits,
+                    &params,
+                    i,
+                    mol.static_,
+                )?);
             }
 
-            if mol.static_ {
-                atoms_md_static.extend(atoms_md);
-            } else {
-                atoms_md_dyn.extend(atoms_md);
-                // Set up Indexed params. Merges general with atom-specific if available.
-                // Not required for static atoms. (Only bonded forces.)
-                ff_params = params;
-                adjacency_list = adjacency_list_.to_vec();
+            // Use the included adjacency list if available. If not, construct it.
+            let adjacency_list_ = match mol.adjacency_list {
+                Some(a) => a,
+                None => &build_adjacency_list(&atoms, mol.bonds)?,
+            };
+
+            for aj in adjacency_list_ {
+                let mut updated = aj.clone();
+                for neighbor in &mut updated {
+                    *neighbor += total_atom_count;
+                }
+
+                adjacency_list.push(updated);
             }
 
-            h_constraints_.push(h_constraints);
+            // for constraint in h_constraints_ {
+            //
+            // }
+
+            // atoms_md.extend(atoms_md);
+
+            // if mol.static_ {
+            //     // atoms_md_static.extend(atoms_md);
+            // } else {
+            //     // Set up Indexed params. Merges general with atom-specific if available.
+            //     // Not required for static atoms. (Only applies to bonded forces.)
+            //     // ff_params = params;
+            //     adjacency_list = adjacency_list_.to_vec();
+            // }
+
+            // h_constraints.push(h_constraints_);
+
+            total_atom_count += atoms.len();
         }
 
+        let force_field_params = ForceFieldParamsIndexed::new(
+            params,
+            // mol.mol_specific_params,
+            &atoms_md,
+            mol.bonds,
+            &adjacency_list,
+            &mut h_constraints,
+        )?;
+
         // let cell = SimBox::new_padded(&atoms_dy);
-        let cell = SimBox::new_fixed_size(&atoms_md_dyn);
+        let cell = SimBox::new(&atoms_md, &cfg.sim_box);
 
         let mut result = Self {
             cfg: cfg.clone(),
-            atoms: atoms_md_dyn,
+            atoms: atoms_md,
             adjacency_list: adjacency_list.to_vec(),
-            h_constraints: h_constraints_,
-            atoms_static: atoms_md_static,
+            h_constraints,
+            // atoms_static: atoms_md_static,
             cell,
             pairs_excluded_12_13: HashSet::new(),
             pairs_14_scaled: HashSet::new(),
-            force_field_params: ff_params,
+            force_field_params,
             ..Default::default()
         };
 
@@ -715,7 +823,7 @@ impl MdState {
             &result.cell,
             cfg.temp_target as f64,
             &result.atoms,
-            &result.atoms_static,
+            // &result.atoms_static,
         );
         result.water_pme_sites_forces = vec![[Vec3::new_zero(); 3]; result.water.len()];
 
@@ -742,15 +850,15 @@ impl MdState {
         }
 
         for (i_lig, a_lig) in result.atoms.iter_mut().enumerate() {
-            // Dynamic, static
-            for (i_static, a_static) in result.atoms_static.iter().enumerate() {
-                non_bonded::setup_lj_cache(
-                    a_lig,
-                    a_static,
-                    LjTableIndices::DynStatic((i_lig, i_static)),
-                    &mut result.lj_tables,
-                );
-            }
+            // // Dynamic, static
+            // for (i_static, a_static) in result.atoms_static.iter().enumerate() {
+            //     non_bonded::setup_lj_cache(
+            //         a_lig,
+            //         a_static,
+            //         LjTableIndices::DynStatic((i_lig, i_static)),
+            //         &mut result.lj_tables,
+            //     );
+            // }
 
             // Dynamic, water
             if !result.water.is_empty() {
@@ -764,17 +872,17 @@ impl MdState {
             }
         }
 
-        // Static, water
-        if !result.water.is_empty() {
-            for (i_static, a_static) in result.atoms_static.iter().enumerate() {
-                non_bonded::setup_lj_cache(
-                    a_static,
-                    &result.water[0].o,
-                    LjTableIndices::StaticWater(i_static),
-                    &mut result.lj_tables,
-                );
-            }
-        }
+        // // Static, water
+        // if !result.water.is_empty() {
+        //     for (i_static, a_static) in result.atoms_static.iter().enumerate() {
+        //         non_bonded::setup_lj_cache(
+        //             a_static,
+        //             &result.water[0].o,
+        //             LjTableIndices::StaticWater(i_static),
+        //             &mut result.lj_tables,
+        //         );
+        //     }
+        // }
 
         Ok(result)
     }

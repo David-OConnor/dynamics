@@ -32,7 +32,7 @@ pub fn make_water_mols(
     cell: &SimBox,
     t_target: f64,
     atoms_dy: &[AtomDynamics],
-    atoms_static: &[AtomDynamics],
+    // atoms_static: &[AtomDynamics],
 ) -> Vec<WaterMol> {
     let vol = cell.volume();
 
@@ -71,7 +71,7 @@ pub fn make_water_mols(
         .to_normalized();
 
         if too_close_to_atoms(posit, atoms_dy, cell)
-            || too_close_to_atoms(posit, atoms_static, cell)
+            // || too_close_to_atoms(posit, atoms_static, cell)
             || too_close_to_waters(posit, &result, cell)
         {
             continue;
