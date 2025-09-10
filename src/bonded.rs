@@ -4,8 +4,8 @@
 //! differently: They have rigid lengths, which is good enough, and allows for a larger timestep.
 
 use crate::{
-    MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, prep::HydrogenMdType, split2_mut, split3_mut,
-    split4_mut,
+    MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, prep::HydrogenConstraintInner, split2_mut,
+    split3_mut, split4_mut,
 };
 
 const EPS_SHAKE_RATTLE: f64 = 1.0e-8;
@@ -82,8 +82,9 @@ impl MdState {
     }
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub fn shake_hydrogens(&mut self) {
-        let HydrogenMdType::Fixed(constraints) = &mut self.hydrogen_md_type else {
+    pub fn shake_hydrogens(&mut self, mol_i: usize) {
+        let HydrogenConstraintInner::Constrained(constraints) = &mut self.h_constraints[mol_i]
+        else {
             unreachable!();
         };
 
@@ -126,8 +127,8 @@ impl MdState {
     }
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub fn rattle_hydrogens(&mut self) {
-        let HydrogenMdType::Fixed(constraints) = &self.hydrogen_md_type else {
+    pub fn rattle_hydrogens(&mut self, mol_i: usize) {
+        let HydrogenConstraintInner::Constrained(constraints) = &self.h_constraints[mol_i] else {
             unreachable!();
         };
 

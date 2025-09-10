@@ -77,6 +77,7 @@
 // todo: Long-term, you will need to figure out what to run as f32 vice f64, especially
 // todo for being able to run on GPU.
 
+mod add_hydrogens;
 mod ambient;
 mod bonded;
 mod bonded_forces;
@@ -92,10 +93,11 @@ mod water_settle;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
-use std::{collections::HashSet, fmt, time::Instant};
+use std::{collections::HashSet, fmt, io, time::Instant};
 
+pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals};
 use ambient::SimBox;
-use bio_files::{AtomGeneric, BondGeneric, amber_params::ForceFieldParamsKeyed};
+use bio_files::{AtomGeneric, BondGeneric, md_params::ForceFieldParams, mmcif::MmCif, mol2::Mol2};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
 use ewald::{PmeRecip, ewald_comp_force};
@@ -105,7 +107,8 @@ use lin_alg::f64::{Vec3x4, f64x4};
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use params::{ProtFFTypeChargeMap, ProtFfMap};
-pub use prep::{HydrogenMdType, merge_params};
+pub use prep::{HydrogenConstraint, merge_params};
+pub use util::{load_snapshots, save_snapshots};
 pub use water_opc::ForcesOnWaterMol;
 
 use crate::{
@@ -114,18 +117,24 @@ use crate::{
         CHARGE_UNIT_SCALER, EWALD_ALPHA, LjTableIndices, LjTables, SCALE_COUL_14, SPME_N,
     },
     params::{FfParamSet, ForceFieldParamsIndexed},
+    prep::HydrogenConstraintInner,
     util::build_adjacency_list,
     water_init::make_water_mols,
     water_opc::WaterMol,
 };
 
+// Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
+// make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
+#[cfg(feature = "cuda")]
+pub const PTX: &str = include_str!("../dynamics.ptx");
+
 /// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all bonded
 /// accelerations by this. TODO: we are currently multiplying *all* accelerations by this.
 const ACCEL_CONVERSION: f64 = 418.4;
-pub const ACCEL_CONVERSION_INV: f64 = 1. / ACCEL_CONVERSION;
+const ACCEL_CONVERSION_INV: f64 = 1. / ACCEL_CONVERSION;
 
 // For assigning velocities from temperature, and other thermostat/barostat use.
-pub const KB: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
+const KB: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
 
 // SHAKE tolerances for fixed hydrogens. These SHAKE constraints are for fixed hydrogens.
 // The tolerance controls how close we get
@@ -162,7 +171,8 @@ impl ParamError {
 
 /// This stores the positions and velocities of all atoms in the system, and the total energy.
 /// It represents the output of the simulation. A set of these can be used to play it back over time.
-#[derive(Debug, Default)]
+/// We save load and save this to disk in the __ format.
+#[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub time: f64,
     // todo: You will need to store this by molecule, when we support that.
@@ -175,8 +185,153 @@ pub struct Snapshot {
     pub water_velocities: Vec<Vec3>,
     pub energy_kinetic: f32,
     pub energy_potential: f32,
-    // For now, I believe velocities are unused, but tracked here for non-water atoms.
-    // We can add water velocities if needed.
+}
+
+macro_rules! parse_le {
+    ($bytes:expr, $t:ty, $range:expr) => {{ <$t>::from_le_bytes($bytes[$range].try_into().unwrap()) }};
+}
+
+macro_rules! copy_le {
+    ($dest:expr, $src:expr, $range:expr) => {{ $dest[$range].copy_from_slice(&$src.to_le_bytes()) }};
+}
+
+impl Snapshot {
+    /// E.g. for saving to file. Saves all items as 32-bit floating point.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        const SIZE: usize = 12 * 7; // Assumes 32
+        let mut result = Vec::with_capacity(SIZE);
+
+        let mut i = 0;
+
+        copy_le!(result, self.time, i..i + 4);
+        i += 1;
+        copy_le!(result, self.atom_posits.len() as u32, i..i + 4);
+        i += 4;
+        copy_le!(result, self.water_o_posits.len() as u32, i..i + 4);
+        i += 4;
+
+        for pos in &self.atom_posits {
+            copy_le!(result, pos.x as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.y as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.z as f32, i..i + 4);
+            i += 4;
+        }
+
+        for v in &self.atom_velocities {
+            copy_le!(result, v.x as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, v.y as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, v.z as f32, i..i + 4);
+            i += 4;
+        }
+
+        for pos in &self.water_o_posits {
+            copy_le!(result, pos.x as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.y as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.z as f32, i..i + 4);
+            i += 4;
+        }
+
+        for pos in &self.water_h0_posits {
+            copy_le!(result, pos.x as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.y as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.z as f32, i..i + 4);
+            i += 4;
+        }
+
+        for pos in &self.water_h1_posits {
+            copy_le!(result, pos.x as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.y as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, pos.z as f32, i..i + 4);
+            i += 4;
+        }
+
+        for v in &self.water_velocities {
+            copy_le!(result, v.x as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, v.y as f32, i..i + 4);
+            i += 4;
+            copy_le!(result, v.z as f32, i..i + 4);
+            i += 4;
+        }
+
+        copy_le!(result, self.energy_kinetic, i..i + 4);
+        i += 4;
+
+        copy_le!(result, self.energy_potential, i..i + 4);
+
+        result
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        let mut i = 0usize;
+
+        let time_f32 = parse_le!(bytes, f32, i..i + 4);
+        i += 4;
+        let n_atoms = parse_le!(bytes, u32, i..i + 4) as usize;
+        i += 4;
+        let n_waters = parse_le!(bytes, u32, i..i + 4) as usize;
+        i += 4;
+
+        let mut read_vec3s = |count: usize| {
+            let mut v = Vec::with_capacity(count);
+            for _ in 0..count {
+                let x = parse_le!(bytes, f32, i..i + 4);
+                i += 4;
+                let y = parse_le!(bytes, f32, i..i + 4);
+                i += 4;
+                let z = parse_le!(bytes, f32, i..i + 4);
+                i += 4;
+                v.push(Vec3 {
+                    x: x as f64,
+                    y: y as f64,
+                    z: z as f64,
+                });
+            }
+            v
+        };
+
+        let atom_posits = read_vec3s(n_atoms);
+        let atom_velocities = read_vec3s(n_atoms);
+        let water_o_posits = read_vec3s(n_waters);
+        let water_h0_posits = read_vec3s(n_waters);
+        let water_h1_posits = read_vec3s(n_waters);
+        let water_velocities = read_vec3s(n_waters);
+
+        let energy_kinetic = parse_le!(bytes, f32, i..i + 4);
+        i += 4;
+        let energy_potential = parse_le!(bytes, f32, i..i + 4);
+        i += 4;
+
+        Ok(Self {
+            time: time_f32 as f64,
+            atom_posits,
+            atom_velocities,
+            water_o_posits,
+            water_h0_posits,
+            water_h1_posits,
+            water_velocities,
+            energy_kinetic,
+            energy_potential,
+        })
+    }
+
+    pub fn make_mol2(&self, atoms: &[AtomGeneric]) -> Mol2 {
+        unimplemented!()
+    }
+
+    pub fn make_mmcif(&self, atoms: &[AtomGeneric]) -> MmCif {
+        unimplemented!()
+    }
 }
 
 /// This is used to assign the correct force field parameters to a molecule.
@@ -211,7 +366,7 @@ pub struct MolDynamics<'a> {
     /// on other atoms in the system.
     pub static_: bool,
     /// If present, any values here override molecule-type general parameters.
-    pub mol_specific_params: Option<&'a ForceFieldParamsKeyed>,
+    pub mol_specific_params: Option<&'a ForceFieldParams>,
 }
 
 /// A trimmed-down atom for use with molecular dynamics. Contains parameters for single-atom,
@@ -316,12 +471,56 @@ impl AtomDynamicsx4 {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum Integrator {
+    #[default]
+    VerletVelocity,
+    Langevin,
+    LangevinCenter,
+}
+
+#[derive(Debug, Clone)]
+pub struct MdConfig {
+    /// Defaults to Velocity Verlet.
+    pub integrator: Integrator,
+    /// If enabled, zero the drift in center of mass of the system.
+    /// todo: Implement
+    pub zero_com_drift: bool,
+    /// Kelvin. Defaults to 310 K.
+    pub temp_target: f32,
+    /// Bar (Pa/100). Defaults to 1 bar.
+    pub pressure_target: f32,
+    /// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
+    /// algorithms. This allows for higher time steps.
+    pub hydrogen_constraint: HydrogenConstraint,
+    /// Take a snapshot every this number of steps, in the output `Vec<Snapshot>`.
+    pub snapshot_ratio_memory: usize,
+    /// Take a snapshot every this number of steps, in the output file.
+    pub snapshot_ratio_file: usize,
+}
+
+impl Default for MdConfig {
+    fn default() -> Self {
+        Self {
+            integrator: Integrator::VerletVelocity,
+            zero_com_drift: false, // todo: True?
+            temp_target: 310.,
+            pressure_target: 1.,
+            hydrogen_constraint: Default::default(),
+            snapshot_ratio_memory: 1,
+            snapshot_ratio_file: 2,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct MdState {
     // todo: Update how we handle mode A/R.
     // todo: You need to rework this state in light of arbitrary mol count.
+    pub cfg: MdConfig,
     pub atoms: Vec<AtomDynamics>,
     pub adjacency_list: Vec<Vec<usize>>,
+    h_constraints: Vec<HydrogenConstraintInner>,
     /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
     /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
     /// and VDW) only.
@@ -349,7 +548,6 @@ pub struct MdState {
     pub neighbors_nb: NeighborsNb,
     // max_disp_sq: f64,           // track atom displacements²
     /// K
-    temp_target: f64,
     barostat: BerendsenBarostat,
     /// Exclusions of non-bonded forces for atoms connected by 1, or 2 covalent bonds.
     /// I can't find this in the RM, but ChatGPT is confident of it, and references an Amber file
@@ -360,15 +558,12 @@ pub struct MdState {
     pairs_14_scaled: HashSet<(usize, usize)>,
     water: Vec<WaterMol>,
     lj_tables: LjTables,
-    hydrogen_md_type: HydrogenMdType,
     // todo: Hmm... Is this DRY with forces_on_water? Investigate.
     pub water_pme_sites_forces: Vec<[Vec3; 3]>, // todo: A/R
     pme_recip: Option<PmeRecip>,
     /// kcal/mol
     pub kinetic_energy: f64,
     pub potential_energy: f64,
-    // Save a snapshot every this many steps.
-    snapshot_ratio: usize,
 }
 
 impl fmt::Display for MdState {
@@ -387,13 +582,9 @@ impl fmt::Display for MdState {
 
 impl MdState {
     pub fn new(
-        // todo: Support multiple molecules.
+        cfg: &MdConfig,
         mols: &[MolDynamics],
-        temp_target: f64,     // K
-        pressure_target: f64, // k
         param_set: &FfParamSet,
-        mut hydrogen_md_type: HydrogenMdType,
-        snapshot_ratio: usize,
     ) -> Result<Self, ParamError> {
         // todo: QC how you handle hydrogen_md_type.
 
@@ -407,6 +598,8 @@ impl MdState {
         let mut atoms_md_static: Vec<AtomDynamics> = Vec::new();
         let mut ff_params: ForceFieldParamsIndexed = Default::default(); // over-written.
         let mut adjacency_list = Vec::new();
+
+        let mut h_constraints_ = Vec::new();
 
         for mol in mols {
             // Filter out hetero atoms in proteins. These are often example ligands which we do
@@ -466,6 +659,11 @@ impl MdState {
                 )));
             };
 
+            let mut h_constraints = match cfg.hydrogen_constraint {
+                HydrogenConstraint::Constrained => HydrogenConstraintInner::Constrained(Vec::new()),
+                HydrogenConstraint::Flexible => HydrogenConstraintInner::Flexible,
+            };
+
             // Combines general parameters of the correct molecule type with molecule-specific ones,
             // if available.
             let params = ForceFieldParamsIndexed::new(
@@ -474,7 +672,7 @@ impl MdState {
                 &atoms,
                 mol.bonds,
                 adjacency_list_,
-                &mut hydrogen_md_type,
+                &mut h_constraints,
             )?;
 
             let mut atoms_md = Vec::with_capacity(atoms.len());
@@ -491,30 +689,31 @@ impl MdState {
                 ff_params = params;
                 adjacency_list = adjacency_list_.to_vec();
             }
+
+            h_constraints_.push(h_constraints);
         }
 
         // let cell = SimBox::new_padded(&atoms_dy);
         let cell = SimBox::new_fixed_size(&atoms_md_dyn);
 
         let mut result = Self {
+            cfg: cfg.clone(),
             atoms: atoms_md_dyn,
             adjacency_list: adjacency_list.to_vec(),
+            h_constraints: h_constraints_,
             atoms_static: atoms_md_static,
             cell,
             pairs_excluded_12_13: HashSet::new(),
             pairs_14_scaled: HashSet::new(),
             force_field_params: ff_params,
-            temp_target,
-            hydrogen_md_type,
-            snapshot_ratio,
             ..Default::default()
         };
 
-        result.barostat.pressure_target = pressure_target;
+        result.barostat.pressure_target = cfg.pressure_target as f64;
 
         result.water = make_water_mols(
             &result.cell,
-            result.temp_target,
+            cfg.temp_target as f64,
             &result.atoms,
             &result.atoms_static,
         );
@@ -683,8 +882,9 @@ impl MdState {
         self.water_vv_first_half_and_drift(dt, dt_half);
 
         // The order we perform these steps is important.
-        if let HydrogenMdType::Fixed(_) = &self.hydrogen_md_type {
-            self.shake_hydrogens();
+        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+            // todo: SOrt this out!
+            self.shake_hydrogens(0);
         }
 
         self.reset_accels();
@@ -717,13 +917,14 @@ impl MdState {
         // self.water_vv_second_half(&mut self.forces_on_water, dt_half);
         self.water_vv_second_half(dt_half);
 
-        if let HydrogenMdType::Fixed(_) = &self.hydrogen_md_type {
-            self.rattle_hydrogens();
+        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+            // todo: Sort this index out!
+            self.rattle_hydrogens(0);
         }
 
         // I believe we must run barostat prior to thermostat, in our current configuration.
         self.apply_barostat_berendsen(dt);
-        self.apply_thermostat_csvr(dt, self.temp_target);
+        self.apply_thermostat_csvr(dt, self.cfg.temp_target as f64);
 
         self.time += dt;
         self.step_count += 1;
@@ -740,7 +941,7 @@ impl MdState {
             self.regen_pme();
         }
 
-        if self.step_count % self.snapshot_ratio == 0 {
+        if self.step_count % self.cfg.snapshot_ratio_memory == 0 {
             // We can update this out of the snapshot ratio if desired.
             self.kinetic_energy = self.current_kinetic_energy();
             self.take_snapshot();
@@ -916,6 +1117,7 @@ impl MdState {
         for water in &self.water {
             water_o_posits.push(water.o.posit);
             water_h0_posits.push(water.h0.posit);
+            water_h1_posits.push(water.h1.posit);
             water_velocities.push(water.o.vel); // Can be from any atom; they should be the same.
         }
 

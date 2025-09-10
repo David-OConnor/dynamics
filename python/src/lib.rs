@@ -1,14 +1,18 @@
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 use dynamics_rs;
 use lin_alg::f64::Vec3;
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
+use pyo3::{exceptions::PyValueError, prelude::*, types::PyType, Py};
 
 mod from_bio_files;
 mod params;
 mod prep;
 
-use crate::{from_bio_files::*, params::FfParamSet, prep::HydrogenMdType};
+use crate::{
+    from_bio_files::*,
+    params::FfParamSet,
+    prep::{HydrogenConstraint, merge_params},
+};
 
 /// Candidate for standalone helper lib.
 #[macro_export]
@@ -36,6 +40,11 @@ macro_rules! make_enum {
             }
         }
     };
+}
+
+#[pyclass]
+struct Snapshot {
+    inner: dynamics_rs::Snapshot,
 }
 
 // #[classmethod]
@@ -116,61 +125,135 @@ make_enum!(
 );
 
 #[pyclass]
-struct MolDynamics<'a> {
-    inner: dynamics_rs::MolDynamics<'a>,
+struct MolDynamics {
+    // We don't use the inner pattern here, as we can't use lifetimes in Pyo3.
+    pub ff_mol_type: FfMolType,
+    pub atoms: Vec<AtomGeneric>,
+    pub atom_posits: Option<Vec<Vec3>>,
+    pub bonds: Vec<BondGeneric>,
+    pub adjacency_list: Option<Vec<Vec<usize>>>,
+    pub static_: bool,
+    pub mol_specific_params: Option<ForceFieldParamsKeyed>,
 }
 
 #[pymethods]
 impl MolDynamics {
     #[new]
     fn new(
+        py: Python<'_>,
         ff_mol_type: FfMolType,
-        atoms: Vec<AtomGeneric>,
+        atoms: Vec<Py<from_bio_files::AtomGeneric>>,
         atom_posits: Option<Vec<[f64; 3]>>,
-        bonds: Vec<BondGeneric>,
+        bonds: Vec<Py<from_bio_files::BondGeneric>>,
         adjacency_list: Option<Vec<Vec<usize>>>,
         static_: bool,
-        mol_specific_params: Option<ForceFieldParamsKeyed>,
+        mol_specific_params: Option<Py<from_bio_files::ForceFieldParamsKeyed>>,
     ) -> Self {
-        let atoms_native: Vec<_> = atoms.into_iter().map(|v| v.inner).collect();
-        let bonds_native: Vec<_> = bonds.into_iter().map(|v| v.inner).collect();
+        // NOTE: Py<T>::borrow(py) — no .as_ref(py)
+        let atoms: Vec<from_bio_files::AtomGeneric> =
+            atoms.into_iter().map(|p| p.borrow(py).clone()).collect();
+        let bonds: Vec<from_bio_files::BondGeneric> =
+            bonds.into_iter().map(|p| p.borrow(py).clone()).collect();
+        let mol_specific_params =
+            mol_specific_params.map(|p| p.borrow(py).clone());
 
-        let atom_posits_native = match atom_posits {
-            Some(v) => {
-                let v: Vec<_> = v
-                    .into_iter()
-                    .map(|v| Vec3::from_slice(&v).unwrap())
-                    .collect();
-                Some(v)
-            }
-            None => None,
-        };
-
-        let mol_specific_params_native = match mol_specific_params {
-            Some(v) => Some(v.inner),
-            None => None,
-        };
-
-        let adjacency_list = match adjacency_list {
-            Some(v) => Some(&v),
-            None => None,
-        };
+        let atom_posits = atom_posits.map(|v| {
+            v.into_iter()
+                .map(|a| Vec3::from_slice(&a).unwrap())
+                .collect()
+        });
 
         Self {
-            inner: dynamics_rs::MolDynamics {
-                ff_mol_type: ff_mol_type.to_native(),
-                atoms: &atoms_native,
-                atom_posits: atom_posits_native.as_deref(),
-                bonds: &bonds_native,
-                adjacency_list: adjacency_list.map(|v| &**v),
-                static_,
-                mol_specific_params: mol_specific_params_native.as_ref(),
-            },
+            ff_mol_type,
+            atoms,
+            atom_posits,
+            bonds,
+            adjacency_list,
+            static_,
+            mol_specific_params,
         }
     }
 }
 
+make_enum!(Integrator, dynamics_rs::Integrator, VerletVelocity, Langevin, LangevinCenter);
+
 #[pyclass]
+struct MdConfig {
+    inner: dynamics_rs::MdConfig,
+}
+
+#[pymethods]
+impl MdConfig {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: dynamics_rs::MdConfig::default(),
+        }
+    }
+
+    #[getter]
+    fn integrator(&self) -> Integrator {
+        self.inner.integrator.into()
+    }
+    #[setter(integrator)]
+    fn integrator_set(&mut self, v: Integrator) {
+        self.inner.integrator = v.to_native();
+    }
+    #[getter]
+    fn zero_com_drift(&self) -> bool {
+        self.inner.zero_com_drift
+    }
+    #[setter(zero_com_drift)]
+    fn zero_com_drift_set(&mut self, v: bool) {
+        self.inner.zero_com_drift = v;
+    }
+    #[getter]
+    fn temp_target(&self) -> f32 {
+        self.inner.temp_target
+    }
+    #[setter(temp_target)]
+    fn temp_target_set(&mut self, v: f32) {
+        self.inner.temp_target = v;
+    }
+    #[getter]
+    fn pressure_target(&self) -> f32 {
+        self.inner.pressure_target
+    }
+    #[setter(pressure_target)]
+    fn pressure_target_set(&mut self, v: f32) {
+        self.inner.pressure_target = v;
+    }
+    #[getter]
+    fn hydrogen_constraint(&self) -> HydrogenConstraint {
+        self.inner.hydrogen_constraint.into()
+    }
+    #[setter(hydrogen_constraint)]
+    fn hydrogen_constraint_set(&mut self, v: HydrogenConstraint) {
+        self.inner.hydrogen_constraint = v.to_native();
+    }
+    #[getter]
+    fn snapshot_ratio_memory(&self) -> usize {
+        self.inner.snapshot_ratio_memory
+    }
+    #[setter(snapshot_ratio_memory)]
+    fn snapshot_ratio_memory_set(&mut self, v: usize) {
+        self.inner.snapshot_ratio_memory = v;
+    }
+    #[getter]
+    fn snapshot_ratio_file(&self) -> usize {
+        self.inner.snapshot_ratio_file
+    }
+    #[setter(snapshot_ratio_file)]
+    fn snapshot_ratio_file_set(&mut self, v: usize) {
+        self.inner.snapshot_ratio_file = v;
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
+#[pyclass(unsendable)] // Unsendable due to the RNG in the barostat.
 struct MdState {
     inner: dynamics_rs::MdState,
 }
@@ -179,25 +262,69 @@ struct MdState {
 impl MdState {
     #[new]
     fn new(
-        mols: Vec<MolDynamics>,
-        temp_target: f64,
-        pressure_target: f64,
+        py: Python<'_>,
+        cfg: &MdConfig,
+        mols: Vec<Py<MolDynamics>>,
         param_set: &FfParamSet,
-        hydrogen_md_type: HydrogenMdType,
-        snapshot_ratio: usize,
     ) -> PyResult<Self> {
-        let mols_native: Vec<_> = mols.into_iter().map(|v| v.inner).collect();
+        let n = mols.len();
+
+        // First pass: copy data out of Python objects while holding the GIL.
+        let mut ff_types = Vec::with_capacity(n);
+        let mut static_flags = Vec::with_capacity(n);
+
+        let mut atoms_bufs: Vec<bio_files::AtomGeneric> = Vec::with_capacity(n);
+        let mut bonds_bufs = Vec::with_capacity(n);
+
+        let mut posits_bufs: Vec<Option<Vec<Vec3>>> = Vec::with_capacity(n);
+
+        let mut adj_bufs: Vec<Option<Vec<Vec<usize>>>> = Vec::with_capacity(n);
+        let mut msp_bufs: Vec<Option<from_bio_files::ForceFieldParamsKeyed>> =
+            Vec::with_capacity(n);
+
+        for mol_py in &mols {
+            let v = mol_py.borrow(py); // PyRef<MolDynamics>
+
+            ff_types.push(v.ff_mol_type.to_native());
+            static_flags.push(v.static_);
+
+            atoms_bufs.push(v.atoms.iter().map(|a| a.inner.clone()).collect());
+            bonds_bufs.push(v.bonds.iter().map(|b| b.inner.clone()).collect());
+
+            posits_bufs.push(v.atom_posits.clone());
+            adj_bufs.push(v.adjacency_list.clone());
+            msp_bufs.push(v.mol_specific_params.clone());
+        }
+
+        // Second pass: build borrowed views into our owned buffers.
+        let mut mols_native = Vec::with_capacity(n);
+        for i in 0..n {
+            let atoms_slice = atoms_bufs[i].as_slice();
+            let bonds_slice = bonds_bufs[i].as_slice();
+
+            let atom_posits_slice = posits_bufs[i].as_ref().map(|v| v.as_slice());
+            let adjacency_slice: Option<&[Vec<usize>]> =
+                adj_bufs[i].as_ref().map(|v| v.as_slice());
+            let mol_specific_params = msp_bufs[i].as_ref().map(|p| &p.inner);
+
+            mols_native.push(dynamics_rs::MolDynamics {
+                ff_mol_type: ff_types[i],
+                atoms: atoms_slice,
+                atom_posits: atom_posits_slice,
+                bonds: bonds_slice,
+                adjacency_list: adjacency_slice,
+                static_: static_flags[i],
+                mol_specific_params,
+            });
+        }
 
         Ok(Self {
             inner: dynamics_rs::MdState::new(
-                mols_native,
-                temp_target,
-                pressure_target,
+                &cfg.inner,
+                &mols_native,
                 &param_set.inner,
-                hydrogen_md_type.to_native(),
-                snapshot_ratio,
             )
-            .map_err(|e| PyValueError::new_err(e.descrip))?,
+                .map_err(|e| PyValueError::new_err(e.descrip))?,
         })
     }
 
@@ -215,21 +342,45 @@ impl MdState {
     }
 }
 
+#[pyfunction]
+fn save_snapshots(py: Python<'_>, snapshots: Vec<Py<Snapshot>>, path: PathBuf) -> PyResult<()> {
+    let snapshots_native: Vec<_> =
+        snapshots.into_iter().map(|p| p.borrow(py).inner.clone()).collect();
+    dynamics_rs::save_snapshots(&snapshots_native, &path)?;
+    Ok(())
+}
+
+#[pyfunction]
+fn load_snapshots(path: PathBuf) -> PyResult<Vec<Snapshot>> {
+    let snapshots = dynamics_rs::load_snapshots(&path)?;
+    Ok(snapshots
+        .into_iter()
+        .map(|v| Snapshot { inner: v })
+        .collect())
+}
+
 #[pymodule]
-fn mol_dynamics(py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
+fn mol_dynamics(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     // General
     m.add_class::<AtomDynamics>()?;
     m.add_class::<MolDynamics>()?;
 
+    m.add_class::<Integrator>()?;
+    m.add_class::<HydrogenConstraint>()?;
     m.add_class::<MdState>()?;
+
     m.add_class::<FfMolType>()?;
     m.add_class::<FfParamSet>()?;
-    m.add_class::<HydrogenMdType>()?;
+    m.add_class::<Snapshot>()?;
 
     m.add_class::<from_bio_files::AtomGeneric>()?;
     m.add_class::<from_bio_files::BondGeneric>()?;
     m.add_class::<from_bio_files::ResidueGeneric>()?;
     m.add_class::<from_bio_files::ForceFieldParamsKeyed>()?;
+
+    m.add_function(wrap_pyfunction!(merge_params, m)?)?;
+    m.add_function(wrap_pyfunction!(save_snapshots, m)?)?;
+    m.add_function(wrap_pyfunction!(load_snapshots, m)?)?;
 
     Ok(())
 }

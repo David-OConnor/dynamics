@@ -1,10 +1,10 @@
 use dynamics_rs;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
 
-use crate::from_bio_files::ForceFieldParamsKeyed;
+use crate::{from_bio_files::ForceFieldParamsKeyed, make_enum};
 
 #[pyfunction]
-fn merge_params(
+pub fn merge_params(
     generic: &ForceFieldParamsKeyed,
     specific: &ForceFieldParamsKeyed,
 ) -> ForceFieldParamsKeyed {
@@ -15,26 +15,4 @@ fn merge_params(
     ForceFieldParamsKeyed { inner: result }
 }
 
-#[pyclass]
-#[derive(Clone, Copy, Debug)]
-pub enum HydrogenMdType {
-    // Skipping the inner part.
-    Fixed,
-    Flexible,
-}
-
-impl HydrogenMdType {
-    pub fn to_native(&self) -> dynamics_rs::HydrogenMdType {
-        match self {
-            Self::Fixed => dynamics_rs::HydrogenMdType::Fixed(Vec::new()),
-            Self::Flexible => dynamics_rs::HydrogenMdType::Flexible,
-        }
-    }
-
-    pub fn from_native(native: dynamics_rs::HydrogenMdType) -> Self {
-        match native {
-            dynamics_rs::HydrogenMdType::Fixed(_) => Self::Fixed,
-            dynamics_rs::HydrogenMdType::Flexible => Self::Flexible,
-        }
-    }
-}
+make_enum!(HydrogenConstraint, dynamics_rs::HydrogenConstraint, Constrained, Flexible);

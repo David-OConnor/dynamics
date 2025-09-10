@@ -7,15 +7,15 @@ use std::{
 };
 
 use bio_files::{
-    AtomGeneric, ResidueEnd, ResidueGeneric, ResidueType,
-    amber_params::{
+    AtomGeneric, ChainGeneric, ResidueEnd, ResidueGeneric, ResidueType,
+    md_params::{
         AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParams,
-        ForceFieldParamsKeyed, LjParams, MassParams, load_amino_charges, parse_amino_charges,
+        LjParams, MassParams, load_amino_charges, parse_amino_charges,
     },
 };
 use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes};
 
-use crate::{ParamError, merge_params};
+use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};
 
 pub type ProtFfMap = HashMap<AminoAcidGeneral, Vec<ChargeParams>>;
 
@@ -44,12 +44,12 @@ const RNA_LIB: &str = include_str!("../param_data/RNA.lib");
 /// A set of general parameters that aren't molecule-specific. E.g. from GAFF2, OL3, RNA, or amino19.
 /// These are used as a baseline, and in some cases, overridden by molecule-specific parameters.
 pub struct FfParamSet {
-    pub peptide: Option<ForceFieldParamsKeyed>,
-    pub small_mol: Option<ForceFieldParamsKeyed>,
-    pub dna: Option<ForceFieldParamsKeyed>,
-    pub rna: Option<ForceFieldParamsKeyed>,
-    pub lipids: Option<ForceFieldParamsKeyed>,
-    pub carbohydrates: Option<ForceFieldParamsKeyed>,
+    pub peptide: Option<ForceFieldParams>,
+    pub small_mol: Option<ForceFieldParams>,
+    pub dna: Option<ForceFieldParams>,
+    pub rna: Option<ForceFieldParams>,
+    pub lipids: Option<ForceFieldParams>,
+    pub carbohydrates: Option<ForceFieldParams>,
     /// In addition to charge, this also contains the mapping of res type to FF type; required to map
     /// other parameters to protein atoms. E.g. from `amino19.lib`, and its N and C-terminus variants.
     pub peptide_ff_q_map: Option<ProtFFTypeChargeMap>,
@@ -87,10 +87,10 @@ impl FfParamSet {
         let mut result = FfParamSet::default();
 
         if let Some(p) = &paths.peptide {
-            let peptide = ForceFieldParamsKeyed::load_dat(p)?;
+            let peptide = ForceFieldParams::load_dat(p)?;
 
             if let Some(p_mod) = &paths.peptide_mod {
-                let frcmod = ForceFieldParamsKeyed::load_frcmod(p_mod)?;
+                let frcmod = ForceFieldParams::load_frcmod(p_mod)?;
                 result.peptide = Some(merge_params(&peptide, Some(&frcmod)));
             } else {
                 result.peptide = Some(peptide);
@@ -111,14 +111,14 @@ impl FfParamSet {
         result.peptide_ff_q_map = Some(ff_map);
 
         if let Some(p) = &paths.small_organic {
-            result.small_mol = Some(ForceFieldParamsKeyed::load_dat(p)?);
+            result.small_mol = Some(ForceFieldParams::load_dat(p)?);
         }
 
         if let Some(p) = &paths.dna {
-            let peptide = ForceFieldParamsKeyed::load_dat(p)?;
+            let peptide = ForceFieldParams::load_dat(p)?;
 
             if let Some(p_mod) = &paths.dna_mod {
-                let frcmod = ForceFieldParamsKeyed::load_frcmod(p_mod)?;
+                let frcmod = ForceFieldParams::load_frcmod(p_mod)?;
                 result.dna = Some(merge_params(&peptide, Some(&frcmod)));
             } else {
                 result.dna = Some(peptide);
@@ -126,15 +126,15 @@ impl FfParamSet {
         }
 
         if let Some(p) = &paths.rna {
-            result.rna = Some(ForceFieldParamsKeyed::load_dat(p)?);
+            result.rna = Some(ForceFieldParams::load_dat(p)?);
         }
 
         if let Some(p) = &paths.lipid {
-            result.lipids = Some(ForceFieldParamsKeyed::load_dat(p)?);
+            result.lipids = Some(ForceFieldParams::load_dat(p)?);
         }
 
         if let Some(p) = &paths.carbohydrate {
-            result.carbohydrates = Some(ForceFieldParamsKeyed::load_dat(p)?);
+            result.carbohydrates = Some(ForceFieldParams::load_dat(p)?);
         }
 
         Ok(result)
@@ -146,8 +146,8 @@ impl FfParamSet {
     pub fn new_amber() -> io::Result<Self> {
         let mut result = FfParamSet::default();
 
-        let peptide = ForceFieldParamsKeyed::from_dat(PARM_19)?;
-        let peptide_frcmod = ForceFieldParamsKeyed::from_frcmod(FRCMOD_FF19SB)?;
+        let peptide = ForceFieldParams::from_dat(PARM_19)?;
+        let peptide_frcmod = ForceFieldParams::from_frcmod(FRCMOD_FF19SB)?;
         result.peptide = Some(merge_params(&peptide, Some(&peptide_frcmod)));
 
         let internal = parse_amino_charges(AMINO_19)?;
@@ -160,16 +160,16 @@ impl FfParamSet {
             c_terminus,
         });
 
-        result.small_mol = Some(ForceFieldParamsKeyed::from_dat(GAFF2)?);
+        result.small_mol = Some(ForceFieldParams::from_dat(GAFF2)?);
 
         // todo: Load these, and get them working. They currently trigger a mass-parsing error.
         // todo: You must update your Lib parser in bio_files to handle this variant.
 
-        // let dna = ForceFieldParamsKeyed::from_dat(OL24_LIB)?;
-        // let dna_frcmod = ForceFieldParamsKeyed::from_frcmod(OL24_FRCMOD)?;
+        // let dna = ForceFieldParams::from_dat(OL24_LIB)?;
+        // let dna_frcmod = ForceFieldParams::from_frcmod(OL24_FRCMOD)?;
         // result.dna = Some(merge_params(&dna, Some(&dna_frcmod)));
         //
-        // result.rna = Some(ForceFieldParamsKeyed::from_dat(RNA_LIB)?);
+        // result.rna = Some(ForceFieldParams::from_dat(RNA_LIB)?);
 
         Ok(result)
     }
@@ -182,7 +182,7 @@ impl FfParamSet {
 /// Note: The single-atom fields of `mass` and `partial_charges` are omitted: They're part of our
 /// `AtomDynamics` struct.`
 #[derive(Clone, Debug, Default)]
-pub struct ForceFieldParamsIndexed {
+pub(crate) struct ForceFieldParamsIndexed {
     pub mass: HashMap<usize, MassParams>,
     pub bond_stretching: HashMap<(usize, usize), BondStretchingParams>,
     pub angle: HashMap<(usize, usize, usize), AngleBendingParams>,
@@ -194,12 +194,6 @@ pub struct ForceFieldParamsIndexed {
     /// instead of `bond_stretching`, because `bond_stretching` omits bonds to Hydrogen, which we need
     /// to account when applying exclusions.
     pub bonds_topology: HashSet<(usize, usize)>,
-
-    // Dihedrals are represented in Amber params as a fourier series; this Vec indlues all matches.
-    // e.g. X-ca-ca-X may be present multiple times in gaff2.dat. (Although seems to be uncommon)
-    //
-    // X -nh-sx-X    4    3.000         0.000          -2.000
-    // X -nh-sx-X    4    0.400       180.000           3.000
     pub lennard_jones: HashMap<usize, LjParams>,
 }
 
@@ -336,4 +330,17 @@ pub fn populate_peptide_ff_and_q(
     }
 
     Ok(())
+}
+
+pub fn prepare_peptide(
+    atoms: &mut Vec<AtomGeneric>,
+    residues: &mut Vec<ResidueGeneric>,
+    chains: &mut [ChainGeneric],
+    ff_map: &ProtFFTypeChargeMap,
+    ph: f32, // todo: Implement.
+) -> Result<Vec<Dihedral>, ParamError> {
+    let dihedrals = populate_hydrogens_dihedrals(atoms, residues, chains, ff_map, ph)?;
+    populate_peptide_ff_and_q(atoms, residues, ff_map)?;
+
+    Ok(dihedrals)
 }

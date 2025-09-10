@@ -1,4 +1,4 @@
-use bio_files::amber_params::{AngleBendingParams, BondStretchingParams, DihedralParams};
+use bio_files::md_params::{AngleBendingParams, BondStretchingParams, DihedralParams};
 use lin_alg::f64::{Vec3, calc_dihedral_angle_v2};
 
 const EPS: f64 = 1e-10;

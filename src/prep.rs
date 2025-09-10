@@ -25,9 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use bio_files::{
     AtomGeneric, BondGeneric,
-    amber_params::{
-        AngleBendingParams, BondStretchingParams, ForceFieldParamsKeyed, LjParams, MassParams,
-    },
+    md_params::{AngleBendingParams, BondStretchingParams, ForceFieldParams, LjParams, MassParams},
 };
 use itertools::Itertools;
 use na_seq::Element;
@@ -38,9 +36,9 @@ use crate::{MdState, ParamError, neighbors::build_neighbors, params::ForceFieldP
 /// (when given) replace or add to the generic ones.
 /// todo: IDeally this function doesn't accept an option, but this simplifies upstream APIs in some cases.
 pub fn merge_params(
-    generic: &ForceFieldParamsKeyed,
-    specific: Option<&ForceFieldParamsKeyed>,
-) -> ForceFieldParamsKeyed {
+    generic: &ForceFieldParams,
+    specific: Option<&ForceFieldParams>,
+) -> ForceFieldParams {
     // Start with a deep copy of the generic parameters.
     let mut merged = generic.clone();
 
@@ -74,7 +72,7 @@ fn ff_type_from_idx<'a>(
 }
 
 #[derive(Clone, Default, Debug)]
-pub struct HydrogenRigidConstraint {
+pub(crate) struct HydrogenRigidConstraint {
     /// Atom indices, of the dynamic set.
     pub atom_0: usize,
     pub atom_1: usize,
@@ -84,17 +82,30 @@ pub struct HydrogenRigidConstraint {
     pub inv_mass: Option<f64>,
 }
 
-#[derive(Clone, Default, Debug)]
-pub enum HydrogenMdType {
-    /// Uses Shake and Rattle to fix the hydrogen positions. This allows for a larger timestep,
-    /// e.g. 2fs instead of 1fs.
+/// See notes on `HydrogenConstraint` for more information.
+#[derive(Clone, Debug)]
+pub(crate) enum HydrogenConstraintInner {
     /// The constraints here are atom indices of each bond to H, and r_0 as defined in the Amber
     /// param data. (We don't need k_b, as the bond is fixed len). The final value is a cached r_0^2
-    Fixed(Vec<HydrogenRigidConstraint>),
-    /// Uses the same bonded parameters as elsewhere: A spring model
-    // We ideally would have `Fixed` as the default, but " the `#[default]` attribute may
-    // only be used on unit enum variants"
+    Constrained(Vec<HydrogenRigidConstraint>),
+    Flexible,
+}
+
+impl Default for HydrogenConstraintInner {
+    fn default() -> Self {
+        Self::Constrained(Vec::new())
+    }
+}
+
+/// We use this variant in the configuration API. Deferrs to `HydrogenConstraintInner` for holding
+/// constraints.
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub enum HydrogenConstraint {
+    /// Uses Shake and Rattle to fix the hydrogen positions. This allows for a larger timestep,
+    /// e.g. 2fs instead of 1fs.
     #[default]
+    Constrained,
+    /// Uses the same bonded parameters as elsewhere: A spring model
     Flexible,
 }
 
@@ -106,14 +117,14 @@ pub enum HydrogenMdType {
 /// missing parameters.
 impl ForceFieldParamsIndexed {
     pub fn new(
-        params_general: &ForceFieldParamsKeyed,
-        params_specific: Option<&ForceFieldParamsKeyed>,
+        params_general: &ForceFieldParams,
+        params_specific: Option<&ForceFieldParams>,
         atoms: &[AtomGeneric],
         bonds: &[BondGeneric],
         adjacency_list: &[Vec<usize>],
         // Mutable, since we load the hydrogen r0s into it, instead of adding bond stretching params
         // in case of fixed hydrogen.
-        hydrogen_md_type: &mut HydrogenMdType,
+        h_constraints: &mut HydrogenConstraintInner,
     ) -> Result<Self, ParamError> {
         let mut result = Self::default();
 
@@ -248,9 +259,9 @@ impl ForceFieldParamsIndexed {
                     result
                         .lennard_jones
                         .insert(i, params.lennard_jones.get("O").unwrap().clone());
-                    println!("Using O fallback VdW for {atom}");
+                    println!("Using O fallback LJ for {atom}");
                 } else {
-                    println!("Missing Vdw params for {atom}; setting to 0.");
+                    println!("Missing LJ params for {atom}; setting to 0.");
                     // 0. no interaction.
                     // todo: If this is "CG" etc, fall back to other carbon params instead.
                     result.lennard_jones.insert(
@@ -329,7 +340,7 @@ impl ForceFieldParamsIndexed {
 
             // If using fixed hydrogens, don't add these to our bond stretching params;
             // add to a separate hydrogen rigid param variable.
-            if let HydrogenMdType::Fixed(constraints) = hydrogen_md_type {
+            if let HydrogenConstraintInner::Constrained(constraints) = h_constraints {
                 if atoms[i_0].element == Element::Hydrogen
                     || atoms[i_1].element == Element::Hydrogen
                 {

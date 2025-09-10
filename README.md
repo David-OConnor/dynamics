@@ -19,6 +19,7 @@ of each data structure and function. You may with to reference the [Bio Files AP
 as well.
 
 **Note: The Python version is CPU-only for now**
+**Note: We currently only support saving and loading snapshots/trajectories in a custom format.**
 
 
 ## Goals
@@ -123,13 +124,11 @@ files as well, e.g. to load dihedral angles from *.frcmod* that aren't present i
 
 Example use (Python):
 ```python
-from biology_files import Mol2, MmCif, ForceFieldParamsKeyed
+from biology_files import Mol2, MmCif, ForceFieldParams
 from mol_dynamics import *
 
-TEMP_TGT: f32 = 310.  # K
-PRESSURE_TGT: f32 = 310.  # Bar
 
-def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParamsKeyed) -> MdState:
+def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParams) -> MdState:
     """
     Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
     which acts on the system, but doesn't move.
@@ -137,51 +136,54 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
 
     mols = [
         MolDynamics(
-            ff_mol_type: FfMolType::SmallOrganic,
-            atoms: mol.atoms,
+            ff_mol_type=FfMolType.SmallOrganic,
+            atoms=mol.atoms,
             # Pass a [Vec3] of starting atom positions. If absent,
             # will use the positions stored in atoms.
-            atom_posits: None,
-            bonds: mol.bonds,
+            atom_posits=None,
+            bonds=mol.bonds,
             # Pass your own from cache if you want, or it will build.
-            adjacency_list: None,
-            static_: False,
+            adjacency_list=None,
+            static_=False,
             # This is usually mandatory for small organic molecules. Provided, for example,
             # in Amber FRCMOD files. Overrides general params.
-            mol_specific_params: Some(lig_specific_params),
+            mol_specific_params=lig_specific,
         ),
         MolDynamics(
-            ff_mol_type: FfMolType::Peptide,
-            atoms: protein.atoms,
-            atom_posits: None,
-            bonds: [], // Not required if static.
-            adjacency_list: None,
-            static_: true,
-            mol_specific_params: None,
+            ff_mol_type=FfMolType.Peptide,
+            atoms=protein.atoms,
+            atom_posits=None,
+            bonds=[],  # Not required if static.
+            adjacency_list=None,
+            static_=True,
+            mol_specific_params=None,
         ),
     ]
 
     return MdState(
+        MdConfig(),
         mols,
-        TEMP_TGT,
-        PRESSURE_TGT,
         param_set,
-        # Or flexible, with a smaller time step.
-        HydrogenMdType.Fixed,
-        1, # Take a snapshot every this many steps.
     )
 
 
 def main():
     mol = Mol2.load("CPB.mol2")
-    mut protein = MmCif.load("1c8k.cif")
+    protein = MmCif.load("1c8k.cif")
 
-    params = FfParamSet.new_amber()
-    lig_specific = ForceFieldParamsKeyed.load_frcmod("CPB.frcmod")
+    param_set = FfParamSet.new_amber()
+    lig_specific = ForceFieldParams.load_frcmod("CPB.frcmod")
     
-    # Add force field type, and partial charge to atoms in the protein; these usually aren't
-    # included from RSCB PDB. Make sure you add Hydrogens as well.
-    populate_peptide_ff_and_q(mut protein.atoms, protein.residues, params.ff_map)
+    # Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
+    # included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
+    # `populdate_peptide_ff_and_q() separately.
+    prepare_peptide(
+        protein.atoms,
+        protein.residues,
+        protein.chains,
+        param_set.peptide_ff_q_map,
+        7.0,
+    )
     
     md = setup_dynamics(mol, protein, param_set, lig_specific)
     
@@ -191,12 +193,11 @@ def main():
     for _ in range(n_steps):
         md.step(dt)
     
-    snap = md.snapshots[len(md.snapshots) - 1] // A/R.
+    snap = md.snapshots[len(md.snapshots) - 1]  # A/R.
     print(f"KE: {snap.energy_kinetic}, PE: {snap.energy_potential}, Atom posits:")
-    for posit in snap.atom_posits {
+    for posit in snap.atom_posits:
         print(f"Posit: {posit}")
         # Also keeps track of velocities, and water molecule positions/velocity
-    }
     
     for snap in md.snapshots:
         pass
@@ -212,18 +213,21 @@ Example use (Rust):
 ```rust
 use std::path::Path;
 
-use bio_files::{Mol2, MmCif, amber_params::ForceFieldParamsKeyed};
+use bio_files::{MmCif, Mol2, md_params::ForceFieldParams};
 use dynamics::{
-    ComputationDevice, MdState, MolDynamics, FfMolType, HydrogenMdType,
+    ComputationDevice, FfMolType, MdConfig, MdState, MolDynamics,
     params::{FfParamSet, populate_peptide_ff_and_q},
+    populate_hydrogens_dihedrals,
 };
 
-const TEMP_TGT: f64 = 310.; // K
-const PRESSURE_TGT: f64 = 310.; // Bar
-
-/// Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
+/// Set up dynamics between a small molecule we treat with full dynamics, and a rigid one
 /// which acts on the system, but doesn't move.
-fn setup_dynamics(mol: &Mol2, protein: &MmCif, param_set: &FfParamSet, lig_specific: &ForceFieldParamsKeyed) -> MdState {
+fn setup_dynamics(
+    mol: &Mol2,
+    protein: &MmCif,
+    param_set: &FfParamSet,
+    lig_specific: &ForceFieldParams,
+) -> MdState {
     let mols = vec![
         MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
@@ -250,27 +254,27 @@ fn setup_dynamics(mol: &Mol2, protein: &MmCif, param_set: &FfParamSet, lig_speci
         },
     ];
 
-    MdState::new(
-        &mols,
-        TEMP_TGT,
-        PRESSURE_TGT,
-        param_set,
-        // Or flexible, with a smaller time step.
-        HydrogenMdType::Fixed(Vec::new()),
-        1, // Take a snapshot every this many steps.
-    ).unwrap()
+    MdState::new(&MdConfig::default(), &mols, param_set).unwrap()
 }
 
 fn main() {
-    let mol = Mol2::load(Path::new("CPB.mol2")).unwrap();
-    let mut protein = MmCif::load(Path::new("1c8k.cif")).unwrap();
+    let mol = Mol2::load(Path::new("../CPB.mol2")).unwrap();
+    let mut protein = MmCif::load(Path::new("../1c8k.cif")).unwrap();
 
     let param_set = FfParamSet::new_amber().unwrap();
-    let lig_specific = ForceFieldParamsKeyed::load_frcmod(Path::new("CPB.frcmod")).unwrap();
+    let lig_specific = ForceFieldParams::load_frcmod(Path::new("../CPB.frcmod")).unwrap();
 
-    // Add force field type, and partial charge to atoms in the protein; these usually aren't
-    // included from RSCB PDB. Make sure you add Hydrogens as well.
-    populate_peptide_ff_and_q(&mut protein.atoms, &protein.residues, &param_set.peptide_ff_q_map.as_ref().unwrap()).unwrap();
+    // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
+    // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
+    // `populdate_peptide_ff_and_q() separately.
+    prepare_peptide(
+        &mut protein.atoms,
+        &mut protein.residues,
+        &mut protein.chains,
+        &param_set.peptide_ff_q_map.as_ref().unwrap(),
+        7.0,
+    )
+        .unwrap();
 
     let mut md = setup_dynamics(&mol, &protein, &param_set, &lig_specific);
 
@@ -282,7 +286,10 @@ fn main() {
     }
 
     let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
-    println!("KE: {}, PE: {}, Atom posits:", snap.energy_kinetic, snap.energy_potential);
+    println!(
+        "KE: {}, PE: {}, Atom posits:",
+        snap.energy_kinetic, snap.energy_potential
+    );
     for posit in &snap.atom_posits {
         println!("Posit: {posit}");
         // Also keeps track of velocities, and water molecule positions/velocity
@@ -293,6 +300,7 @@ fn main() {
         // Or saving to a file.
     }
 }
+
 ```
 
 Example of loading your own parameter files:
@@ -322,6 +330,43 @@ Example of loading your own parameter files:
     
     let param_set = FfParamSet::new(&param_paths);
 ```
+
+An overview of configuration parameters.
+```rust
+let cfg = MdConfig {
+    // Defaults to Velocity Verlet.
+    integrator: dynamics::Integrator::VelocityVerlet,
+    // If enabled, zero the drift in center of mass of the system.
+    zero_com_drift: true,
+    // Kelvin. Defaults to 310 K.
+    temp_target: 310.,
+    // Bar (Pa/100). Defaults to 1 bar.
+    pressure_target: 1.,
+    // Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
+    // algorithms. This allows for higher time steps.
+    hydrogen_constraint: dynamics::HydrogenConstraint::Fixed,
+    // Take a snapshot every this number of steps, in the output `Vec<Snapshot>`.
+    snapshot_ratio_memory: 1,
+    // Take a snapshot every this number of steps, in the output file.
+    snapshot_ratio_file: 2
+};
+```
+
+Python config syntax:
+```python
+cfg = MdConfig() // Initializes with defaults.
+
+cfg.integrator = dynamics.Integrator.VelocityVerlet
+cfg.temp_target = 310.
+# etc
+```
+
+## Using with GPU
+
+**Note: Currently GPU isn't supported in the python bindings**
+
+To use with an nVidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions
+as a publicly exposed string. Set up your application to use it from `dynamics::PTX`.
 
 
 ## Why this when OpenMM exists?
@@ -360,11 +405,8 @@ We provide a [copy of these files](https://github.com/David-OConnor/daedalus/rel
 for convenience; this is a much smaller download than the entire Amber package, and prevents needing to locate the specific files.
 Unpack, and place these under `resources` prior to compiling.
 
-(todo: Notes on compiling with GPU support A/R)
-
 To build the Python library wheel, from the `python` subdirectory, run `maturin build`. You can load the library
 locally for testing, once built, by running `pip install .`
-
 
 ## Eratta
 - Only a single dynamic molecule is supported

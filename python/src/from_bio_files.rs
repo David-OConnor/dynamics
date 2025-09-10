@@ -3,6 +3,7 @@
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
 
 #[pyclass]
+#[derive(Clone)]
 pub struct AtomGeneric {
     pub inner: bio_files::AtomGeneric,
 }
@@ -52,6 +53,7 @@ impl AtomGeneric {
 }
 
 #[pyclass]
+#[derive(Clone)]
 pub struct BondGeneric {
     pub inner: bio_files::BondGeneric,
 }

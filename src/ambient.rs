@@ -9,7 +9,10 @@ use lin_alg::f64::Vec3;
 use na_seq::Element;
 use rand::prelude::ThreadRng;
 
-use crate::{ACCEL_CONVERSION_INV, AtomDynamics, KB, MdState, prep::HydrogenMdType};
+use crate::{
+    ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, KB, MdState,
+    prep::HydrogenConstraintInner,
+};
 
 // If we are setting up as a pad around all relevant atoms
 const SIMBOX_PAD: f64 = 7.0; // Å
@@ -224,8 +227,7 @@ impl MdState {
         // (2) SHAKE/RATTLE on X–H bonds among *dynamic* atoms (not counting waters here)
         // If hydrogens are constrained (your code calls shake_hydrogens() when HydrogenMdType::Fixed),
         // count ≈ number of H atoms among self.atoms (each has one constrained bond).
-        let hydrogens_constrained = matches!(self.hydrogen_md_type, HydrogenMdType::Fixed(_));
-        if hydrogens_constrained {
+        if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
             c += self
                 .atoms
                 .iter()
