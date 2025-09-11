@@ -93,7 +93,14 @@ mod water_settle;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
-use std::{collections::HashSet, fmt, io, path::PathBuf, time::Instant};
+use std::{
+    collections::HashSet,
+    fmt,
+    fmt::{Display, Formatter},
+    io,
+    path::PathBuf,
+    time::Instant,
+};
 
 pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals};
 use ambient::SimBox;
@@ -113,13 +120,14 @@ pub use prep::{HydrogenConstraint, merge_params};
 pub use util::{load_snapshots, save_snapshots};
 pub use water_opc::ForcesOnWaterMol;
 
+use crate::prep::HydrogenRigidConstraint;
 use crate::{
     ambient::BerendsenBarostat,
     non_bonded::{
         CHARGE_UNIT_SCALER, EWALD_ALPHA, LjTableIndices, LjTables, SCALE_COUL_14, SPME_N,
     },
     params::{FfParamSet, ForceFieldParamsIndexed},
-    prep::HydrogenConstraintInner,
+    // prep::HydrogenConstraintInner,
     util::build_adjacency_list,
     water_init::make_water_mols,
     water_opc::WaterMol,
@@ -373,7 +381,7 @@ pub struct MolDynamics<'a> {
 
 /// A trimmed-down atom for use with molecular dynamics. Contains parameters for single-atom,
 /// but we use ParametersIndex for multi-atom parameters.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AtomDynamics {
     pub serial_number: u32,
     /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
@@ -398,6 +406,26 @@ pub struct AtomDynamics {
     pub lj_sigma: f64,
     /// kcal/mol
     pub lj_eps: f64,
+}
+
+impl Display for AtomDynamics {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Atom {}: {}, {}. ff: {}, q: {}",
+            self.serial_number,
+            self.element.to_letter(),
+            self.posit,
+            self.force_field_type,
+            self.partial_charge,
+        )?;
+
+        if self.static_ {
+            write!(f, ", Static")?;
+        }
+
+        Ok(())
+    }
 }
 
 impl AtomDynamics {
@@ -567,7 +595,7 @@ pub struct MdState {
     pub cfg: MdConfig,
     pub atoms: Vec<AtomDynamics>,
     pub adjacency_list: Vec<Vec<usize>>,
-    h_constraints: Vec<HydrogenConstraintInner>,
+    // h_constraints: Vec<HydrogenConstraintInner>,
     // /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
     // /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
     // /// and VDW) only.
@@ -646,7 +674,6 @@ impl MdState {
         // These Vecs all share indices, and all include all molecules.
         let mut atoms_md = Vec::new();
         let mut adjacency_list = Vec::new();
-        let mut h_constraints = Vec::new();
 
         // let mut atoms_md_static: Vec<AtomDynamics> = Vec::new();
 
@@ -713,19 +740,6 @@ impl MdState {
                 merge_params(&mut params, Some(&params_general));
             }
 
-            // // Combines general parameters of the correct molecule type with molecule-specific ones,
-            // // if available.
-            // let params = ForceFieldParamsIndexed::new(
-            //     &params,
-            //     // mol.mol_specific_params,
-            //     &atoms,
-            //     mol.bonds,
-            //     adjacency_list_,
-            //     &mut h_constraints,
-            // )?;
-
-            // let mut atoms_md = Vec::with_capacity(atoms.len());
-
             let mut p = Vec::new(); // to store the ref.
             let atom_posits = match mol.atom_posits {
                 Some(a) => a,
@@ -734,17 +748,6 @@ impl MdState {
                     &p
                 }
             };
-
-            // todo: Where do we populate these?
-            let h_constraints_ = match cfg.hydrogen_constraint {
-                HydrogenConstraint::Constrained => HydrogenConstraintInner::Constrained(Vec::new()),
-                HydrogenConstraint::Flexible => HydrogenConstraintInner::Flexible,
-            };
-
-            // todo: Populate first
-            for _ in 0..atoms.len() {
-                h_constraints
-            }
 
             for (i, atom) in atoms.iter().enumerate() {
                 // atom.serial_number += last_mol_sn;
@@ -793,12 +796,13 @@ impl MdState {
         }
 
         let force_field_params = ForceFieldParamsIndexed::new(
-            params,
+            &params,
             // mol.mol_specific_params,
             &atoms_md,
-            mol.bonds,
+            // mol.bonds,
             &adjacency_list,
-            &mut h_constraints,
+            // &mut h_constraints,
+            cfg.hydrogen_constraint,
         )?;
 
         // let cell = SimBox::new_padded(&atoms_dy);
@@ -808,7 +812,7 @@ impl MdState {
             cfg: cfg.clone(),
             atoms: atoms_md,
             adjacency_list: adjacency_list.to_vec(),
-            h_constraints,
+            // h_constraints,
             // atoms_static: atoms_md_static,
             cell,
             pairs_excluded_12_13: HashSet::new(),
@@ -1147,10 +1151,11 @@ impl MdState {
     fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3>, Vec<f64>, Vec<PMEIndex>) {
         let n_dyn = self.atoms.len();
         let n_wat = self.water.len();
-        let n_st = self.atoms_static.len();
+        // let n_st = self.atoms_static.len();
 
         // Capacity hint: dyn + 4*water + statics
-        let mut pos = Vec::with_capacity(n_dyn + 4 * n_wat + n_st);
+        // let mut pos = Vec::with_capacity(n_dyn + 4 * n_wat + n_st);
+        let mut pos = Vec::with_capacity(n_dyn + 4 * n_wat);
         let mut q = Vec::with_capacity(pos.capacity());
         let mut map = Vec::with_capacity(pos.capacity());
 
@@ -1177,12 +1182,12 @@ impl MdState {
             map.push(PMEIndex::WatH1(i));
         }
 
-        // Static atoms (contribute to field but you won't update accel)
-        for (i, a) in self.atoms_static.iter().enumerate() {
-            pos.push(self.cell.wrap(a.posit));
-            q.push(a.partial_charge);
-            map.push(PMEIndex::Static(i));
-        }
+        // // Static atoms (contribute to field but you won't update accel)
+        // for (i, a) in self.atoms_static.iter().enumerate() {
+        //     pos.push(self.cell.wrap(a.posit));
+        //     q.push(a.partial_charge);
+        //     map.push(PMEIndex::Static(i));
+        // }
 
         // Optional sanity check (debug only): near-neutral total charge
         #[cfg(debug_assertions)]

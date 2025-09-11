@@ -33,22 +33,22 @@ pub struct NeighborsNb {
     // Neighbors acting on dynamic atoms:
     /// Symmetric dynamic-dynamic indices. Dynamic source and target.
     pub dy_dy: Vec<Vec<usize>>,
-    /// Outer: Dynamic. Inner: static. Dynamic target, static source.
-    pub dy_static: Vec<Vec<usize>>,
+    // /// Outer: Dynamic. Inner: static. Dynamic target, static source.
+    // pub dy_static: Vec<Vec<usize>>,
     /// Outer: Dynamic. Inner: water. Each is a source and target.
     pub dy_water: Vec<Vec<usize>>,
     /// Symmetric water-water indices. Dynamic source and target.
     pub water_water: Vec<Vec<usize>>,
-    /// Outer: Water. Inner: static. Water target, static source.
-    pub water_static: Vec<Vec<usize>>,
+    // /// Outer: Water. Inner: static. Water target, static source.
+    // pub water_static: Vec<Vec<usize>>,
     /// Outer: Water. Inner: dynamic. Water target, dynamic source.
     /// todo: This is a direct reverse of dy_water, but may be worth keeping in for indexing order.
     pub water_dy: Vec<Vec<usize>>,
     //
     // Reference positions used when rebuilding. Only for movable atoms.
     pub ref_pos_dyn: Vec<Vec3>,
-    /// Doesn't change.
-    pub ref_pos_static: Vec<Vec3>,
+    // /// Doesn't change.
+    // pub ref_pos_static: Vec<Vec3>,
     pub ref_pos_water_o: Vec<Vec3>, // use O as proxy for the rigid water
     /// Used to determine when to rebuild neighbor lists. todo: Implement.
     pub max_displacement_sq: f64,
@@ -87,12 +87,12 @@ impl MdState {
                 true,
             );
 
-            self.neighbors_nb.dy_static = build_neighbors(
-                &self.neighbors_nb.ref_pos_dyn,
-                &self.neighbors_nb.ref_pos_static,
-                &self.cell,
-                false,
-            );
+            // self.neighbors_nb.dy_static = build_neighbors(
+            //     &self.neighbors_nb.ref_pos_dyn,
+            //     &self.neighbors_nb.ref_pos_static,
+            //     &self.cell,
+            //     false,
+            // );
 
             self.neighbors_nb.dy_water = build_neighbors(
                 &self.neighbors_nb.ref_pos_dyn,
@@ -106,12 +106,12 @@ impl MdState {
         }
 
         if wat_disp_sq > SKIN_SQ_DIV_4 {
-            self.neighbors_nb.water_static = build_neighbors(
-                &self.neighbors_nb.ref_pos_water_o,
-                &self.neighbors_nb.ref_pos_static,
-                &self.cell,
-                false,
-            );
+            // self.neighbors_nb.water_static = build_neighbors(
+            //     &self.neighbors_nb.ref_pos_water_o,
+            //     &self.neighbors_nb.ref_pos_static,
+            //     &self.cell,
+            //     false,
+            // );
 
             self.neighbors_nb.water_water = build_neighbors(
                 &self.neighbors_nb.ref_pos_water_o,

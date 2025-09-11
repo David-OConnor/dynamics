@@ -35,7 +35,9 @@ use bio_files::{
 use itertools::Itertools;
 use na_seq::Element;
 
-use crate::{MdState, ParamError, neighbors::build_neighbors, params::ForceFieldParamsIndexed};
+use crate::{
+    AtomDynamics, MdState, ParamError, neighbors::build_neighbors, params::ForceFieldParamsIndexed,
+};
 
 /// Build a single lookup table in which molecule-specific parameters
 /// (when given) replace or add to the generic ones.
@@ -60,20 +62,20 @@ pub fn merge_params(
     merged
 }
 
-/// Helper that reduces repetition. Used for populating all bonded parameters by index.
-fn ff_type_from_idx<'a>(
-    atoms: &'a [AtomGeneric],
-    idx: usize,
-    descriptor: &str,
-) -> Result<&'a String, ParamError> {
-    let atom = &atoms[idx];
-
-    atom.force_field_type.as_ref().ok_or_else(|| {
-        ParamError::new(&format!(
-            "MD failure: Atom missing FF type on {descriptor}: {atom}"
-        ))
-    })
-}
+// /// Helper that reduces repetition. Used for populating all bonded parameters by index.
+// fn ff_type_from_idx<'a>(
+//     atoms: &'a [AtomGeneric],
+//     idx: usize,
+//     descriptor: &str,
+// ) -> Result<&'a String, ParamError> {
+//     let atom = &atoms[idx];
+//
+//     atom.force_field_type.as_ref().ok_or_else(|| {
+//         ParamError::new(&format!(
+//             "MD failure: Atom missing FF type on {descriptor}: {atom}"
+//         ))
+//     })
+// }
 
 #[derive(Clone, Default, Debug)]
 pub(crate) struct HydrogenRigidConstraint {
@@ -86,20 +88,20 @@ pub(crate) struct HydrogenRigidConstraint {
     pub inv_mass: Option<f64>,
 }
 
-/// See notes on `HydrogenConstraint` for more information.
-#[derive(Clone, Debug)]
-pub(crate) enum HydrogenConstraintInner {
-    /// The constraints here are atom indices of each bond to H, and r_0 as defined in the Amber
-    /// param data. (We don't need k_b, as the bond is fixed len). The final value is a cached r_0^2
-    Constrained(Vec<HydrogenRigidConstraint>),
-    Flexible,
-}
+// /// See notes on `HydrogenConstraint` for more information.
+// #[derive(Clone, Debug)]
+// pub(crate) enum HydrogenConstraintInner {
+//     /// The constraints here are atom indices of each bond to H, and r_0 as defined in the Amber
+//     /// param data. (We don't need k_b, as the bond is fixed len). The final value is a cached r_0^2
+//     Constrained(Vec<HydrogenRigidConstraint>),
+//     Flexible,
+// }
 
-impl Default for HydrogenConstraintInner {
-    fn default() -> Self {
-        Self::Constrained(Vec::new())
-    }
-}
+// impl Default for HydrogenConstraintInner {
+//     fn default() -> Self {
+//         Self::Constrained(Vec::new())
+//     }
+// }
 
 /// We use this variant in the configuration API. Deferrs to `HydrogenConstraintInner` for holding
 /// constraints.
@@ -133,12 +135,14 @@ impl ForceFieldParamsIndexed {
     pub fn new(
         params: &ForceFieldParams,
         // params_specific: Option<&ForceFieldParams>,
-        atoms: &[AtomGeneric],
-        bonds: &[BondGeneric],
+        // atoms: &[AtomGeneric],
+        atoms: &[AtomDynamics],
+        // bonds: &[BondGeneric],
         adjacency_list: &[Vec<usize>],
         // Mutable, since we load the hydrogen r0s into it, instead of adding bond stretching params
         // in case of fixed hydrogen.
-        h_constraints: &mut HydrogenConstraintInner,
+        // h_constraints: &mut HydrogenConstraintInner,
+        h_constraint: HydrogenConstraint,
     ) -> Result<Self, ParamError> {
         let mut result = Self::default();
 
@@ -147,43 +151,45 @@ impl ForceFieldParamsIndexed {
         // let params = merge_params(params_general, params_specific);
 
         for (i, atom) in atoms.iter().enumerate() {
-            let ff_type = match &atom.force_field_type {
-                Some(ff_t) => ff_t,
-                None => {
-                    eprintln!("Atom missing FF type: {atom}");
-                    match atom.element {
-                        Element::Carbon => {
-                            eprintln!(
-                                "Indexing: Atom missing FF type: {atom}; Falling back to generic C"
-                            );
-                            "C"
-                        }
-                        Element::Nitrogen => {
-                            eprintln!(
-                                "Indexing: Atom missing FF type: {atom}; Falling back to generic N"
-                            );
-                            "N"
-                        }
-                        Element::Oxygen => {
-                            eprintln!(
-                                "Indexing: Atom missing FF type: {atom}; Falling back to generic O"
-                            );
-                            "O"
-                        }
-                        Element::Hydrogen => {
-                            eprintln!(
-                                "Indexing: Atom missing FF type: {atom}; Falling back to generic H"
-                            );
-                            "H"
-                        }
-                        _ => {
-                            return Err(ParamError::new(&format!(
-                                "MD failure: Atom missing FF type: {atom}"
-                            )));
-                        }
-                    }
-                }
-            };
+            // let ff_type = match &atom.force_field_type {
+            //     Some(ff_t) => ff_t,
+            //     None => {
+            //         eprintln!("Atom missing FF type: {atom}");
+            //         match atom.element {
+            //             Element::Carbon => {
+            //                 eprintln!(
+            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic C"
+            //                 );
+            //                 "C"
+            //             }
+            //             Element::Nitrogen => {
+            //                 eprintln!(
+            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic N"
+            //                 );
+            //                 "N"
+            //             }
+            //             Element::Oxygen => {
+            //                 eprintln!(
+            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic O"
+            //                 );
+            //                 "O"
+            //             }
+            //             Element::Hydrogen => {
+            //                 eprintln!(
+            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic H"
+            //                 );
+            //                 "H"
+            //             }
+            //             _ => {
+            //                 return Err(ParamError::new(&format!(
+            //                     "MD failure: Atom missing FF type: {atom}"
+            //                 )));
+            //             }
+            //         }
+            //     }
+            // };
+
+            let ff_type = &atom.force_field_type;
 
             // Mass
             if let Some(mass) = params.mass.get(ff_type) {
@@ -295,90 +301,98 @@ impl ForceFieldParamsIndexed {
         }
 
         // Map from serial number fo index, for bonds and the atoms they point ot.
-        let mut index_map = HashMap::new();
-        for (i, atom) in atoms.iter().enumerate() {
-            index_map.insert(atom.serial_number, i);
-        }
+        // let mut index_map = HashMap::new();
+        // for (i, atom) in atoms.iter().enumerate() {
+        //     index_map.insert(atom.serial_number, i);
+        // }
 
         // Bond lengths.
-        for bond in bonds {
-            let (atom_0_sn, atom_1_sn) = (bond.atom_0_sn, bond.atom_1_sn);
-
-            let i_0 = match index_map.get(&atom_0_sn) {
-                Some(i) => *i,
-                None => {
-                    return Err(ParamError::new(&format!(
-                        "Missing atom {atom_0_sn} as specified in a bond"
-                    )));
+        // for bond in bonds {
+        for (i0, neighbors) in adjacency_list.iter().enumerate() {
+            for &i1 in neighbors {
+                if i0 >= i1 {
+                    continue; // Only add each bond once.
                 }
-            };
-            let i_1 = match index_map.get(&atom_1_sn) {
-                Some(i) => *i,
-                None => {
-                    return Err(ParamError::new(&format!(
-                        "Missing atom {atom_1_sn} as specified in a bond"
-                    )));
-                }
-            };
 
-            let type_0 = ff_type_from_idx(atoms, i_0, "Bond")?;
-            let type_1 = ff_type_from_idx(atoms, i_1, "Bond")?;
+                // todo: Be careful! Your SNs don't work when flattened.
+                // let (atom_0_sn, atom_1_sn) = (bond.atom_0_sn, bond.atom_1_sn);
 
-            let data = params
-                .bond
-                .get(&(type_0.clone(), type_1.clone()))
-                .or_else(|| params.bond.get(&(type_1.clone(), type_0.clone())))
-                .cloned();
+                // let i0 = match index_map.get(&atom_0_sn) {
+                //     Some(i) => *i,
+                //     None => {
+                //         return Err(ParamError::new(&format!(
+                //             "Missing atom {atom_0_sn} as specified in a bond"
+                //         )));
+                //     }
+                // };
+                // let i1 = match index_map.get(&atom_1_sn) {
+                //     Some(i) => *i,
+                //     None => {
+                //         return Err(ParamError::new(&format!(
+                //             "Missing atom {atom_1_sn} as specified in a bond"
+                //         )));
+                //     }
+                // };
 
-            let Some(mut data) = data else {
-                // todo: We get this sometimes with glitched mmCIF files that have duplicate atoms
-                // todo in slightly different positions.
-                eprintln!(
-                    "Missing bond parameters for {type_0}-{type_1} on {} - {}. Using a safe default.",
-                    atoms[i_0], atoms[i_1]
-                );
-                result.bond_stretching.insert(
-                    (i_0.min(i_1), i_0.max(i_1)),
-                    BondStretchingParams {
-                        atom_types: (String::new(), String::new()),
-                        k_b: 300.,
-                        r_0: (atoms[i_0].posit - atoms[i_1].posit).magnitude() as f32,
-                        comment: None,
-                    },
-                );
-                continue;
-            };
+                // let type_0 = ff_type_from_idx(atoms, i0, "Bond")?;
+                // let type_1 = ff_type_from_idx(atoms, i1, "Bond")?;
+                let type_0 = &atoms[i0].force_field_type;
+                let type_1 = &atoms[i1].force_field_type;
 
-            let atom_0 = i_0.min(i_1);
-            let atom_1 = i_0.max(i_1);
+                let data = params
+                    .bond
+                    .get(&(type_0.clone(), type_1.clone()))
+                    .or_else(|| params.bond.get(&(type_1.clone(), type_0.clone())))
+                    .cloned();
 
-            // If using fixed hydrogens, don't add these to our bond stretching params;
-            // add to a separate hydrogen rigid param variable.
-            if let HydrogenConstraintInner::Constrained(constraints) = h_constraints {
-                if atoms[i_0].element == Element::Hydrogen
-                    || atoms[i_1].element == Element::Hydrogen
-                {
-                    constraints.push(HydrogenRigidConstraint {
-                        atom_0,
-                        atom_1,
-                        r0_sq: (data.r_0 as f64).powi(2),
-                        inv_mass: None, // Populated on the first step; we don't have mass yet.
-                    });
-
-                    // `bonds_topology` exists separately from `bond_params` specifically so we can
-                    // account for bonds to H in exclusions.
-                    result.bonds_topology.insert((atom_0, atom_1));
-
+                let Some(mut data) = data else {
+                    // todo: We get this sometimes with glitched mmCIF files that have duplicate atoms
+                    // todo in slightly different positions.
+                    eprintln!(
+                        "Missing bond parameters for {type_0}-{type_1} on {} - {}. Using a safe default.",
+                        atoms[i0], atoms[i1]
+                    );
+                    result.bond_stretching.insert(
+                        (i0.min(i1), i0.max(i1)),
+                        BondStretchingParams {
+                            atom_types: (String::new(), String::new()),
+                            k_b: 300.,
+                            r_0: (atoms[i0].posit - atoms[i1].posit).magnitude() as f32,
+                            comment: None,
+                        },
+                    );
                     continue;
+                };
+
+                // let atom_0 = i0.min(i1);
+                // let atom_1 = i0.max(i1);
+
+                // If using fixed hydrogens, don't add these to our bond stretching params;
+                // add to a separate hydrogen rigid param variable.
+                if h_constraint == HydrogenConstraint::Constrained {
+                    if atoms[i0].element == Element::Hydrogen
+                        || atoms[i0].element == Element::Hydrogen
+                    {
+                        // `bonds_topology` exists separately from `bond_params` specifically so we can
+                        // account for bonds to H in exclusions.
+                        // We will populate inverse mass in a second loop.
+
+                        let inv_mass = 1. / atoms[i0].mass + 1. / atoms[i0].mass;
+                        println!("Inverse mass: {:?}", inv_mass); // todo: Just checking to confirm populated.
+
+                        result
+                            .bond_rigid_constraints
+                            .insert((i0, i1), ((data.r_0 as f64).powi(2), inv_mass));
+                        result.bonds_topology.insert((i0, i1));
+                        continue;
+                    }
                 }
+
+                data.k_b *= 2.0;
+
+                result.bond_stretching.insert((i0, i1), data);
+                result.bonds_topology.insert((i0, i1));
             }
-
-            // This prevents multiplying by 2 each computation at runtime.
-            data.k_b *= 2.0;
-
-            result.bond_stretching.insert((atom_0, atom_1), data);
-
-            result.bonds_topology.insert((atom_0, atom_1));
         }
 
         // Valence angles: Every connection between 3 atoms bonded linearly.
@@ -387,9 +401,12 @@ impl ForceFieldParamsIndexed {
                 continue;
             }
             for (&n0, &n1) in neighbors.iter().tuple_combinations() {
-                let type_n0 = ff_type_from_idx(atoms, n0, "Angle")?;
-                let type_ctr = ff_type_from_idx(atoms, ctr, "Angle")?;
-                let type_n1 = ff_type_from_idx(atoms, n1, "Angle")?;
+                // let type_n0 = ff_type_from_idx(atoms, n0, "Angle")?;
+                // let type_ctr = ff_type_from_idx(atoms, ctr, "Angle")?;
+                // let type_n1 = ff_type_from_idx(atoms, n1, "Angle")?;
+                let type_n0 = &atoms[n0].force_field_type;
+                let type_ctr = &atoms[ctr].force_field_type;
+                let type_n1 = &atoms[n1].force_field_type;
 
                 let mut data = match params.angle.get(&(
                     type_n0.clone(),
@@ -458,10 +475,15 @@ impl ForceFieldParamsIndexed {
                             continue;
                         }
 
-                        let type_0 = ff_type_from_idx(atoms, i0, "Dihedral")?;
-                        let type_1 = ff_type_from_idx(atoms, i1, "Dihedral")?;
-                        let type_2 = ff_type_from_idx(atoms, i2, "Dihedral")?;
-                        let type_3 = ff_type_from_idx(atoms, i3, "Dihedral")?;
+                        // let type_0 = ff_type_from_idx(atoms, i0, "Dihedral")?;
+                        // let type_1 = ff_type_from_idx(atoms, i1, "Dihedral")?;
+                        // let type_2 = ff_type_from_idx(atoms, i2, "Dihedral")?;
+                        // let type_3 = ff_type_from_idx(atoms, i3, "Dihedral")?;
+
+                        let type_0 = &atoms[i0].force_field_type;
+                        let type_1 = &atoms[i0].force_field_type;
+                        let type_2 = &atoms[i0].force_field_type;
+                        let type_3 = &atoms[i0].force_field_type;
 
                         if let Some(dihe) = params.get_dihedral(
                             &(
@@ -510,10 +532,15 @@ impl ForceFieldParamsIndexed {
                             continue;
                         }
 
-                        let t0 = ff_type_from_idx(atoms, sat0, "Improper dihedral")?;
-                        let t1 = ff_type_from_idx(atoms, sat1, "Improper dihedral")?;
-                        let t_ctr = ff_type_from_idx(atoms, ctr, "Improper dihedral")?;
-                        let t2 = ff_type_from_idx(atoms, sat2, "Improper dihedral")?;
+                        // let t0 = ff_type_from_idx(atoms, sat0, "Improper dihedral")?;
+                        // let t1 = ff_type_from_idx(atoms, sat1, "Improper dihedral")?;
+                        // let t_ctr = ff_type_from_idx(atoms, ctr, "Improper dihedral")?;
+                        // let t2 = ff_type_from_idx(atoms, sat2, "Improper dihedral")?;
+
+                        let t0 = &atoms[sat0].force_field_type;
+                        let t1 = &atoms[sat1].force_field_type;
+                        let t_ctr = &atoms[ctr].force_field_type;
+                        let t2 = &atoms[sat2].force_field_type;
 
                         // Sort satellites alphabetically; required to ensure we don't miss combinations.
                         let mut sat_types = [t0.clone(), t1.clone(), t2.clone()];
@@ -559,7 +586,7 @@ impl MdState {
     pub(crate) fn init_neighbors(&mut self) {
         self.neighbors_nb.ref_pos_dyn = self.atoms.iter().map(|a| a.posit).collect();
         // Static refs don't change. The dyn and water positions pdate periodically.
-        self.neighbors_nb.ref_pos_static = self.atoms_static.iter().map(|a| a.posit).collect();
+        // self.neighbors_nb.ref_pos_static = self.atoms_static.iter().map(|a| a.posit).collect();
         self.neighbors_nb.ref_pos_water_o = self.water.iter().map(|m| m.o.posit).collect();
 
         self.neighbors_nb.dy_dy = build_neighbors(
@@ -569,12 +596,12 @@ impl MdState {
             true,
         );
 
-        self.neighbors_nb.dy_static = build_neighbors(
-            &self.neighbors_nb.ref_pos_dyn,
-            &self.neighbors_nb.ref_pos_static,
-            &self.cell,
-            false,
-        );
+        // self.neighbors_nb.dy_static = build_neighbors(
+        //     &self.neighbors_nb.ref_pos_dyn,
+        //     &self.neighbors_nb.ref_pos_static,
+        //     &self.cell,
+        //     false,
+        // );
 
         self.neighbors_nb.dy_water = build_neighbors(
             &self.neighbors_nb.ref_pos_dyn,
@@ -584,12 +611,12 @@ impl MdState {
         );
         self.rebuild_dy_water_inv();
 
-        self.neighbors_nb.water_static = build_neighbors(
-            &self.neighbors_nb.ref_pos_water_o,
-            &self.neighbors_nb.ref_pos_static,
-            &self.cell,
-            false,
-        );
+        // self.neighbors_nb.water_static = build_neighbors(
+        //     &self.neighbors_nb.ref_pos_water_o,
+        //     &self.neighbors_nb.ref_pos_static,
+        //     &self.cell,
+        //     false,
+        // );
 
         self.neighbors_nb.water_water = build_neighbors(
             &self.neighbors_nb.ref_pos_water_o,

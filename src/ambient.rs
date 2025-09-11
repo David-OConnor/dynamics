@@ -295,9 +295,9 @@ impl MdState {
             a.posit = c + (a.posit - c) * lambda;
             a.vel *= lambda;
         }
-        for a in &mut self.atoms_static {
-            a.posit = c + (a.posit - c) * lambda;
-        }
+        // for a in &mut self.atoms_static {
+        //     a.posit = c + (a.posit - c) * lambda;
+        // }
 
         // 3) translate rigid waters by COM only; scale COM velocity
         for w in &mut self.water {

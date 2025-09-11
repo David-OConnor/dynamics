@@ -185,6 +185,8 @@ impl FfParamSet {
 pub(crate) struct ForceFieldParamsIndexed {
     pub mass: HashMap<usize, MassParams>,
     pub bond_stretching: HashMap<(usize, usize), BondStretchingParams>,
+    /// E.g. any bond to Hydrogen if configured this way. Distance^2 in Å, inv_mass in Daltons
+    pub bond_rigid_constraints: HashMap<(usize, usize), (f64, f64)>,
     pub angle: HashMap<(usize, usize, usize), AngleBendingParams>,
     pub dihedral: HashMap<(usize, usize, usize, usize), DihedralParams>,
     /// Generally only for planar hub and spoke arrangements, and always hold a planar dihedral shape.

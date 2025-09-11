@@ -122,17 +122,14 @@ impl WaterMol {
         let ep_pos = o_pos + (h0_pos - o_pos + h1_pos - o_pos).to_normalized() * O_EP_R_0;
 
         let h0 = AtomDynamics {
-            serial_number: 0,
             force_field_type: String::from("HW"),
             element: Element::Hydrogen,
             posit: h0_pos,
             vel,
             // This is actually force for our purposes, in the context of water molecules.
-            accel: Vec3::new_zero(),
             mass: H_MASS,
             partial_charge: Q_H,
-            lj_sigma: 0.,
-            lj_eps: 0.,
+            ..Default::default()
         };
 
         Self {

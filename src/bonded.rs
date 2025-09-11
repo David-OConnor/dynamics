@@ -4,7 +4,7 @@
 //! differently: They have rigid lengths, which is good enough, and allows for a larger timestep.
 
 use crate::{
-    MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, prep::HydrogenConstraintInner, split2_mut,
+    MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, split2_mut,
     split3_mut, split4_mut,
 };
 
@@ -83,34 +83,19 @@ impl MdState {
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
     pub fn shake_hydrogens(&mut self, mol_i: usize) {
-        let HydrogenConstraintInner::Constrained(constraints) = &mut self.h_constraints[mol_i]
-        else {
-            unreachable!();
-        };
-
         for _ in 0..SHAKE_MAX_IT {
             let mut max_corr: f64 = 0.0;
 
-            for data in &mut *constraints {
-                let (ai, aj) = split2_mut(&mut self.atoms, data.atom_0, data.atom_1);
+            for (indices, (r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
+                let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
 
                 let diff = aj.posit - ai.posit;
                 let dist_sq = diff.magnitude_squared();
 
                 // println!("Diff: {:.3}", dist_sq);
 
-                // On step 0, cache.
-                let inv_m = match data.inv_mass {
-                    Some(inv_m) => inv_m,
-                    None => {
-                        let m = 1. / ai.mass + 1. / aj.mass;
-                        data.inv_mass = Some(m);
-                        m
-                    }
-                };
-
                 // λ = (r² − r₀²) / (2·inv_m · r_ij·r_ij)
-                let lambda = (dist_sq - data.r0_sq) / (2.0 * inv_m * dist_sq.max(EPS_SHAKE_RATTLE));
+                let lambda = (dist_sq - r0_sq) / (2.0 * inv_mass * dist_sq.max(EPS_SHAKE_RATTLE));
                 let corr = diff * lambda; // vector correction
 
                 ai.posit += corr / ai.mass;
@@ -128,21 +113,14 @@ impl MdState {
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
     pub fn rattle_hydrogens(&mut self, mol_i: usize) {
-        let HydrogenConstraintInner::Constrained(constraints) = &self.h_constraints[mol_i] else {
-            unreachable!();
-        };
-
         // RATTLE on velocities so that d/dt(|r|²)=0  ⇒  v_ij · r_ij = 0
-        for data in constraints {
+        for (indices, (_r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
             // println!("RATTLE: {:?}", (i, j, _r0));
-            let (ai, aj) = split2_mut(&mut self.atoms, data.atom_0, data.atom_1);
+            let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
 
             let r_meas = aj.posit - ai.posit;
             let v_meas = aj.vel - ai.vel;
             let r_sq = r_meas.magnitude_squared();
-
-            // This will have already been set in the step 0 SHAKE step.
-            let inv_mass = data.inv_mass.unwrap();
 
             // λ' = (v_ij·r_ij) / (inv_m · r_ij·r_ij)
             let lambda_p = v_meas.dot(r_meas) / (inv_mass * r_sq.max(EPS_SHAKE_RATTLE));
