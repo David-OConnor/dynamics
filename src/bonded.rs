@@ -3,12 +3,9 @@
 //! among four atoms in a hub configuration (Improper dihedrals). Bonds to hydrogen are treated
 //! differently: They have rigid lengths, which is good enough, and allows for a larger timestep.
 
-use crate::{
-    MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, split2_mut,
-    split3_mut, split4_mut,
-};
+use crate::{MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, split2_mut, split3_mut, split4_mut};
 
-const EPS_SHAKE_RATTLE: f64 = 1.0e-8;
+const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
 
 impl MdState {
     pub fn apply_bond_stretching_forces(&mut self) {
@@ -21,7 +18,7 @@ impl MdState {
             a_0.accel += f;
             a_1.accel -= f;
 
-            self.potential_energy += energy;
+            self.potential_energy += energy as f64;
         }
     }
 
@@ -45,7 +42,7 @@ impl MdState {
             a_1.accel += f_1;
             a_2.accel += f_2;
 
-            self.potential_energy += energy;
+            self.potential_energy += energy as f64;
         }
     }
 
@@ -77,14 +74,14 @@ impl MdState {
             a_2.accel += f_2;
             a_3.accel += f3;
 
-            self.potential_energy += energy;
+            self.potential_energy += energy as f64;
         }
     }
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub fn shake_hydrogens(&mut self, mol_i: usize) {
+    pub fn shake_hydrogens(&mut self) {
         for _ in 0..SHAKE_MAX_IT {
-            let mut max_corr: f64 = 0.0;
+            let mut max_corr: f32 = 0.0;
 
             for (indices, (r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
                 let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);

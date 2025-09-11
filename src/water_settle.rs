@@ -1,9 +1,9 @@
 //! This module implements the SETTLE algorithm for rigid water molecules.
 
-use lin_alg::f64::Vec3;
+use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
 
 use crate::{
-    ACCEL_CONVERSION, AtomDynamics,
+    ACCEL_CONVERSION, ACCEL_CONVERSION_F32, AtomDynamics,
     ambient::SimBox,
     water_opc::{H_MASS, O_MASS},
 };
@@ -20,11 +20,11 @@ pub fn settle_drift(
     o: &mut AtomDynamics,
     h0: &mut AtomDynamics,
     h1: &mut AtomDynamics,
-    dt: f64,
+    dt: f32,
     cell: &SimBox,
     virial_constr_kcal: &mut f64,
 ) {
-    const MASS_MOL: f64 = O_MASS + 2.0 * H_MASS;
+    const MASS_MOL: f32 = O_MASS + 2.0 * H_MASS;
 
     let o_pos = o.posit;
     let h0_pos_local = o_pos + cell.min_image(h0.posit - o_pos);
@@ -42,7 +42,7 @@ pub fn settle_drift(
     let L = rO.cross(vO) * O_MASS + rH0.cross(vH0) * H_MASS + rH1.cross(vH1) * H_MASS;
 
     // inertia tensor about COM (symmetric 3×3)
-    let accI = |r: Vec3, m: f64| {
+    let accI = |r: Vec3F32, m: f32| {
         let x = r.x;
         let y = r.y;
         let z = r.z;
@@ -103,16 +103,17 @@ pub fn settle_drift(
     let fH1_amu = dvH1 * H_MASS / dt;
 
     // Convert to kcal·mol⁻¹·Å⁻¹ to match your pair-virial units
-    let fO_kcal = fO_amu / ACCEL_CONVERSION;
-    let fH0_kcal = fH0_amu / ACCEL_CONVERSION;
-    let fH1_kcal = fH1_amu / ACCEL_CONVERSION;
+    let fO_kcal = fO_amu / ACCEL_CONVERSION_F32;
+    let fH0_kcal = fH0_amu / ACCEL_CONVERSION_F32;
+    let fH1_kcal = fH1_amu / ACCEL_CONVERSION_F32;
 
     // Midpoint COM-frame positions
     let rO_mid = (rO + rO2) * 0.5;
     let rH0_mid = (rH0 + rH02) * 0.5;
     let rH1_mid = (rH1 + rH12) * 0.5;
 
-    *virial_constr_kcal += rO_mid.dot(fO_kcal) + rH0_mid.dot(fH0_kcal) + rH1_mid.dot(fH1_kcal);
+    *virial_constr_kcal +=
+        (rO_mid.dot(fO_kcal) + rH0_mid.dot(fH0_kcal) + rH1_mid.dot(fH1_kcal)) as f64;
     // ---------------------------------------------------------
 
     // Final absolute velocities
@@ -128,14 +129,22 @@ pub fn settle_drift(
 ///     [ ixz  iyz  izz ]
 ///
 /// Returns x as a Vec3.  Panics if det(I) ≃ 0.
-fn solve_symmetric3(ixx: f64, iyy: f64, izz: f64, ixy: f64, ixz: f64, iyz: f64, b: Vec3) -> Vec3 {
+fn solve_symmetric3(
+    ixx: f32,
+    iyy: f32,
+    izz: f32,
+    ixy: f32,
+    ixz: f32,
+    iyz: f32,
+    b: Vec3F32,
+) -> Vec3F32 {
     let det = ixx * (iyy * izz - iyz * iyz) - ixy * (ixy * izz - iyz * ixz)
         + ixz * (ixy * iyz - iyy * ixz);
 
-    const TOL: f64 = 1.0e-12;
+    const TOL: f32 = 1.0e-12;
     if det.abs() < TOL {
         // Practically no rotation this step; keep ω = 0
-        return Vec3::new_zero();
+        return Vec3F32::new_zero();
     }
 
     let inv_det = 1.0 / det;
@@ -149,14 +158,14 @@ fn solve_symmetric3(ixx: f64, iyy: f64, izz: f64, ixy: f64, ixz: f64, iyz: f64, 
     let inv22 = (ixx * iyy - ixy * ixy) * inv_det;
 
     // x = I⁻¹ · b
-    Vec3::new(
+    Vec3F32::new(
         inv00 * b.x + inv01 * b.y + inv02 * b.z,
         inv01 * b.x + inv11 * b.y + inv12 * b.z,
         inv02 * b.x + inv12 * b.y + inv22 * b.z,
     )
 }
 
-fn rodrigues_rotate(r: Vec3, omega: Vec3, dt: f64) -> Vec3 {
+fn rodrigues_rotate(r: Vec3F32, omega: Vec3F32, dt: f32) -> Vec3F32 {
     // Rotate vector r by angle θ = |ω| dt about axis n = ω/|ω|
     // Use series for tiny θ to avoid loss of precision.
     let omega_dt = omega * dt;

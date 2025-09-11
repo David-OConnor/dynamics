@@ -9,7 +9,7 @@ use std::{
 
 use bio_files::{AtomGeneric, BondGeneric};
 
-use crate::{ParamError, Snapshot};
+use crate::{ParamError, snapshot::Snapshot};
 
 /// Build a list of indices that relate atoms that are connected by covalent bonds.
 /// For each outer atom index, the inner values are indices of the atom it's bonded to.

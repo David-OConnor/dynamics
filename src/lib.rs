@@ -77,6 +77,8 @@
 // todo: Long-term, you will need to figure out what to run as f32 vice f64, especially
 // todo for being able to run on GPU.
 
+extern crate core;
+
 mod add_hydrogens;
 mod ambient;
 mod bonded;
@@ -86,6 +88,7 @@ mod neighbors;
 mod non_bonded;
 pub mod params;
 mod prep;
+pub mod snapshot;
 mod util;
 mod water_init;
 mod water_opc;
@@ -97,8 +100,6 @@ use std::{
     collections::HashSet,
     fmt,
     fmt::{Display, Formatter},
-    io,
-    path::PathBuf,
     time::Instant,
 };
 
@@ -120,14 +121,13 @@ pub use prep::{HydrogenConstraint, merge_params};
 pub use util::{load_snapshots, save_snapshots};
 pub use water_opc::ForcesOnWaterMol;
 
-use crate::prep::HydrogenRigidConstraint;
 use crate::{
     ambient::BerendsenBarostat,
     non_bonded::{
         CHARGE_UNIT_SCALER, EWALD_ALPHA, LjTableIndices, LjTables, SCALE_COUL_14, SPME_N,
     },
     params::{FfParamSet, ForceFieldParamsIndexed},
-    // prep::HydrogenConstraintInner,
+    snapshot::{SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::build_adjacency_list,
     water_init::make_water_mols,
     water_opc::WaterMol,
@@ -141,16 +141,18 @@ pub const PTX: &str = include_str!("../dynamics.ptx");
 /// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all bonded
 /// accelerations by this. TODO: we are currently multiplying *all* accelerations by this.
 const ACCEL_CONVERSION: f64 = 418.4;
+const ACCEL_CONVERSION_F32: f32 = 418.4;
 const ACCEL_CONVERSION_INV: f64 = 1. / ACCEL_CONVERSION;
+const ACCEL_CONVERSION_INV_F32: f32 = 1. / ACCEL_CONVERSION_F32;
 
 // For assigning velocities from temperature, and other thermostat/barostat use.
-const KB: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
+const KB: f32 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
 
 // SHAKE tolerances for fixed hydrogens. These SHAKE constraints are for fixed hydrogens.
 // The tolerance controls how close we get
 // to the target value; lower values are more precise, but require more iterations. `SHAKE_MAX_ITER`
 // constrains the number of iterations.
-const SHAKE_TOL: f64 = 1.0e-4; // Å
+const SHAKE_TOL: f32 = 1.0e-4; // Å
 const SHAKE_MAX_IT: usize = 100;
 
 // Every this many steps, re-
@@ -176,171 +178,6 @@ impl ParamError {
         Self {
             descrip: descrip.to_owned(),
         }
-    }
-}
-
-/// This stores the positions and velocities of all atoms in the system, and the total energy.
-/// It represents the output of the simulation. A set of these can be used to play it back over time.
-/// We save load and save this to disk in the __ format.
-#[derive(Clone, Debug, Default)]
-pub struct Snapshot {
-    pub time: f64,
-    // todo: You will need to store this by molecule, when we support that.
-    pub atom_posits: Vec<Vec3>,
-    pub atom_velocities: Vec<Vec3>,
-    pub water_o_posits: Vec<Vec3>,
-    pub water_h0_posits: Vec<Vec3>,
-    pub water_h1_posits: Vec<Vec3>,
-    /// Single velocity per water molecule, as it's rigid.
-    pub water_velocities: Vec<Vec3>,
-    pub energy_kinetic: f32,
-    pub energy_potential: f32,
-}
-
-macro_rules! parse_le {
-    ($bytes:expr, $t:ty, $range:expr) => {{ <$t>::from_le_bytes($bytes[$range].try_into().unwrap()) }};
-}
-
-macro_rules! copy_le {
-    ($dest:expr, $src:expr, $range:expr) => {{ $dest[$range].copy_from_slice(&$src.to_le_bytes()) }};
-}
-
-impl Snapshot {
-    /// E.g. for saving to file. Saves all items as 32-bit floating point.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        const SIZE: usize = 12 * 7; // Assumes 32
-        let mut result = Vec::with_capacity(SIZE);
-
-        let mut i = 0;
-
-        copy_le!(result, self.time, i..i + 4);
-        i += 1;
-        copy_le!(result, self.atom_posits.len() as u32, i..i + 4);
-        i += 4;
-        copy_le!(result, self.water_o_posits.len() as u32, i..i + 4);
-        i += 4;
-
-        for pos in &self.atom_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
-            i += 4;
-        }
-
-        for v in &self.atom_velocities {
-            copy_le!(result, v.x as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, v.y as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, v.z as f32, i..i + 4);
-            i += 4;
-        }
-
-        for pos in &self.water_o_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
-            i += 4;
-        }
-
-        for pos in &self.water_h0_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
-            i += 4;
-        }
-
-        for pos in &self.water_h1_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
-            i += 4;
-        }
-
-        for v in &self.water_velocities {
-            copy_le!(result, v.x as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, v.y as f32, i..i + 4);
-            i += 4;
-            copy_le!(result, v.z as f32, i..i + 4);
-            i += 4;
-        }
-
-        copy_le!(result, self.energy_kinetic, i..i + 4);
-        i += 4;
-
-        copy_le!(result, self.energy_potential, i..i + 4);
-
-        result
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
-        let mut i = 0usize;
-
-        let time_f32 = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-        let n_atoms = parse_le!(bytes, u32, i..i + 4) as usize;
-        i += 4;
-        let n_waters = parse_le!(bytes, u32, i..i + 4) as usize;
-        i += 4;
-
-        let mut read_vec3s = |count: usize| {
-            let mut v = Vec::with_capacity(count);
-            for _ in 0..count {
-                let x = parse_le!(bytes, f32, i..i + 4);
-                i += 4;
-                let y = parse_le!(bytes, f32, i..i + 4);
-                i += 4;
-                let z = parse_le!(bytes, f32, i..i + 4);
-                i += 4;
-                v.push(Vec3 {
-                    x: x as f64,
-                    y: y as f64,
-                    z: z as f64,
-                });
-            }
-            v
-        };
-
-        let atom_posits = read_vec3s(n_atoms);
-        let atom_velocities = read_vec3s(n_atoms);
-        let water_o_posits = read_vec3s(n_waters);
-        let water_h0_posits = read_vec3s(n_waters);
-        let water_h1_posits = read_vec3s(n_waters);
-        let water_velocities = read_vec3s(n_waters);
-
-        let energy_kinetic = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-        let energy_potential = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-
-        Ok(Self {
-            time: time_f32 as f64,
-            atom_posits,
-            atom_velocities,
-            water_o_posits,
-            water_h0_posits,
-            water_h1_posits,
-            water_velocities,
-            energy_kinetic,
-            energy_potential,
-        })
-    }
-
-    pub fn make_mol2(&self, atoms: &[AtomGeneric]) -> Mol2 {
-        unimplemented!()
-    }
-
-    pub fn make_mmcif(&self, atoms: &[AtomGeneric]) -> MmCif {
-        unimplemented!()
     }
 }
 
@@ -391,21 +228,21 @@ pub struct AtomDynamics {
     pub force_field_type: String,
     pub element: Element,
     // pub name: String,
-    pub posit: Vec3,
+    pub posit: Vec3F32,
     /// Å / ps
-    pub vel: Vec3,
+    pub vel: Vec3F32,
     /// Å / ps²
-    pub accel: Vec3,
+    pub accel: Vec3F32,
     /// Daltons
     /// todo: Move these 4 out of this to save memory; use from the params struct directly.
-    pub mass: f64,
+    pub mass: f32,
     /// Amber charge units. This is not the elementary charge units found in amino19.lib and gaff2.dat;
     /// it's scaled by a constant.
-    pub partial_charge: f64,
+    pub partial_charge: f32,
     /// Å
-    pub lj_sigma: f64,
+    pub lj_sigma: f32,
     /// kcal/mol
-    pub lj_eps: f64,
+    pub lj_eps: f32,
 }
 
 impl Display for AtomDynamics {
@@ -431,9 +268,7 @@ impl Display for AtomDynamics {
 impl AtomDynamics {
     pub fn new(
         atom: &AtomGeneric,
-        atom_posits: &[Vec3],
-        // ff_params: &ForceFieldParamsIndexed,
-        ff_params: &ForceFieldParams,
+        atom_posits: &[Vec3F32],
         i: usize,
         static_: bool,
     ) -> Result<Self, ParamError> {
@@ -453,19 +288,28 @@ impl AtomDynamics {
             element: atom.element,
             // name: atom.type_in_res.clone().unwrap_or_default(),
             posit: atom_posits[i],
-            vel: Vec3::new_zero(),
-            accel: Vec3::new_zero(),
-            // mass: ff_params.mass.get(&i).unwrap().mass as f64,
-            mass: ff_params.mass.get(&ff_type).unwrap().mass as f64,
-            // We get partial charge for ligands from (e.g. Amber-provided) Mol files, so we load it from the atom, vice
-            // the loaded FF params. They are not in the dat or frcmod files that angle, bond-length etc params are from.
-            partial_charge: CHARGE_UNIT_SCALER * atom.partial_charge.unwrap_or_default() as f64,
-            // lj_sigma: ff_params.lennard_jones.get(&i).unwrap().sigma as f64,
-            lj_sigma: ff_params.lennard_jones.get(&ff_type).unwrap().sigma as f64,
-            // lj_eps: ff_params.lennard_jones.get(&i).unwrap().eps as f64,
-            lj_eps: ff_params.lennard_jones.get(&ff_type).unwrap().eps as f64,
             force_field_type: ff_type,
+            ..Default::default()
         })
+    }
+
+    /// Populate atom-specific parameters.
+    /// E.g. we use this workflow if creating the atoms prior to the indexed FF.
+    pub(crate) fn assign_data_from_params(
+        &mut self,
+        ff_params: &ForceFieldParamsIndexed,
+        // ff_params: &ForceFieldParams,
+        i: usize,
+    ) {
+        // mass: ff_params.mass.get(&i).unwrap().mass as f64,
+        self.mass = ff_params.mass[&i].mass;
+        // We get partial charge for ligands from (e.g. Amber-provided) Mol files, so we load it from the atom, vice
+        // the loaded FF params. They are not in the dat or frcmod files that angle, bond-length etc params are from.
+        self.partial_charge = CHARGE_UNIT_SCALER * self.partial_charge;
+        // lj_sigma: ff_params.lennard_jones.get(&i).unwrap().sigma as f64,
+        self.lj_sigma = ff_params.lennard_jones[&i].sigma;
+        // lj_eps: ff_params.lennard_jones.get(&i).unwrap().eps as f64,
+        self.lj_eps = ff_params.lennard_jones[&i].eps;
     }
 }
 
@@ -483,33 +327,33 @@ pub(crate) struct AtomDynamicsx4 {
     pub element: [Element; 4],
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-impl AtomDynamicsx4 {
-    pub fn from_array(bodies: [AtomDynamics; 4]) -> Self {
-        let mut posits = [Vec3::new_zero(); 4];
-        let mut vels = [Vec3::new_zero(); 4];
-        let mut accels = [Vec3::new_zero(); 4];
-        let mut masses = [0.0; 4];
-        // Replace `Element::H` (for example) with some valid default for your `Element` type:
-        let mut elements = [Element::Hydrogen; 4];
-
-        for (i, body) in bodies.into_iter().enumerate() {
-            posits[i] = body.posit;
-            vels[i] = body.vel;
-            accels[i] = body.accel;
-            masses[i] = body.mass;
-            elements[i] = body.element;
-        }
-
-        Self {
-            posit: Vec3x4::from_array(posits),
-            vel: Vec3x4::from_array(vels),
-            accel: Vec3x4::from_array(accels),
-            mass: f64x4::from_array(masses),
-            element: elements,
-        }
-    }
-}
+// #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+// impl AtomDynamicsx4 {
+//     pub fn from_array(bodies: [AtomDynamics; 4]) -> Self {
+//         let mut posits = [Vec3F32::new_zero(); 4];
+//         let mut vels = [Vec3F32::new_zero(); 4];
+//         let mut accels = [Vec3F32::new_zero(); 4];
+//         let mut masses = [0.0; 4];
+//         // Replace `Element::H` (for example) with some valid default for your `Element` type:
+//         let mut elements = [Element::Hydrogen; 4];
+//
+//         for (i, body) in bodies.into_iter().enumerate() {
+//             posits[i] = body.posit;
+//             vels[i] = body.vel;
+//             accels[i] = body.accel;
+//             masses[i] = body.mass;
+//             elements[i] = body.element;
+//         }
+//
+//         Self {
+//             posit: Vec3x4::from_array(posits),
+//             vel: Vec3x4::from_array(vels),
+//             accel: Vec3x4::from_array(accels),
+//             mass: f64x4::from_array(masses),
+//             element: elements,
+//         }
+//     }
+// }
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -563,12 +407,7 @@ pub struct MdConfig {
     /// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
     /// algorithms. This allows for higher time steps.
     pub hydrogen_constraint: HydrogenConstraint,
-    /// Take a snapshot every this number of steps, in the output `Vec<Snapshot>`.
-    pub snapshot_ratio_memory: usize,
-    /// Take a snapshot every this number of steps, in the output file.
-    pub snapshot_ratio_file: usize,
-    /// Consider a tuple with a snapshot type, like DCD, and a path.
-    pub snapshot_path: Option<PathBuf>,
+    pub snapshot_handlers: Vec<SnapshotHandler>,
     pub sim_box: SimBoxInit,
 }
 
@@ -580,9 +419,13 @@ impl Default for MdConfig {
             temp_target: 310.,
             pressure_target: 1.,
             hydrogen_constraint: Default::default(),
-            snapshot_ratio_memory: 1,
-            snapshot_ratio_file: 2,
-            snapshot_path: None,
+            // snapshot_ratio_memory: 1,
+            // snapshot_ratio_file: 2,
+            // snapshot_path: None,
+            snapshot_handlers: vec![SnapshotHandler {
+                save_type: SaveType::Memory,
+                ratio: 1,
+            }],
             sim_box: Default::default(),
         }
     }
@@ -737,14 +580,21 @@ impl MdState {
                 // todo: If there are multiple molecules of a given type, this is unnecessary.
                 // todo: Make sure overrides from one individual molecule don't affect others, todo,
                 // todo and don't affect general params.
-                merge_params(&mut params, Some(&params_general));
+                params = merge_params(&params, &params_general);
+
+                if let Some(p) = mol.mol_specific_params {
+                    params = merge_params(&params, &p);
+                }
             }
 
-            let mut p = Vec::new(); // to store the ref.
+            let mut p: Vec<Vec3F32> = Vec::new(); // to store the ref.
             let atom_posits = match mol.atom_posits {
-                Some(a) => a,
+                Some(a) => {
+                    p = a.iter().map(|p| (*p).into()).collect();
+                    &p
+                }
                 None => {
-                    p = mol.atoms.iter().map(|a| a.posit).collect();
+                    p = mol.atoms.iter().map(|a| a.posit.into()).collect();
                     &p
                 }
             };
@@ -754,7 +604,7 @@ impl MdState {
                 atoms_md.push(AtomDynamics::new(
                     &atom,
                     atom_posits,
-                    &params,
+                    // &params,
                     i,
                     mol.static_,
                 )?);
@@ -804,6 +654,11 @@ impl MdState {
             // &mut h_constraints,
             cfg.hydrogen_constraint,
         )?;
+
+        // Assign mass, LJ params, etc.
+        for (i, atom) in atoms_md.iter_mut().enumerate() {
+            atom.assign_data_from_params(&force_field_params, i);
+        }
 
         // let cell = SimBox::new_padded(&atoms_dy);
         let cell = SimBox::new(&atoms_md, &cfg.sim_box);
@@ -897,13 +752,13 @@ impl MdState {
     /// forces. Also reset forces on water.
     fn reset_accels(&mut self) {
         for a in &mut self.atoms {
-            a.accel = Vec3::new_zero();
+            a.accel = Vec3F32::new_zero();
         }
         for mol in &mut self.water {
-            mol.o.accel = Vec3::new_zero();
-            mol.m.accel = Vec3::new_zero();
-            mol.h0.accel = Vec3::new_zero();
-            mol.h1.accel = Vec3::new_zero();
+            mol.o.accel = Vec3F32::new_zero();
+            mol.m.accel = Vec3F32::new_zero();
+            mol.h0.accel = Vec3F32::new_zero();
+            mol.h1.accel = Vec3F32::new_zero();
         }
 
         self.barostat.virial_pair_kcal = 0.0;
@@ -965,7 +820,7 @@ impl MdState {
     /// One **Velocity-Verlet** step (leap-frog style) of length `dt` is in picoseconds (10^-12),
     /// with typical values of 0.001, or 0.002ps (1 or 2fs).
     /// This method orchestrates the dynamics at each time step.
-    pub fn step(&mut self, dev: &ComputationDevice, dt: f64) {
+    pub fn step(&mut self, dev: &ComputationDevice, dt: f32) {
         let dt_half = 0.5 * dt;
 
         // First half-kick (v += a dt/2) and drift (x += v dt)
@@ -996,7 +851,7 @@ impl MdState {
         // The order we perform these steps is important.
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
             // todo: SOrt this out!
-            self.shake_hydrogens(0);
+            self.shake_hydrogens();
         }
 
         self.reset_accels();
@@ -1022,7 +877,7 @@ impl MdState {
             // is an optimization to prevent dividing each accel component by it.
             // This is the step where we A: convert force to accel, and B: Convert units from the param
             // units to the ones we use in dynamics.
-            a.accel *= ACCEL_CONVERSION / a.mass;
+            a.accel *= ACCEL_CONVERSION as f32 / a.mass;
             a.vel += a.accel * dt_half;
         }
 
@@ -1034,11 +889,13 @@ impl MdState {
             self.rattle_hydrogens(0);
         }
 
-        // I believe we must run barostat prior to thermostat, in our current configuration.
-        self.apply_barostat_berendsen(dt);
-        self.apply_thermostat_csvr(dt, self.cfg.temp_target as f64);
+        let dt_f64 = dt as f64;
 
-        self.time += dt;
+        // I believe we must run barostat prior to thermostat, in our current configuration.
+        self.apply_barostat_berendsen(dt_f64);
+        self.apply_thermostat_csvr(dt_f64, self.cfg.temp_target as f64);
+
+        self.time += dt as f64;
         self.step_count += 1;
 
         // todo: Ratio for this too?
@@ -1053,15 +910,41 @@ impl MdState {
             self.regen_pme();
         }
 
-        if self.step_count % self.cfg.snapshot_ratio_memory == 0 {
-            // We can update this out of the snapshot ratio if desired.
-            self.kinetic_energy = self.current_kinetic_energy();
+        let mut updated_ke = false;
+        let mut take_ss = false;
+
+        for handler in &self.cfg.snapshot_handlers {
+            if self.step_count % handler.ratio != 0 {
+                continue;
+            }
+
+            // We currently only use kinetic energy in snapshots, so update it only when
+            // calling a handler.
+            if !updated_ke {
+                updated_ke = true;
+                self.kinetic_energy = self.current_kinetic_energy();
+            }
+
+            match &handler.save_type {
+                SaveType::Memory => {
+                    take_ss = true;
+                }
+                SaveType::Dcd(path) => {
+                    // todo: Don't append each time; do this every few times.
+                    if let Err(e) = append_dcd(&self.snapshots[0..0], &path) {
+                        eprintln!("Error saving snapshot as DCD: {e:?}");
+                    }
+                }
+            }
+        }
+
+        if take_ss {
             self.take_snapshot();
         }
     }
 
     fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
-        const K_COUL: f64 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
+        const K_COUL: f32 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
 
         let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();
 
@@ -1118,7 +1001,7 @@ impl MdState {
                 PMEIndex::Static(_) => { /* contributes to field, no accel update */ }
             }
         }
-        self.barostat.virial_pair_kcal += w_recip;
+        self.barostat.virial_pair_kcal += w_recip as f64;
 
         // 1–4 Coulomb scaling correction
         for &(i, j) in &self.pairs_14_scaled {
@@ -1140,15 +1023,15 @@ impl MdState {
 
             self.atoms[i].accel += df;
             self.atoms[j].accel -= df;
-            self.barostat.virial_pair_kcal += (dir * r).dot(df); // r·F
+            self.barostat.virial_pair_kcal += (dir * r).dot(df) as f64; // r·F
         }
     }
 
-    // todo: GPT helper. QC, and simplify as required.
+    // todo: QC, and simplify as required.
     /// Gather all particles that contribute to PME (dyn, water sites, statics).
     /// Returns positions wrapped to the primary box, their charges, and a map telling
     /// us which original DOF each entry corresponds to.
-    fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3>, Vec<f64>, Vec<PMEIndex>) {
+    fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3F32>, Vec<f32>, Vec<PMEIndex>) {
         let n_dyn = self.atoms.len();
         let n_wat = self.water.len();
         // let n_st = self.atoms_static.len();
@@ -1192,7 +1075,7 @@ impl MdState {
         // Optional sanity check (debug only): near-neutral total charge
         #[cfg(debug_assertions)]
         {
-            let qsum: f64 = q.iter().sum();
+            let qsum: f64 = q.iter().map(|q_| (*q_) as f64).sum();
             if qsum.abs() > 1e-6 {
                 eprintln!(
                     "[PME] Warning: net charge = {qsum:.6e} (PME assumes neutral or a uniform background)"
@@ -1217,7 +1100,7 @@ impl MdState {
     fn current_kinetic_energy(&self) -> f64 {
         self.atoms
             .iter()
-            .map(|a| 0.5 * a.mass * a.vel.magnitude_squared())
+            .map(|a| 0.5 * (a.mass * a.vel.magnitude_squared()) as f64)
             .sum()
     }
 
@@ -1252,6 +1135,7 @@ impl MdState {
 /// Mutable aliasing helpers.
 pub(crate) fn split2_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     assert!(i != j);
+
     let (low, high) = if i < j { (i, j) } else { (j, i) };
     let (left, right) = v.split_at_mut(high);
     (&mut left[low], &mut right[0])

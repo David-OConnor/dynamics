@@ -56,7 +56,7 @@ cuda_setup = { version = "0.1.7", optional = true }
 
 
 [patch.crates-io]
-#ewald = { path = "../ewald" }
+ewald = { path = "../ewald" }
 bio_files = { path = "../bio_files" }
 
 

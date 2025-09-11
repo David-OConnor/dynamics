@@ -200,12 +200,14 @@ pub fn force_nonbonded_gpu(
 /// with Coulomb.
 /// This assumes diff (and dir) is in order tgt - src.
 /// This variant also computes energy.
-pub fn force_e_lj(dir: Vec3, inv_dist: f64, sigma: f64, eps: f64) -> (Vec3, f64) {
+pub fn force_e_lj(dir: Vec3F32, inv_dist: f32, sigma: f32, eps: f32) -> (Vec3F32, f32) {
     let sr = sigma * inv_dist;
     let sr6 = sr.powi(6);
     let sr12 = sr6.powi(2);
 
+    // todo: mul_add is unstable. add later
     let mag = 24. * eps * (2. * sr12 - sr6) * inv_dist;
+    // let mag = 24. * eps * mul_add(2., sr12,  -sr6) * inv_dist;
 
     let energy = 4. * eps * (sr12 - sr6);
     (dir * mag, energy)

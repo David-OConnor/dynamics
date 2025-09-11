@@ -6,7 +6,7 @@
 
 use std::time::Instant;
 
-use lin_alg::f64::Vec3;
+use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
 use rayon::prelude::*;
 
 use crate::{
@@ -14,9 +14,9 @@ use crate::{
 };
 
 // These are for non-bonded neighbor list construction.
-const SKIN: f64 = 2.0; // Å – rebuild list if an atom moved >½·SKIN. ~2Å.
-const SKIN_SQ: f64 = SKIN * SKIN;
-const SKIN_SQ_DIV_4: f64 = SKIN_SQ / 4.;
+const SKIN: f32 = 2.0; // Å – rebuild list if an atom moved >½·SKIN. ~2Å.
+const SKIN_SQ: f32 = SKIN * SKIN;
+const SKIN_SQ_DIV_4: f32 = SKIN_SQ / 4.;
 
 #[derive(Default)]
 /// Non-bonded neighbors; an important optimization for Van der Waals and Coulomb interactions.
@@ -46,12 +46,12 @@ pub struct NeighborsNb {
     pub water_dy: Vec<Vec<usize>>,
     //
     // Reference positions used when rebuilding. Only for movable atoms.
-    pub ref_pos_dyn: Vec<Vec3>,
+    pub ref_pos_dyn: Vec<Vec3F32>,
     // /// Doesn't change.
     // pub ref_pos_static: Vec<Vec3>,
-    pub ref_pos_water_o: Vec<Vec3>, // use O as proxy for the rigid water
+    pub ref_pos_water_o: Vec<Vec3F32>, // use O as proxy for the rigid water
     /// Used to determine when to rebuild neighbor lists. todo: Implement.
-    pub max_displacement_sq: f64,
+    pub max_displacement_sq: f32,
 }
 
 impl MdState {
@@ -183,12 +183,12 @@ impl MdState {
 
 /// [Re]build a neighbor list, used for non-bonded interactions. Run this periodically.
 pub fn build_neighbors(
-    tgt_posits: &[Vec3],
-    src_posits: &[Vec3],
+    tgt_posits: &[Vec3F32],
+    src_posits: &[Vec3F32],
     cell: &SimBox,
     symmetric: bool,
 ) -> Vec<Vec<usize>> {
-    const CUTOFF_SKIN_SQ: f64 = (LONG_RANGE_CUTOFF + SKIN) * (LONG_RANGE_CUTOFF + SKIN);
+    const CUTOFF_SKIN_SQ: f32 = (LONG_RANGE_CUTOFF + SKIN) * (LONG_RANGE_CUTOFF + SKIN);
 
     let tgt_len = tgt_posits.len();
     let src_len = src_posits.len();
@@ -241,11 +241,11 @@ pub fn build_neighbors(
 
 /// For use with our non-bonded neighbors construction.
 pub fn max_displacement_sq_since_build(
-    targets: &[Vec3],
-    neighbor_ref_posits: &[Vec3],
+    targets: &[Vec3F32],
+    neighbor_ref_posits: &[Vec3F32],
     cell: &SimBox,
-) -> f64 {
-    let mut result: f64 = 0.0;
+) -> f32 {
+    let mut result: f32 = 0.0;
 
     for (i, posit) in targets.iter().enumerate() {
         let diff_min_img = cell.min_image(*posit - neighbor_ref_posits[i]);
@@ -255,11 +255,11 @@ pub fn max_displacement_sq_since_build(
 }
 
 /// Helper
-fn positions_of(atoms: &[AtomDynamics]) -> Vec<Vec3> {
+fn positions_of(atoms: &[AtomDynamics]) -> Vec<Vec3F32> {
     atoms.iter().map(|a| a.posit).collect()
 }
 
 /// Helper
-fn positions_of_water_o(waters: &[WaterMol]) -> Vec<Vec3> {
+fn positions_of_water_o(waters: &[WaterMol]) -> Vec<Vec3F32> {
     waters.iter().map(|w| w.o.posit).collect()
 }

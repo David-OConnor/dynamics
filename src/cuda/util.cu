@@ -84,7 +84,10 @@ ForceEnergy coulomb_force_spme_short_range(
 
     const float exp_term  = __expf(-(alpha_r * alpha_r));
 
-    const float force_mag = charge_term * (erfc_term * inv_r * inv_r + 2.0f * alpha * exp_term * INV_SQRT_PI * inv_r);
+    const float inv_r_sq = inv_r * inv_r;
+    const float coef = 2.0f * alpha * exp_term * INV_SQRT_PI;
+    // mul_add
+    const float force_mag = charge_term * fmaf(erfc_term, inv_r_sq, coef * inv_r);
 
     result.force = dir * force_mag;
     result.energy = charge_term * inv_r * erfc_term;
@@ -103,14 +106,17 @@ ForceEnergy lj_force_v2(
     float eps
 ) {
     const float sr = sigma * inv_r;
-    const float sr6 = powf(sr, 6.);
+    const float sr2 = sr * sr;
+    const float sr4 = sr2 * sr2;
+    const float sr6 = sr4 * sr2;
     const float sr12 = sr6 * sr6;
 
-    const float mag = 24.0f * eps * (2. * sr12 - sr6) * inv_r;
+    // Optimized mul_add.
+    const float mag = 24.0f * eps * fmaf(2.f, sr12, -sr6) * inv_r;
 
     ForceEnergy result;
     result.force = dir * mag;
-    result.energy = 4. * eps * (sr12 - sr6);
+    result.energy = 4.f * eps * (sr12 - sr6);
 
     return result;
 }

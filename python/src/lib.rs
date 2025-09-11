@@ -44,7 +44,7 @@ macro_rules! make_enum {
 
 #[pyclass]
 struct Snapshot {
-    inner: dynamics_rs::Snapshot,
+    inner: dynamics_rs::snapshot::Snapshot,
 }
 
 // #[classmethod]

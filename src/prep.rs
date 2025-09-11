@@ -24,6 +24,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    thread::park_timeout_ms,
 };
 
 #[cfg(feature = "encode")]
@@ -39,25 +40,48 @@ use crate::{
     AtomDynamics, MdState, ParamError, neighbors::build_neighbors, params::ForceFieldParamsIndexed,
 };
 
-/// Build a single lookup table in which molecule-specific parameters
-/// (when given) replace or add to the generic ones.
-/// todo: IDeally this function doesn't accept an option, but this simplifies upstream APIs in some cases.
-pub fn merge_params(
-    generic: &ForceFieldParams,
-    specific: Option<&ForceFieldParams>,
-) -> ForceFieldParams {
-    // Start with a deep copy of the generic parameters.
-    let mut merged = generic.clone();
+/// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
+/// the baseline.
+pub fn merge_params(baseline: &ForceFieldParams, add_this: &ForceFieldParams) -> ForceFieldParams {
+    let mut merged = baseline.clone();
 
-    if let Some(lig) = specific {
-        merged.mass.extend(lig.mass.clone());
-        merged.lennard_jones.extend(lig.lennard_jones.clone());
+    merged.mass.extend(add_this.mass.clone());
+    merged.lennard_jones.extend(add_this.lennard_jones.clone());
 
-        merged.bond.extend(lig.bond.clone());
-        merged.angle.extend(lig.angle.clone());
-        merged.dihedral.extend(lig.dihedral.clone());
-        merged.improper.extend(lig.improper.clone());
-    }
+    merged.bond.extend(add_this.bond.clone());
+    merged.angle.extend(add_this.angle.clone());
+    merged.dihedral.extend(add_this.dihedral.clone());
+    merged.improper.extend(add_this.improper.clone());
+
+    // merged.mass.reserve(add_this.mass.len());
+    // for (k, v) in &add_this.mass {
+    //     merged.mass.insert(k.clone(), v.clone());
+    // }
+    //
+    // merged.lennard_jones.reserve(add_this.lennard_jones.len());
+    // for (k, v) in &add_this.lennard_jones {
+    //     merged.lennard_jones.insert(k.clone(), v.clone());
+    // }
+    //
+    // merged.bond.reserve(add_this.bond.len());
+    // for (k, v) in &add_this.bond {
+    //     merged.bond.insert(k.clone(), v.clone());
+    // }
+    //
+    // merged.angle.reserve(add_this.angle.len());
+    // for (k, v) in &add_this.angle {
+    //     merged.angle.insert(k.clone(), v.clone());
+    // }
+    //
+    // merged.dihedral.reserve(add_this.dihedral.len());
+    // for (k, v) in &add_this.dihedral {
+    //     merged.dihedral.insert(k.clone(), v.clone());
+    // }
+    //
+    // merged.improper.reserve(add_this.improper.len());
+    // for (k, v) in &add_this.improper {
+    //     merged.improper.insert(k.clone(), v.clone());
+    // }
 
     merged
 }
@@ -255,9 +279,7 @@ impl ForceFieldParamsIndexed {
                 // If the key is missing for the given FF type in our loaded data, check for certain
                 // special cases.
             } else {
-                // ChatGpt seems to think this is the move. I only asked it about "2C", and it inferred
-                // I should also map 3C and C8 to this, which is a good sign. Note that the mass values
-                // for all 4 of these are present in frcmod.ff19sb.
+                // The mass values for all 4 of these are present in frcmod.ff19sb.
                 if ff_type == "2C" || ff_type == "3C" || ff_type == "C8" {
                     result
                         .lennard_jones

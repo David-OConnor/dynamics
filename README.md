@@ -49,11 +49,11 @@ Integrates the following [Amber parameters](https://ambermd.org/AmberModels.php)
 
 
 ## The algorithm
-
 This library uses a traditional MD workflow. We use the following components:
 
-### Integrator
-We use a Velocity-Verlet integrator for the whole system.
+
+### Integrators
+We use a Velocity-Verlet integrator for the whole system. Langevin and Verlet (non-velocity) are planned.
 
 
 ### Solvation
@@ -90,9 +90,19 @@ We have two modes of handling Hydrogen in bonded forces: The same as other atoms
 using SHAKE and RATTLE algorithms. The latter allows for stability under higher timesteps. (e.g. 2ps)
 
 
-### Thermostat and barostate
+### Thermostat and barostat
 Uses a Berendsen barostat, and a simple thermostat. These continuously update atom velocities (for molecules and
 solvents) to match target pressure and temperatures.
+
+
+### Floating point precision
+Mixed precision: 32-bit floating points for most operations. We use 64-bit accumulators, and in thermostat 
+and barostat computations.
+
+
+### Saving results
+Snapshots of results can be returned in memory, or saved to disk in [DCD](https://docs.openmm.org/7.1.0/api-python/generated/simtk.openmm.app.dcdfile.DCDFile.html) format.
+
 
 ## More info
 
@@ -200,10 +210,11 @@ def main():
         print(f"Posit: {posit}")
         # Also keeps track of velocities, and water molecule positions/velocity
     
+    # Do something with snapshot data, like displaying atom positions in your UI.
+    # You can save to DCD file, and adjust the ratio they're saved at using the `MdConfig.snapshot_setup`
+    # field: See the example below.
     for snap in md.snapshots:
         pass
-        # Do something with snapshot data, like displaying atom positions in your UI,
-        # Or saving to a file.
         
         
 main()
@@ -296,10 +307,10 @@ fn main() {
         // Also keeps track of velocities, and water molecule positions/velocity
     }
 
-    for snap in &md.snapshots {
-        // Do something with snapshot data, like displaying atom positions in your UI,
-        // Or saving to a file.
-    }
+    // Do something with snapshot data, like displaying atom positions in your UI.
+    // You can save to DCD file, and adjust the ratio they're saved at using the `MdConfig.snapshot_setup`
+    // field: See the example below.
+    for snap in &md.snapshots {}
 }
 
 ```
@@ -346,10 +357,17 @@ let cfg = MdConfig {
     // Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
     // algorithms. This allows for higher time steps.
     hydrogen_constraint: dynamics::HydrogenConstraint::Fixed,
-    // Take a snapshot every this number of steps, in the output `Vec<Snapshot>`.
-    snapshot_ratio_memory: 1,
-    // Take a snapshot every this number of steps, in the output file.
-    snapshot_ratio_file: 2,
+    // Deafults to in-memory, every step
+    snapshot_handlers: vec![
+        SnapshotHandler {
+            save_type: SaveType::Memory,
+            ratio: 1,
+        },
+        SnapshotHandler {
+            save_type: SaveType::Dcd(PathBuf::from("output.dcd")),
+            ratio: 10,
+        },
+    ],
     sim_box: SimBoxInit::Pad(10.),
     // Or sim_box: SimBoxInit::Fixed((Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.)),
 };
@@ -414,7 +432,6 @@ To build the Python library wheel, from the `python` subdirectory, run `maturin 
 locally for testing, once built, by running `pip install .`
 
 ## Eratta
-- Only a single dynamic molecule is supported
 - Python is CPU-only
 - CPU SIMD unsupported
 

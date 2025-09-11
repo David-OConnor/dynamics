@@ -91,7 +91,7 @@ impl FfParamSet {
 
             if let Some(p_mod) = &paths.peptide_mod {
                 let frcmod = ForceFieldParams::load_frcmod(p_mod)?;
-                result.peptide = Some(merge_params(&peptide, Some(&frcmod)));
+                result.peptide = Some(merge_params(&peptide, &frcmod));
             } else {
                 result.peptide = Some(peptide);
             }
@@ -119,7 +119,7 @@ impl FfParamSet {
 
             if let Some(p_mod) = &paths.dna_mod {
                 let frcmod = ForceFieldParams::load_frcmod(p_mod)?;
-                result.dna = Some(merge_params(&peptide, Some(&frcmod)));
+                result.dna = Some(merge_params(&peptide, &frcmod));
             } else {
                 result.dna = Some(peptide);
             }
@@ -148,7 +148,7 @@ impl FfParamSet {
 
         let peptide = ForceFieldParams::from_dat(PARM_19)?;
         let peptide_frcmod = ForceFieldParams::from_frcmod(FRCMOD_FF19SB)?;
-        result.peptide = Some(merge_params(&peptide, Some(&peptide_frcmod)));
+        result.peptide = Some(merge_params(&peptide, &peptide_frcmod));
 
         let internal = parse_amino_charges(AMINO_19)?;
         let n_terminus = parse_amino_charges(AMINO_NT12)?;
@@ -186,7 +186,7 @@ pub(crate) struct ForceFieldParamsIndexed {
     pub mass: HashMap<usize, MassParams>,
     pub bond_stretching: HashMap<(usize, usize), BondStretchingParams>,
     /// E.g. any bond to Hydrogen if configured this way. Distance^2 in Å, inv_mass in Daltons
-    pub bond_rigid_constraints: HashMap<(usize, usize), (f64, f64)>,
+    pub bond_rigid_constraints: HashMap<(usize, usize), (f32, f32)>,
     pub angle: HashMap<(usize, usize, usize), AngleBendingParams>,
     pub dihedral: HashMap<(usize, usize, usize, usize), DihedralParams>,
     /// Generally only for planar hub and spoke arrangements, and always hold a planar dihedral shape.

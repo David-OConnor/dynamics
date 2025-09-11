@@ -7,9 +7,7 @@ use std::{collections::HashMap, ops::AddAssign};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
 use ewald::force_coulomb_short_range;
-#[cfg(feature = "cuda")]
-use lin_alg::f32::Vec3 as Vec3F32;
-use lin_alg::f64::Vec3;
+use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
 use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
@@ -23,7 +21,7 @@ use crate::{
 
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.
-pub const CUTOFF_VDW: f64 = 12.0;
+pub const CUTOFF_VDW: f32 = 12.0;
 // const CUTOFF_VDW_SQ: f64 = CUTOFF_VDW * CUTOFF_VDW;
 
 // Ewald SPME approximation for Coulomb force
@@ -38,13 +36,13 @@ pub const CUTOFF_VDW: f64 = 12.0;
 
 // We don't use a taper, for now.
 // const LONG_RANGE_SWITCH_START: f64 = 8.0; // start switching (Å)
-pub const LONG_RANGE_CUTOFF: f64 = 10.0;
+pub const LONG_RANGE_CUTOFF: f32 = 10.0;
 
 // A bigger α means more damping, and a smaller real-space contribution. (Cheaper real), but larger
 // reciprocal load.
 // Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
-pub const EWALD_ALPHA: f64 = 0.35; // Å^-1. 0.35 is good for cutoff = 10.
-pub const PME_MESH_SPACING: f64 = 1.0;
+pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff = 10.
+pub const PME_MESH_SPACING: f32 = 1.0;
 // SPME order‑4 B‑spline interpolation
 pub const SPME_N: usize = 64;
 
@@ -53,17 +51,17 @@ pub const SPME_N: usize = 64;
 // treatment in Amber force fields."
 // "By default, vdW 1-4 interactions are divided (scaled down) by a factor of 2.0, electrostatic 1-4 terms by a factor
 // of 1.2."
-const SCALE_LJ_14: f64 = 0.5;
-pub const SCALE_COUL_14: f64 = 1.0 / 1.2;
+const SCALE_LJ_14: f32 = 0.5;
+pub const SCALE_COUL_14: f32 = 1.0 / 1.2;
 
 // Multiply by this to convert partial charges from elementary charge (What we store in Atoms loaded from mol2
 // files and amino19.lib.) to the self-consistent amber units required to calculate Coulomb force.
 // We apply this to dynamic and static atoms when building Indexed params, and to water molecules
 // on their construction.
-pub const CHARGE_UNIT_SCALER: f64 = 18.2223;
+pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 
 // (indices), (sigma, eps)
-pub type LjTable = HashMap<(usize, usize), (f64, f64)>;
+pub type LjTable = HashMap<(usize, usize), (f32, f32)>;
 
 /// We use this to load the correct data from LJ lookup tables. Since we use indices,
 /// we must index correctly into the dynamic, or static tables. We have single-index lookups
@@ -93,14 +91,14 @@ pub struct LjTables {
     /// Keys: Dynamic. Water acting on water O.
     /// Water tables are simpler than ones on dynamic: no combinations needed, as the source is a single
     /// target atom type: O (water).
-    pub water_dyn: HashMap<usize, (f64, f64)>,
+    pub water_dyn: HashMap<usize, (f32, f32)>,
     /// Keys: Static. For acting on water O.
-    pub water_static: HashMap<usize, (f64, f64)>,
+    pub water_static: HashMap<usize, (f32, f32)>,
 }
 
 impl LjTables {
     /// Get (σ, ε)
-    pub fn lookup(&self, i: &LjTableIndices) -> (f64, f64) {
+    pub fn lookup(&self, i: &LjTableIndices) -> (f32, f32) {
         match i {
             LjTableIndices::DynDyn(indices) => *self.dynamic.get(&indices).unwrap(),
             // LjTableIndices::DynStatic(indices) => *self.static_.get(&indices).unwrap(),
@@ -223,6 +221,7 @@ fn calc_force(
         .fold(
             || {
                 (
+                    // Sums as f64.
                     vec![Vec3::new_zero(); n_dyn],
                     vec![ForcesOnWaterMol::default(); n_wat],
                     0.0_f64, // Virial sum
@@ -247,6 +246,7 @@ fn calc_force(
                     p.calc_coulomb,
                 );
 
+                let f: Vec3 = f.into();
                 add_to_sink(&mut acc_d, &mut acc_w, p.tgt, f);
                 if p.symmetric {
                     add_to_sink(&mut acc_d, &mut acc_w, p.src, -f);
@@ -258,7 +258,7 @@ fn calc_force(
                     matches!(p.tgt, BodyRef::Dyn(_)) || matches!(p.src, BodyRef::Dyn(_));
 
                 if involves_dyn {
-                    energy += e_pair;
+                    energy += e_pair as f64;
                 }
 
                 (acc_d, acc_w, virial, energy)
@@ -300,8 +300,8 @@ fn calc_force_cuda(
     water: &[WaterMol],
     cell: &SimBox,
     lj_tables: &LjTables,
-    cutoff_ewald: f64,
-    alpha_ewald: f64,
+    cutoff_ewald: f32,
+    alpha_ewald: f32,
 ) -> (Vec<Vec3>, Vec<ForcesOnWaterMol>, f64, f64) {
     let n_dyn = atoms_dyn.len();
     let n_water = water.len();
@@ -385,17 +385,16 @@ fn calc_force_cuda(
             }
         };
 
-        // `into()` converts Vec3s from f64 to f32.
-        posits_tgt.push(atom_tgt.posit.into());
-        posits_src.push(atom_src.posit.into());
+        posits_tgt.push(atom_tgt.posit);
+        posits_src.push(atom_src.posit);
 
         let (σ, ε) = lj_tables.lookup(&pair.lj_indices);
 
-        sigmas.push(σ as f32);
-        epss.push(ε as f32);
+        sigmas.push(σ);
+        epss.push(ε);
 
-        qs_tgt.push(atom_tgt.partial_charge as f32);
-        qs_src.push(atom_src.partial_charge as f32);
+        qs_tgt.push(atom_tgt.partial_charge);
+        qs_src.push(atom_src.partial_charge);
 
         scale_14s.push(pair.scale_14);
 
@@ -468,17 +467,19 @@ impl MdState {
             ),
         };
 
+        // `.into()` below converts accumulated forces to f32.
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
-            let f_f64: Vec3 = f_on_dyn[i];
-            tgt.accel += f_f64;
+            // let f_f64: Vec3 = f_on_dyn[i];
+            let f: Vec3F32 = f_on_dyn[i].into();
+            tgt.accel += f;
         }
 
         for (i, tgt) in self.water.iter_mut().enumerate() {
             let f = f_on_water[i];
-            let f_0: Vec3 = f.f_o.into();
-            let f_m: Vec3 = f.f_m.into();
-            let f_h0: Vec3 = f.f_h0.into();
-            let f_h1: Vec3 = f.f_h1.into();
+            let f_0: Vec3F32 = f.f_o.into();
+            let f_m: Vec3F32 = f.f_m.into();
+            let f_h0: Vec3F32 = f.f_h0.into();
+            let f_h1: Vec3F32 = f.f_h1.into();
 
             tgt.o.accel += f_0;
             tgt.m.accel += f_m;
@@ -671,7 +672,7 @@ pub fn f_nonbonded(
     // These flags are for use with forces on water.
     calc_lj: bool,
     calc_coulomb: bool,
-) -> (Vec3, f64) {
+) -> (Vec3F32, f32) {
     let diff = cell.min_image(tgt.posit - src.posit);
 
     // We compute these dist-related values once, and share them between
@@ -679,7 +680,7 @@ pub fn f_nonbonded(
     let dist_sq = diff.magnitude_squared();
 
     if dist_sq < 1e-12 {
-        return (Vec3::new_zero(), 0.);
+        return (Vec3F32::new_zero(), 0.);
     }
 
     let dist = dist_sq.sqrt();
@@ -742,7 +743,7 @@ pub fn f_nonbonded(
 /// Helper. Returns σ, ε between an atom pair. Atom order passed as params doesn't matter.
 /// Note that this uses the traditional algorithm; not the Amber-specific version: We pre-set
 /// atom-specific σ and ε to traditional versions on ingest, and when building water.
-fn combine_lj_params(atom_0: &AtomDynamics, atom_1: &AtomDynamics) -> (f64, f64) {
+fn combine_lj_params(atom_0: &AtomDynamics, atom_1: &AtomDynamics) -> (f32, f32) {
     let σ = 0.5 * (atom_0.lj_sigma + atom_1.lj_sigma);
     let ε = (atom_0.lj_eps * atom_1.lj_eps).sqrt();
 

@@ -10,7 +10,7 @@ pub fn merge_params(
 ) -> ForceFieldParamsKeyed {
     let generic_native = generic.inner.clone();
     let specific_native = specific.inner.clone();
-    let result = dynamics_rs::merge_params(&generic_native, Some(&specific_native));
+    let result = dynamics_rs::merge_params(&generic_native, &specific_native);
 
     ForceFieldParamsKeyed { inner: result }
 }

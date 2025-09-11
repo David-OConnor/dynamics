@@ -22,11 +22,15 @@
 //!
 //! todo: H bond avg time: 1-20ps: Use this to validate your water model
 
-use lin_alg::f64::{Quaternion, Vec3, X_VEC, Z_VEC};
+// use lin_alg::f64::{Quaternion, Vec3, X_VEC, Z_VEC};
+use lin_alg::{
+    f32::{Quaternion as QuaternionF32, Vec3 as Vec3F32, X_VEC, Z_VEC},
+    f64::{Quaternion, Vec3},
+};
 use na_seq::Element;
 
 use crate::{
-    ACCEL_CONVERSION, AtomDynamics, MdState, non_bonded::CHARGE_UNIT_SCALER,
+    ACCEL_CONVERSION, ACCEL_CONVERSION_F32, AtomDynamics, MdState, non_bonded::CHARGE_UNIT_SCALER,
     water_settle::settle_drift,
 };
 
@@ -35,31 +39,31 @@ use crate::{
 // These values are taken directly from `frcmod.opc`, in the Amber package. We have omitted
 // values that are 0., or otherwise not relevant in this model. (e.g. EP mass, O charge, bonded params
 // other than bond distances and the valence angle)
-pub(crate) const O_MASS: f64 = 16.;
-pub(crate) const H_MASS: f64 = 1.008;
+pub(crate) const O_MASS: f32 = 16.;
+pub(crate) const H_MASS: f32 = 1.008;
 
 // We have commented out flexible-bond parameters that are provided by Amber, but not
 // used in this rigid model.
 
 // Å; bond distance. (frcmod.opc, or Table 2.)
-const O_EP_R_0: f64 = 0.159_398_33;
-const O_H_R: f64 = 0.872_433_13;
+const O_EP_R_0: f32 = 0.159_398_33;
+const O_H_R: f32 = 0.872_433_13;
 
 // Angle bending angle, radians.
-const H_O_H_θ: f64 = 1.808_161_105_066; // (103.6 degrees in frcmod.opc)
-const H_O_H_θ_HALF: f64 = 0.5 * H_O_H_θ;
+const H_O_H_θ: f32 = 1.808_161_105_066; // (103.6 degrees in frcmod.opc)
+const H_O_H_θ_HALF: f32 = 0.5 * H_O_H_θ;
 
 // For converting from R_star to eps.
-const SIGMA_FACTOR: f64 = 1.122_462_048_309_373; // 2^(1/6)
+const SIGMA_FACTOR: f32 = 1.122_462_048_309_373; // 2^(1/6)
 
 // Van der Waals / JL params. Only O carries this.
-const O_RSTAR: f64 = 1.777_167_268;
-pub const O_SIGMA: f64 = 2.0 * O_RSTAR / SIGMA_FACTOR;
-pub const O_EPS: f64 = 0.212_800_813_0;
+const O_RSTAR: f32 = 1.777_167_268;
+pub const O_SIGMA: f32 = 2.0 * O_RSTAR / SIGMA_FACTOR;
+pub const O_EPS: f32 = 0.212_800_813_0;
 
 // Partial charges. See the OPC paper, Table 2. None on O.
-const Q_H: f64 = 0.6791 * CHARGE_UNIT_SCALER;
-const Q_EP: f64 = -2. * Q_H;
+const Q_H: f32 = 0.6791 * CHARGE_UNIT_SCALER;
+const Q_EP: f32 = -2. * Q_H;
 
 // We use this encoding when passing to CUDA. We reserve 0 for non-water atoms.
 #[derive(Copy, Clone, PartialEq)]
@@ -75,6 +79,7 @@ pub enum WaterSite {
 /// This is the force *on* each atom in the molecule.
 #[derive(Clone, Copy, Default)]
 pub struct ForcesOnWaterMol {
+    // 64-bit as they're accumulators.
     pub f_o: Vec3,
     pub f_h0: Vec3,
     pub f_h1: Vec3,
@@ -103,7 +108,7 @@ pub struct WaterMol {
 }
 
 impl WaterMol {
-    pub fn new(o_pos: Vec3, vel: Vec3, orientation: Quaternion) -> Self {
+    pub fn new(o_pos: Vec3F32, vel: Vec3F32, orientation: QuaternionF32) -> Self {
         // Set up H and EP/M positions based on orientation.
         // Unit vectors defining the body frame
         let z_local = orientation.rotate_vec(Z_VEC);
@@ -165,7 +170,7 @@ impl WaterMol {
     /// because it's massless; we rigidly place it each step based on geometry.
     /// For the second half-kick, the molecule's `accel` field must have been converted
     /// from force by dividing by mass, and contain the unit conversion from AMBER's, to our natural units.
-    fn half_kick(&mut self, dt_half: f64) {
+    fn half_kick(&mut self, dt_half: f32) {
         self.o.vel += self.o.accel * dt_half;
         self.h0.vel += self.h0.accel * dt_half;
         self.h1.vel += self.h1.accel * dt_half;
@@ -186,7 +191,7 @@ impl WaterMol {
 
         if s_norm < 1e-12 {
             // Degenerate geometry: drop EP force this step
-            self.m.accel = Vec3::new_zero();
+            self.m.accel = Vec3F32::new_zero();
             return;
         }
 
@@ -206,7 +211,7 @@ impl WaterMol {
         let fo = f_m - fh * 2.0; // remaining force goes to O
 
         // Force on M/EP is now zero, and we've modified the forces on the other atoms from it.
-        self.m.accel = Vec3::new_zero();
+        self.m.accel = Vec3F32::new_zero();
         self.o.accel += fo;
         self.h0.accel += fh;
         self.h1.accel += fh;
@@ -242,7 +247,7 @@ impl MdState {
     ///
     /// In addition to the VV half-kick and drift, it handles force projection from M/EP,
     /// and applying SETTLE to main each molecul's rigid geometry.
-    pub fn water_vv_first_half_and_drift(&mut self, dt: f64, dt_half: f64) {
+    pub fn water_vv_first_half_and_drift(&mut self, dt: f32, dt_half: f32) {
         let cell = self.cell;
 
         for iw in 0..self.water.len() {
@@ -286,7 +291,11 @@ impl MdState {
 
     /// Velocity-Verlet integration for water, part 2.
     /// Forces (as .accel) must be computed prior to this step.
-    pub fn water_vv_second_half(&mut self, dt_half: f64) {
+    pub fn water_vv_second_half(&mut self, dt_half: f32) {
+        // A cache.
+        let conv_o = ACCEL_CONVERSION_F32 / O_MASS;
+        let conv_h = ACCEL_CONVERSION_F32 / H_MASS;
+
         for iw in 0..self.water.len() {
             let w = &mut self.water[iw];
 
@@ -296,9 +305,9 @@ impl MdState {
             w.project_ep_force_to_real_sites();
 
             // Convert forces to accel, in our native units.
-            w.o.accel *= ACCEL_CONVERSION / w.o.mass;
-            w.h0.accel *= ACCEL_CONVERSION / w.h0.mass;
-            w.h1.accel *= ACCEL_CONVERSION / w.h1.mass;
+            w.o.accel *= conv_o;
+            w.h0.accel *= conv_h;
+            w.h1.accel *= conv_h;
 
             // Second half-kick. Apply unit and mass conversions here, as they've
             // been reset from the previous step, and re-calculated in this one.

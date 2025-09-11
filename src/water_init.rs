@@ -2,35 +2,41 @@
 //! velocities. Set up to meet density, pressure, and or temperature targets. Not specific to the
 //! water model used.
 
-use std::f64::consts::TAU;
+use std::f32::consts::TAU;
 
-use lin_alg::f64::{Mat3, Quaternion, Vec3};
+use lin_alg::{
+    f32::{Mat3 as Mat3F32, Quaternion as QuaternionF32, Vec3 as Vec3F32},
+    f64::{Mat3, Quaternion, Vec3},
+};
 use rand::{Rng, distr::Uniform};
 use rand_distr::Distribution;
 
-use crate::{ACCEL_CONVERSION_INV, AtomDynamics, KB, ambient::SimBox, water_opc::WaterMol};
+use crate::{
+    ACCEL_CONVERSION_INV, ACCEL_CONVERSION_INV_F32, AtomDynamics, KB, ambient::SimBox,
+    water_opc::WaterMol,
+};
 
 // 0.997 g cm⁻³ is a good default density. We use this for initializing and maintaining
 // the water density and molecule count.
-const WATER_DENSITY: f64 = 0.997;
+const WATER_DENSITY: f32 = 0.997;
 
 // Don't generate water molecules that are too close to other atoms.
 // Vdw contact distance between water molecules and organic molecules is roughly 3.5 Å.
-const GENERATION_MIN_DIST: f64 = 3.75;
+const GENERATION_MIN_DIST: f32 = 3.75;
 // A conservative water-water (Oxygen-Oxygen) minimum distance. 2.7 - 3.2 Å is suitable.
-const MIN_OO_DIST: f64 = 2.8;
+const MIN_OO_DIST: f32 = 2.8;
 
 // This is similar to the Amber H and O masses we used summed, and could be explained
 // by precision limits. We use it for generating atoms based on density.
-const MASS_WATER: f64 = 18.015_28;
+const MASS_WATER: f32 = 18.015_28;
 
 // Avogadro's constant. mol^-1.
-const N_A: f64 = 6.022_140_76e23;
+const N_A: f32 = 6.022_140_76e23;
 
 /// We pass atoms in so this doesn't generate water molecules that overlap with them.
 pub fn make_water_mols(
     cell: &SimBox,
-    t_target: f64,
+    t_target: f32,
     atoms_dy: &[AtomDynamics],
     // atoms_static: &[AtomDynamics],
 ) -> Vec<WaterMol> {
@@ -42,7 +48,7 @@ pub fn make_water_mols(
     let mut result = Vec::with_capacity(n_mols);
     let mut rng = rand::rng();
 
-    let uni01 = Uniform::<f64>::new(0.0, 1.0).unwrap();
+    let uni01 = Uniform::<f32>::new(0.0, 1.0).unwrap();
 
     let mut attempts = 0;
     let max_attempts = 50 * n_mols; // todo: Tune A/R.
@@ -50,7 +56,7 @@ pub fn make_water_mols(
     while result.len() < n_mols && attempts < max_attempts {
         attempts += 1;
 
-        let posit = Vec3::new(
+        let posit = Vec3F32::new(
             rng.sample(uni01) * (cell.bounds_high.x - cell.bounds_low.x) + cell.bounds_low.x,
             rng.sample(uni01) * (cell.bounds_high.y - cell.bounds_low.y) + cell.bounds_low.y,
             rng.sample(uni01) * (cell.bounds_high.z - cell.bounds_low.z) + cell.bounds_low.z,
@@ -62,7 +68,7 @@ pub fn make_water_mols(
         let sqrt_u1 = u1.sqrt();
         let (theta1, theta2) = (TAU * u2, TAU * u3);
 
-        let q = Quaternion::new(
+        let q = QuaternionF32::new(
             sqrt1_minus_u1 * theta1.sin(),
             sqrt1_minus_u1 * theta1.cos(),
             sqrt_u1 * theta2.sin(),
@@ -77,7 +83,7 @@ pub fn make_water_mols(
             continue;
         }
 
-        result.push(WaterMol::new(posit, Vec3::new_zero(), q));
+        result.push(WaterMol::new(posit, Vec3F32::new_zero(), q));
     }
 
     if result.len() < n_mols {
@@ -92,7 +98,7 @@ pub fn make_water_mols(
     result
 }
 
-fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f64, _cell: &SimBox) {
+fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, _cell: &SimBox) {
     use rand_distr::Normal;
 
     let mut rng = rand::rng();
@@ -100,7 +106,7 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f64, _cell: &SimBox) {
     for m in mols.iter_mut() {
         // COM & relative positions
         let (r_com, m_tot) = {
-            let mut r = Vec3::new_zero();
+            let mut r = Vec3F32::new_zero();
             let mut m_tot = 0.0;
             for a in [&m.o, &m.h0, &m.h1] {
                 r += a.posit * a.mass;
@@ -116,11 +122,11 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f64, _cell: &SimBox) {
         // Sample COM velocity
         let sigma_v = (kT / m_tot).sqrt();
         let n = Normal::new(0.0, sigma_v).unwrap();
-        let v_com = Vec3::new(n.sample(&mut rng), n.sample(&mut rng), n.sample(&mut rng));
+        let v_com = Vec3F32::new(n.sample(&mut rng), n.sample(&mut rng), n.sample(&mut rng));
 
         // Inertia tensor about COM (world frame)
         // Build as arrays (your code)
-        let inertia = |r: Vec3, mass: f64| {
+        let inertia = |r: Vec3F32, mass: f32| {
             let r2 = r.dot(r);
             [
                 [
@@ -141,7 +147,7 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f64, _cell: &SimBox) {
             ]
         };
         let mut I_arr = inertia(rO, m.o.mass);
-        let add_I = |I: &mut [[f64; 3]; 3], J: [[f64; 3]; 3]| {
+        let add_I = |I: &mut [[f32; 3]; 3], J: [[f32; 3]; 3]| {
             for i in 0..3 {
                 for j in 0..3 {
                     I[i][j] += J[i][j];
@@ -152,18 +158,18 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f64, _cell: &SimBox) {
         add_I(&mut I_arr, inertia(rH1, m.h1.mass));
 
         // Convert to Mat3 once, then use
-        let I = Mat3::from_arr(I_arr);
+        let I = Mat3F32::from_arr(I_arr);
 
         // Diagonalize and solve with the Mat3 methods
         let (eigvecs, eigvals) = I.eigen_vecs_vals();
-        let L_principal = Vec3::new(
-            rand_distr::Normal::new(0.0, (kT * eigvals.x.max(0.0)).sqrt())
+        let L_principal = Vec3F32::new(
+            Normal::new(0.0, (kT * eigvals.x.max(0.0)).sqrt())
                 .unwrap()
                 .sample(&mut rng),
-            rand_distr::Normal::new(0.0, (kT * eigvals.y.max(0.0)).sqrt())
+            Normal::new(0.0, (kT * eigvals.y.max(0.0)).sqrt())
                 .unwrap()
                 .sample(&mut rng),
-            rand_distr::Normal::new(0.0, (kT * eigvals.z.max(0.0)).sqrt())
+            Normal::new(0.0, (kT * eigvals.z.max(0.0)).sqrt())
                 .unwrap()
                 .sample(&mut rng),
         );
@@ -181,7 +187,8 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f64, _cell: &SimBox) {
 
     // Optional: compute KE (translation+rotation == sum ½ m v^2 now) and rescale to T_target
     let (ke_raw, dof) = kinetic_energy_and_dof(mols); // dof = 6*N - 3
-    let lambda = (t_target / (2.0 * (ke_raw * ACCEL_CONVERSION_INV) / (dof as f64 * KB))).sqrt();
+    let lambda =
+        (t_target / (2.0 * (ke_raw * ACCEL_CONVERSION_INV_F32) / (dof as f32 * KB))).sqrt();
     for a in atoms_mut(mols) {
         if a.mass > 0.0 {
             a.vel *= lambda;
@@ -189,7 +196,7 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f64, _cell: &SimBox) {
     }
 }
 
-fn kinetic_energy_and_dof(mols: &[WaterMol]) -> (f64, usize) {
+fn kinetic_energy_and_dof(mols: &[WaterMol]) -> (f32, usize) {
     let mut ke = 0.0;
     let mut dof = 0usize;
     for m in mols {
@@ -210,7 +217,7 @@ fn atoms_mut(mols: &mut [WaterMol]) -> impl Iterator<Item = &mut AtomDynamics> {
 
 /// Removes center-of-mass drift.
 fn remove_com_velocity(mols: &mut [WaterMol]) {
-    let mut p = Vec3::new_zero();
+    let mut p = Vec3F32::new_zero();
     let mut m_tot = 0.0;
     for a in atoms_mut(mols) {
         p += a.vel * a.mass;
@@ -223,7 +230,7 @@ fn remove_com_velocity(mols: &mut [WaterMol]) {
     }
 }
 
-fn too_close_to_atoms(p: Vec3, atoms: &[AtomDynamics], cell: &SimBox) -> bool {
+fn too_close_to_atoms(p: Vec3F32, atoms: &[AtomDynamics], cell: &SimBox) -> bool {
     for a in atoms {
         let d = cell.min_image(a.posit - p).magnitude();
         if d < GENERATION_MIN_DIST {
@@ -233,7 +240,7 @@ fn too_close_to_atoms(p: Vec3, atoms: &[AtomDynamics], cell: &SimBox) -> bool {
     false
 }
 
-fn too_close_to_waters(p: Vec3, waters: &[WaterMol], cell: &SimBox) -> bool {
+fn too_close_to_waters(p: Vec3F32, waters: &[WaterMol], cell: &SimBox) -> bool {
     for w in waters {
         let d = cell.min_image(w.o.posit - p).magnitude();
         if d < MIN_OO_DIST {
