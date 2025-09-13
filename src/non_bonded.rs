@@ -82,70 +82,59 @@ pub struct LjTables {
     /// Water tables are simpler than ones on dynamic: no combinations needed, as the source is a single
     /// target atom type: O (water).
     pub water_dyn: Vec<(f32, f32)>,
+    pub n_dyn: usize,
 }
 
+// todo note: On large systems, this can have very high memory use. Consider
+// todo setting up your table by atom type, instead of by atom, if that proves to be a problem.
 impl LjTables {
     /// Create an indexed table, flattened.
     pub fn new(atoms: &[AtomDynamics], water: &[WaterMol]) -> Self {
-        let mut result = Self::default();
+        let n_dyn = atoms.len();
 
-        // todo: Do we want to double-insert like this? Maybe for ease of lookup,
-        // todo at expense of double the table size?
+        let mut dynamic = Vec::with_capacity(n_dyn.saturating_sub(1) * n_dyn);
+
         for (i, atom_0) in atoms.iter().enumerate() {
             for (j, atom_1) in atoms.iter().enumerate() {
                 if i == j {
                     continue;
                 }
-
                 let (σ, ε) = combine_lj_params(atom_0, atom_1);
-                result.dynamic.push((σ, ε));
+                dynamic.push((σ, ε));
             }
         }
 
+        // One LJ pair per dynamic atom vs water O:
+        let mut water_dyn = Vec::with_capacity(n_dyn);
         for atom in atoms {
-            for water in water {
-                let (σ, ε) = combine_lj_params(atom, &water.o);
-                result.water_dyn.push((σ, ε));
-            }
+            let σ = 0.5 * (atom.lj_sigma + O_SIGMA);
+            let ε = (atom.lj_eps * O_EPS).sqrt();
+            water_dyn.push((σ, ε));
         }
 
-        result
+        Self {
+            dynamic,
+            water_dyn,
+            n_dyn,
+        }
     }
+
     /// Get (σ, ε)
     pub fn lookup(&self, i: &LjTableIndices) -> (f32, f32) {
         match i {
-            LjTableIndices::DynDyn((i_0, i_1)) => {
-                // Flatten in the same order we setup the table.
-                // todo: mul_add when avail.
-                let index = self.dynamic.len() * i_0 + i_1;
+            LjTableIndices::DynDyn((i0, i1)) => {
+                // Row-major over N×N with diagonal removed.
+                let row_stride = self.n_dyn - 1;
+                let col = if *i1 < *i0 { *i1 } else { *i1 - 1 }; // Skip the diagonal
+                let index = i0 * row_stride + col;
+
                 self.dynamic[index]
             }
-            LjTableIndices::DynWater(i) => self.water_dyn[*i],
+            LjTableIndices::DynWater(ix) => self.water_dyn[*ix],
             LjTableIndices::WaterWater => (O_SIGMA, O_EPS),
         }
     }
 }
-
-/// Run this once per MD run. Sets up LJ caches for each pair of atoms.
-/// Mirrors the force fn's params.
-// pub fn setup_lj_cache(
-//     tables: &mut LjTables,
-//     tgt: &AtomDynamics,
-//     src: &AtomDynamics,
-//     indices: LjTableIndices,
-// ) {
-//     let (σ, ε) = combine_lj_params(tgt, src);
-//
-//     match indices {
-//         LjTableIndices::DynDyn(indices) => {
-//             tables.dynamic.insert(indices, (σ, ε));
-//         }
-//         LjTableIndices::DynWater(i) => {
-//             tables.water_dyn.insert(i, (σ, ε));
-//         }
-//         LjTableIndices::WaterWater => (), // None; a single const.
-//     }
-// }
 
 impl AddAssign<Self> for ForcesOnWaterMol {
     fn add_assign(&mut self, rhs: Self) {
@@ -213,7 +202,6 @@ fn add_to_sink(
 fn calc_force(
     pairs: &[NonBondedPair],
     atoms_dyn: &[AtomDynamics],
-    // atoms_static: &[AtomDynamics],
     water: &[WaterMol],
     cell: &SimBox,
     lj_tables: &LjTables,
@@ -234,8 +222,6 @@ fn calc_force(
                 )
             },
             |(mut acc_d, mut acc_w, mut virial, mut energy), p| {
-                // let a_t = p.tgt.get(atoms_dyn, atoms_static, water);
-                // let a_s = p.src.get(atoms_dyn, atoms_static, water);
                 let a_t = p.tgt.get(atoms_dyn, water);
                 let a_s = p.src.get(atoms_dyn, water);
 
@@ -302,7 +288,6 @@ fn calc_force_cuda(
     module: &Arc<CudaModule>,
     pairs: &[NonBondedPair],
     atoms_dyn: &[AtomDynamics],
-    // atoms_static: &[AtomDynamics],
     water: &[WaterMol],
     cell: &SimBox,
     lj_tables: &LjTables,

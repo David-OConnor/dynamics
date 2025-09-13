@@ -52,8 +52,10 @@ Integrates the following [Amber parameters](https://ambermd.org/AmberModels.php)
 This library uses a traditional MD workflow. We use the following components:
 
 
-### Integrators
-We use a Velocity-Verlet integrator for the whole system. Langevin and Verlet (non-velocity) are planned.
+### Integrators, and thermostats/barostats
+We provide a Velocity-Verlet integrator. It can be used with a Berendsen barostat, and either a 
+CSVR/Bussi, or Langevin thermostat (Middle or traditional). These continuously update atom velocities (for molecules and
+solvents) to match target pressure and temperatures. The Langevin Middle thermostat is a good starting point.
 
 
 ### Solvation
@@ -90,9 +92,12 @@ We have two modes of handling Hydrogen in bonded forces: The same as other atoms
 using SHAKE and RATTLE algorithms. The latter allows for stability under higher timesteps. (e.g. 2ps)
 
 
-### Thermostat and barostat
-Uses a Berendsen barostat, and a simple thermostat. These continuously update atom velocities (for molecules and
-solvents) to match target pressure and temperatures.
+### Initial relaxation
+We run a relaxation / energy-minimization function prior to starting each simulation. This adjusts atom
+positions to reduce the amount of energy that comes from initial conditions deviating from bonded parameters.
+
+
+
 
 
 ### Floating point precision
@@ -228,7 +233,7 @@ use std::path::Path;
 use bio_files::{MmCif, Mol2, md_params::ForceFieldParams};
 use dynamics::{
     ComputationDevice, FfMolType, MdConfig, MdState, MolDynamics,
-    params::{FfParamSet, populate_peptide_ff_and_q},
+    params::{FfParamSet, prepare_peptide},
     populate_hydrogens_dihedrals,
 };
 
@@ -270,6 +275,7 @@ fn setup_dynamics(
 }
 
 fn main() {
+    let dev = ComputationDevice::Cpu;
     let param_set = FfParamSet::new_amber().unwrap();
     
     let mol = Mol2::load(Path::new("../CPB.mol2")).unwrap();
@@ -299,7 +305,7 @@ fn main() {
     let dt = 0.002; // picoseconds.
 
     for _ in 0..n_steps {
-        md.step(&ComputationDevice::Cpu, dt);
+        md.step(&dev, dt);
     }
 
     let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
@@ -317,7 +323,6 @@ fn main() {
     // field: See the example below.
     for snap in &md.snapshots {}
 }
-
 ```
 
 Example of loading your own parameter files:
@@ -351,7 +356,7 @@ Example of loading your own parameter files:
 An overview of configuration parameters.
 ```rust
 let cfg = MdConfig {
-    // Defaults to Velocity Verlet.
+    // Defaults to Langevin middle.
     integrator: dynamics::Integrator::VelocityVerlet,
     // If enabled, zero the drift in center of mass of the system.
     zero_com_drift: true,
@@ -388,6 +393,14 @@ cfg.temp_target = 310.
 ```
 
 ## Using with GPU
+
+Rust setup with cudarc. Pass this to the `step` function.
+```rust
+let ctx = CudaContext::new(0).unwrap();
+let stream = ctx.default_stream();
+let module = ctx.load_module(Ptx::from_src(dynamics::PTX)).unwrap();
+let dev = ComputationDevice::Gpu((stream, module));
+```
 
 **Note: Currently GPU isn't supported in the python bindings**
 

@@ -7,11 +7,16 @@
 //!
 //! Note: We keep most thermostat and barostat code as f64, although we use f32 in most sections.
 
-use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
+use lin_alg::f32::Vec3;
 use na_seq::Element;
-use rand::prelude::ThreadRng;
+use rand::{Rng, prelude::ThreadRng};
+use rand_distr::StandardNormal;
 
-use crate::{ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, KB, MdState, SimBoxInit};
+use crate::{
+    ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, KB, KB_A2_PS2_PER_K_PER_AMU, MdState,
+    SimBoxInit,
+    water_opc::{H_MASS, O_MASS},
+};
 
 const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 
@@ -229,14 +234,18 @@ impl MdState {
     }
 
     fn dof_for_thermo(&self) -> usize {
-        // 3 per massive DoF – constraints – (optionally) 3 for COM removal
-        let mut n = 3 * (self.atoms.len() + 3 * self.water.len()); // O,H0,H1 only
-        n -= self.num_constraints_estimate(); // eg 1 per SHAKE bond; 3 per rigid water
-        n.saturating_sub(3) // if you zero COM momentum
+        let mut n = 3 * (self.atoms.len() + 3 * self.water.len());
+        n -= self.num_constraints_estimate();
+
+        if self.cfg.zero_com_drift {
+            n = n.saturating_sub(3);
+        }
+        n
     }
 
-    // --- CSVR (Bussi) thermostat: canonical velocity-rescale ---
-    pub fn apply_thermostat_csvr(&mut self, dt: f64, t_target_k: f64) {
+    /// CSVR/Bussi thermostat: A canonical velocity-rescale algorithm.
+    /// Cheap with gentle coupling, but doesn't imitate solvent drag.
+    pub(crate) fn apply_thermostat_csvr(&mut self, dt: f64, t_target_k: f64) {
         // todo: QC f32 vs f64 here.
         use rand_distr::{ChiSquared, Distribution, StandardNormal};
 
@@ -271,7 +280,7 @@ impl MdState {
 
     /// Instantaneous pressure in **bar** (pair virial only).
     /// P = (2K + W) / (3V)
-    pub fn instantaneous_pressure_bar(&self) -> f64 {
+    pub(crate) fn instantaneous_pressure_bar(&self) -> f64 {
         let vol_a3 = self.cell.volume() as f64; // Å^3
         if !(vol_a3 > 0.0) {
             return f64::NAN;
@@ -282,8 +291,8 @@ impl MdState {
         p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
     }
 
-    // call each step (or every nstpcouple steps) after thermostat
-    pub fn apply_barostat_berendsen(&mut self, dt: f64) {
+    /// Call each step (or every nstpcouple steps) after thermostat
+    pub(crate) fn apply_barostat_berendsen(&mut self, dt: f64) {
         let p_inst_bar = self.instantaneous_pressure_bar();
         if !p_inst_bar.is_finite() {
             return; // don't touch the box if pressure is bad
@@ -291,20 +300,17 @@ impl MdState {
 
         let lambda = self.barostat.scale_factor(p_inst_bar, dt) as f32;
 
-        // 1) scale the cell
+        // Scale the cell
         let c = self.cell.center();
         self.cell.scale_isotropic(lambda);
 
-        // 2) scale flexible atom coordinates about c; scale velocities
+        // Scale flexible atom coordinates about c; scale velocities
         for a in &mut self.atoms {
             a.posit = c + (a.posit - c) * lambda;
             a.vel *= lambda;
         }
-        // for a in &mut self.atoms_static {
-        //     a.posit = c + (a.posit - c) * lambda;
-        // }
 
-        // 3) translate rigid waters by COM only; scale COM velocity
+        // Translate rigid waters by COM only; scale COM velocity
         for w in &mut self.water {
             let m_tot = w.o.mass + w.h0.mass + w.h1.mass;
             let com =
@@ -323,6 +329,189 @@ impl MdState {
             w.o.vel += dv;
             w.h0.vel += dv;
             w.h1.vel += dv;
+        }
+    }
+
+    /// A thermostat that integrates the stochastic Langevin equation. Good temperature control
+    /// and ergodicity, but the firction parameter damps real dynamics as it grows. This applies an OU update.
+    /// todo: Should this be based on f64?
+    pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma_ps: f32, temp_k: f32) {
+        let c = (-gamma_ps * dt).exp();
+        let s2 = (1.0 - c * c).max(0.0); // numerical guard
+
+        for a in &mut self.atoms {
+            // per-component σ for velocity noise
+            let sigma = (KB_A2_PS2_PER_K_PER_AMU * temp_k * s2 / a.mass).sqrt();
+
+            // todo: Can we reuse this RNG from barostat here?
+            let nx: f32 = self.barostat.rng.sample(StandardNormal);
+            let ny: f32 = self.barostat.rng.sample(StandardNormal);
+            let nz: f32 = self.barostat.rng.sample(StandardNormal);
+
+            a.vel.x = c * a.vel.x + sigma * nx;
+            a.vel.y = c * a.vel.y + sigma * ny;
+            a.vel.z = c * a.vel.z + sigma * nz;
+        }
+
+        self.apply_langevin_thermostat_water(dt, gamma_ps, temp_k);
+    }
+
+    /// Part of the langevin thermostat.
+    /// todo: Should this be based on f64?
+    fn apply_langevin_thermostat_water(&mut self, dt: f32, gamma_ps: f32, temp_k: f32) {
+        let c = (-gamma_ps * dt).exp();
+        let s2 = (1.0 - c * c).max(0.0);
+        let m_tot = O_MASS + 2.0 * H_MASS;
+
+        let sigma_v = (KB_A2_PS2_PER_K_PER_AMU * temp_k * s2 / m_tot).sqrt();
+        let sigma_omega = (KB_A2_PS2_PER_K_PER_AMU * temp_k * s2).sqrt();
+
+        for w in &mut self.water {
+            // COM position and velocity
+            let rc =
+                (w.o.posit * O_MASS + w.h0.posit * H_MASS + w.h1.posit * H_MASS) * (1.0 / m_tot);
+            let mut v_com =
+                (w.o.vel * O_MASS + w.h0.vel * H_MASS + w.h1.vel * H_MASS) * (1.0 / m_tot);
+
+            // Relative positions
+            let r_o = w.o.posit - rc;
+            let r_h0 = w.h0.posit - rc;
+            let r_h1 = w.h1.posit - rc;
+            let r_m = w.m.posit - rc; // massless
+
+            // Relative velocities
+            let v_o_rel = w.o.vel - v_com;
+            let v_h0_rel = w.h0.vel - v_com;
+            let v_h1_rel = w.h1.vel - v_com;
+
+            // Inertia tensor (lab frame), symmetric 3x3
+            let mut a = 0.0;
+            let mut d = 0.0;
+            let mut f = 0.0; // xx, yy, zz
+            let mut b = 0.0;
+            let mut cxy = 0.0;
+            let mut e = 0.0; // xy, xz, yz
+            let mut add = |r: Vec3, m: f32| {
+                let x = r.x;
+                let y = r.y;
+                let z = r.z;
+                a += m * (y * y + z * z);
+                d += m * (x * x + z * z);
+                f += m * (x * x + y * y);
+                b -= m * x * y;
+                cxy -= m * x * z;
+                e -= m * y * z;
+            };
+            add(r_o, O_MASS);
+            add(r_h0, H_MASS);
+            add(r_h1, H_MASS);
+
+            // Cholesky of SPD matrix [[a,b,cxy],[b,d,e],[cxy,e,f]]
+            let l11 = a.max(0.0).sqrt();
+            let l21 = if l11 > 0.0 { b / l11 } else { 0.0 };
+            let l31 = if l11 > 0.0 { cxy / l11 } else { 0.0 };
+            let t22 = (d - l21 * l21).max(0.0);
+            let l22 = t22.sqrt();
+            let l32 = if l22 > 0.0 {
+                (e - l21 * l31) / l22
+            } else {
+                0.0
+            };
+            let t33 = (f - l31 * l31 - l32 * l32).max(0.0);
+            let l33 = t33.sqrt();
+
+            // Angular momentum L = Σ m r × v_rel
+            let l_vec = r_o.cross(v_o_rel) * O_MASS
+                + r_h0.cross(v_h0_rel) * H_MASS
+                + r_h1.cross(v_h1_rel) * H_MASS;
+
+            // Solve I ω = L via the Cholesky: L y = L, L^T ω = y
+            let solve_lower = |lx11: f32,
+                               lx21: f32,
+                               lx31: f32,
+                               lx22: f32,
+                               lx32: f32,
+                               lx33: f32,
+                               rhs: Vec3|
+             -> Vec3 {
+                let y1 = if lx11 > 0.0 { rhs.x / lx11 } else { 0.0 };
+                let y2 = if lx22 > 0.0 {
+                    (rhs.y - lx21 * y1) / lx22
+                } else {
+                    0.0
+                };
+                let y3 = if lx33 > 0.0 {
+                    (rhs.z - lx31 * y1 - lx32 * y2) / lx33
+                } else {
+                    0.0
+                };
+                Vec3 {
+                    x: y1,
+                    y: y2,
+                    z: y3,
+                }
+            };
+            let solve_upper = |lx11: f32,
+                               lx21: f32,
+                               lx31: f32,
+                               lx22: f32,
+                               lx32: f32,
+                               lx33: f32,
+                               rhs: Vec3|
+             -> Vec3 {
+                let z3 = if lx33 > 0.0 { rhs.z / lx33 } else { 0.0 };
+                let z2 = if lx22 > 0.0 {
+                    (rhs.y - lx32 * z3) / lx22
+                } else {
+                    0.0
+                };
+                let z1 = if lx11 > 0.0 {
+                    (rhs.x - lx21 * z2 - lx31 * z3) / lx11
+                } else {
+                    0.0
+                };
+                Vec3 {
+                    x: z1,
+                    y: z2,
+                    z: z3,
+                }
+            };
+            let y = solve_lower(l11, l21, l31, l22, l32, l33, l_vec);
+            let mut omega = solve_upper(l11, l21, l31, l22, l32, l33, y);
+
+            // OU on COM velocity
+            let nx: f32 = self.barostat.rng.sample(StandardNormal);
+            let ny: f32 = self.barostat.rng.sample(StandardNormal);
+            let nz: f32 = self.barostat.rng.sample(StandardNormal);
+            v_com.x = c * v_com.x + sigma_v * nx;
+            v_com.y = c * v_com.y + sigma_v * ny;
+            v_com.z = c * v_com.z + sigma_v * nz;
+
+            // OU on angular velocity: ω ← c ω + σ * I^{-1/2} ξ, with ξ ~ N(0, I)
+            let zx: f32 = self.barostat.rng.sample(StandardNormal);
+            let zy: f32 = self.barostat.rng.sample(StandardNormal);
+            let zz: f32 = self.barostat.rng.sample(StandardNormal);
+            // x = I^{-1/2} z by solving L^T x = z
+            let x = solve_upper(
+                l11,
+                l21,
+                l31,
+                l22,
+                l32,
+                l33,
+                Vec3 {
+                    x: zx,
+                    y: zy,
+                    z: zz,
+                },
+            );
+            omega = omega * c + x * sigma_omega;
+
+            // Reconstruct rigid-body velocities
+            w.o.vel = v_com + omega.cross(r_o);
+            w.h0.vel = v_com + omega.cross(r_h0);
+            w.h1.vel = v_com + omega.cross(r_h1);
+            w.m.vel = v_com + omega.cross(r_m);
         }
     }
 }

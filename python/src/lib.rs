@@ -175,7 +175,29 @@ impl MolDynamics {
     }
 }
 
-make_enum!(Integrator, dynamics_rs::Integrator, VerletVelocity, Langevin, LangevinCenter);
+#[pyclass]
+enum Integrator {
+    VelocityVerlet,
+    Langevin,
+    LangevinMiddle,
+}
+
+impl Integrator {
+    pub fn to_native(self) -> dynamics_rs::Integrator {
+        match self {
+            Self::VelocityVerlet => dynamics_rs::Integrator::VelocityVerlet,
+            Self::Integrator::Langevin => dynamics_rs::Integrator::Langevin  { gamma: 1.0 },
+            Self::Integrator::LangevinMiddle => dynamics_rs::Integrator::LangevinMiddle { gamma: 1.0 },
+        }
+    }
+    pub fn from_native(native: dynamics_rs::Integrator) -> Self {
+        match native {
+            dynamics_rs::Integrator::VelocityVerlet => Self::VelocityVerlet,
+            dynamics_rs::Integrator::Langevin { gamma: _ } => Self::Langevin,
+            dynamics_rs::Integrator::LangevinMiddle { gamma: _ } => Self::LangevinMiddle,
+        }
+    }
+}
 
 #[pyclass]
 struct MdConfig {
@@ -328,7 +350,7 @@ impl MdState {
         })
     }
 
-    fn step(&mut self, dt: f64) {
+    fn step(&mut self, dt: f32) {
         // CPU only is temp.
         self.inner.step(&dynamics_rs::ComputationDevice::Cpu, dt);
     }
