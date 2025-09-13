@@ -356,8 +356,6 @@ impl ForceFieldParamsIndexed {
                 //     }
                 // };
 
-                // let type_0 = ff_type_from_idx(atoms, i0, "Bond")?;
-                // let type_1 = ff_type_from_idx(atoms, i1, "Bond")?;
                 let type_0 = &atoms[i0].force_field_type;
                 let type_1 = &atoms[i1].force_field_type;
 
@@ -404,7 +402,7 @@ impl ForceFieldParamsIndexed {
 
                         result
                             .bond_rigid_constraints
-                            .insert((i0, i1), ((data.r_0 as f64).powi(2), inv_mass));
+                            .insert((i0, i1), (data.r_0.powi(2), inv_mass));
                         result.bonds_topology.insert((i0, i1));
                         continue;
                     }
@@ -423,9 +421,6 @@ impl ForceFieldParamsIndexed {
                 continue;
             }
             for (&n0, &n1) in neighbors.iter().tuple_combinations() {
-                // let type_n0 = ff_type_from_idx(atoms, n0, "Angle")?;
-                // let type_ctr = ff_type_from_idx(atoms, ctr, "Angle")?;
-                // let type_n1 = ff_type_from_idx(atoms, n1, "Angle")?;
                 let type_n0 = &atoms[n0].force_field_type;
                 let type_ctr = &atoms[ctr].force_field_type;
                 let type_n1 = &atoms[n1].force_field_type;
@@ -497,15 +492,10 @@ impl ForceFieldParamsIndexed {
                             continue;
                         }
 
-                        // let type_0 = ff_type_from_idx(atoms, i0, "Dihedral")?;
-                        // let type_1 = ff_type_from_idx(atoms, i1, "Dihedral")?;
-                        // let type_2 = ff_type_from_idx(atoms, i2, "Dihedral")?;
-                        // let type_3 = ff_type_from_idx(atoms, i3, "Dihedral")?;
-
                         let type_0 = &atoms[i0].force_field_type;
-                        let type_1 = &atoms[i0].force_field_type;
-                        let type_2 = &atoms[i0].force_field_type;
-                        let type_3 = &atoms[i0].force_field_type;
+                        let type_1 = &atoms[i1].force_field_type;
+                        let type_2 = &atoms[i2].force_field_type;
+                        let type_3 = &atoms[i3].force_field_type;
 
                         if let Some(dihe) = params.get_dihedral(
                             &(
@@ -554,24 +544,19 @@ impl ForceFieldParamsIndexed {
                             continue;
                         }
 
-                        // let t0 = ff_type_from_idx(atoms, sat0, "Improper dihedral")?;
-                        // let t1 = ff_type_from_idx(atoms, sat1, "Improper dihedral")?;
-                        // let t_ctr = ff_type_from_idx(atoms, ctr, "Improper dihedral")?;
-                        // let t2 = ff_type_from_idx(atoms, sat2, "Improper dihedral")?;
-
-                        let t0 = &atoms[sat0].force_field_type;
-                        let t1 = &atoms[sat1].force_field_type;
-                        let t_ctr = &atoms[ctr].force_field_type;
-                        let t2 = &atoms[sat2].force_field_type;
+                        let type_0 = &atoms[sat0].force_field_type;
+                        let type_1 = &atoms[sat1].force_field_type;
+                        let type_ctr = &atoms[ctr].force_field_type;
+                        let type_2 = &atoms[sat2].force_field_type;
 
                         // Sort satellites alphabetically; required to ensure we don't miss combinations.
-                        let mut sat_types = [t0.clone(), t1.clone(), t2.clone()];
+                        let mut sat_types = [type_0.clone(), type_1.clone(), type_2.clone()];
                         sat_types.sort();
 
                         let key = (
                             sat_types[0].clone(),
                             sat_types[1].clone(),
-                            t_ctr.clone(),
+                            type_ctr.clone(),
                             sat_types[2].clone(),
                         );
 

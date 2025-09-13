@@ -1,18 +1,15 @@
 use bio_files::md_params::{AngleBendingParams, BondStretchingParams, DihedralParams};
-use lin_alg::{
-    f32::{Vec3 as Vec3F32, calc_dihedral_angle_v2},
-    f64::Vec3,
-};
+use lin_alg::f32::{Vec3, calc_dihedral_angle_v2};
 
 const EPS: f32 = 1e-10;
 
 /// Returns the force on the atom at position 0. Negate this for the force on posit 1.
 /// Also returns potential energy.
 pub fn f_bond_stretching(
-    posit_0: Vec3F32,
-    posit_1: Vec3F32,
+    posit_0: Vec3,
+    posit_1: Vec3,
     params: &BondStretchingParams,
-) -> (Vec3F32, f32) {
+) -> (Vec3, f32) {
     let diff = posit_1 - posit_0;
     let r_meas = diff.magnitude();
 
@@ -32,11 +29,11 @@ pub fn f_bond_stretching(
 /// Valence angle; angle between 3 atoms.
 /// Also returns potential energy.
 pub fn f_angle_bending(
-    posit_0: Vec3F32,
-    posit_1: Vec3F32,
-    posit_2: Vec3F32,
+    posit_0: Vec3,
+    posit_1: Vec3,
+    posit_2: Vec3,
     params: &AngleBendingParams,
-) -> ((Vec3F32, Vec3F32, Vec3F32), f32) {
+) -> ((Vec3, Vec3, Vec3), f32) {
     // Bond vectors with atom 1 at the vertex.
     let bond_vec_01 = posit_0 - posit_1;
     let bond_vec_21 = posit_2 - posit_1;
@@ -46,14 +43,7 @@ pub fn f_angle_bending(
 
     // Quit early if atoms are on top of each other
     if b_vec_01_sq < EPS || b_vec_21_sq < EPS {
-        return (
-            (
-                Vec3F32::new_zero(),
-                Vec3F32::new_zero(),
-                Vec3F32::new_zero(),
-            ),
-            0.,
-        );
+        return ((Vec3::new_zero(), Vec3::new_zero(), Vec3::new_zero()), 0.);
     }
 
     let b_vec_01_len = b_vec_01_sq.sqrt();
@@ -66,14 +56,7 @@ pub fn f_angle_bending(
 
     if sin_θ_sq < EPS {
         // θ = 0 or τ; gradient ill-defined
-        return (
-            (
-                Vec3F32::new_zero(),
-                Vec3F32::new_zero(),
-                Vec3F32::new_zero(),
-            ),
-            0.,
-        );
+        return ((Vec3::new_zero(), Vec3::new_zero(), Vec3::new_zero()), 0.);
     }
 
     // Measured angle, and its deviation from the parameter angle.
@@ -100,13 +83,13 @@ pub fn f_angle_bending(
 }
 
 pub fn f_dihedral(
-    posit_0: Vec3F32,
-    posit_1: Vec3F32,
-    posit_2: Vec3F32,
-    posit_3: Vec3F32,
+    posit_0: Vec3,
+    posit_1: Vec3,
+    posit_2: Vec3,
+    posit_3: Vec3,
     params: &DihedralParams,
     improper: bool,
-) -> ((Vec3F32, Vec3F32, Vec3F32, Vec3F32), f32) {
+) -> ((Vec3, Vec3, Vec3, Vec3), f32) {
     // Bond vectors (see Allen & Tildesley, chap. 4)
     let b1 = posit_1 - posit_0; // r_ij
     let b2 = posit_2 - posit_1; // r_kj
@@ -124,10 +107,10 @@ pub fn f_dihedral(
     if n1_sq < EPS || n2_sq < EPS || b2_len < EPS {
         return (
             (
-                Vec3F32::new_zero(),
-                Vec3F32::new_zero(),
-                Vec3F32::new_zero(),
-                Vec3F32::new_zero(),
+                Vec3::new_zero(),
+                Vec3::new_zero(),
+                Vec3::new_zero(),
+                Vec3::new_zero(),
             ),
             0.,
         );

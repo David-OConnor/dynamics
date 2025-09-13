@@ -7,7 +7,7 @@ use std::{collections::HashMap, ops::AddAssign};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
 use ewald::force_coulomb_short_range;
-use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
+use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
@@ -25,10 +25,6 @@ pub const CUTOFF_VDW: f32 = 12.0;
 // const CUTOFF_VDW_SQ: f64 = CUTOFF_VDW * CUTOFF_VDW;
 
 // Ewald SPME approximation for Coulomb force
-
-// Above this distance when calculating Coulomb forces, use the long-range Ewald approximation.
-// const EWALD_CUTOFF: f64 = 10.0; // Å. 9-10 is common.
-// const EWALD_CUTOFF_SQ: f64 = EWALD_CUTOFF * EWALD_CUTOFF;
 
 // Instead of a hard cutoff between short and long-range forces, these
 // parameters control a smooth taper.
@@ -61,7 +57,7 @@ pub const SCALE_COUL_14: f32 = 1.0 / 1.2;
 pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 
 // (indices), (sigma, eps)
-pub type LjTable = HashMap<(usize, usize), (f32, f32)>;
+// pub type LjTable = HashMap<(usize, usize), (f32, f32)>;
 
 /// We use this to load the correct data from LJ lookup tables. Since we use indices,
 /// we must index correctly into the dynamic, or static tables. We have single-index lookups
@@ -70,40 +66,61 @@ pub type LjTable = HashMap<(usize, usize), (f32, f32)>;
 pub enum LjTableIndices {
     /// (tgt, src)
     DynDyn((usize, usize)),
-    // /// (dyn tgt, static src)
-    // DynStatic((usize, usize)),
     /// (dyn tgt or src))
     DynWater(usize),
-    // /// Index is the static atom.
-    // StaticWater(usize),
     /// One value, stored as a constant (Water O -> Water O)
     WaterWater,
 }
 
 /// We cache sigma and eps on the first step, then use it on the others. This increases
-/// memory use, and reduces CPU use.
+/// memory use, and reduces CPU use. We use indices, as they're faster than HashMaps.
 #[derive(Default)]
 pub struct LjTables {
     /// Keys: (Dynamic, Dynamic). For acting on dynamic atoms.
-    pub dynamic: LjTable,
-    // /// Keys: (Dynamic, Static). For acting on dynamic atoms.
-    // pub static_: LjTable,
+    pub dynamic: Vec<(f32, f32)>,
     /// Keys: Dynamic. Water acting on water O.
     /// Water tables are simpler than ones on dynamic: no combinations needed, as the source is a single
     /// target atom type: O (water).
-    pub water_dyn: HashMap<usize, (f32, f32)>,
-    /// Keys: Static. For acting on water O.
-    pub water_static: HashMap<usize, (f32, f32)>,
+    pub water_dyn: Vec<(f32, f32)>,
 }
 
 impl LjTables {
+    /// Create an indexed table, flattened.
+    pub fn new(atoms: &[AtomDynamics], water: &[WaterMol]) -> Self {
+        let mut result = Self::default();
+
+        // todo: Do we want to double-insert like this? Maybe for ease of lookup,
+        // todo at expense of double the table size?
+        for (i, atom_0) in atoms.iter().enumerate() {
+            for (j, atom_1) in atoms.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+
+                let (σ, ε) = combine_lj_params(atom_0, atom_1);
+                result.dynamic.push((σ, ε));
+            }
+        }
+
+        for atom in atoms {
+            for water in water {
+                let (σ, ε) = combine_lj_params(atom, &water.o);
+                result.water_dyn.push((σ, ε));
+            }
+        }
+
+        result
+    }
     /// Get (σ, ε)
     pub fn lookup(&self, i: &LjTableIndices) -> (f32, f32) {
         match i {
-            LjTableIndices::DynDyn(indices) => *self.dynamic.get(&indices).unwrap(),
-            // LjTableIndices::DynStatic(indices) => *self.static_.get(&indices).unwrap(),
-            LjTableIndices::DynWater(i) => *self.water_dyn.get(&i).unwrap(),
-            // LjTableIndices::StaticWater(i) => *self.water_static.get(&i).unwrap(),
+            LjTableIndices::DynDyn((i_0, i_1)) => {
+                // Flatten in the same order we setup the table.
+                // todo: mul_add when avail.
+                let index = self.dynamic.len() * i_0 + i_1;
+                self.dynamic[index]
+            }
+            LjTableIndices::DynWater(i) => self.water_dyn[*i],
             LjTableIndices::WaterWater => (O_SIGMA, O_EPS),
         }
     }
@@ -111,30 +128,24 @@ impl LjTables {
 
 /// Run this once per MD run. Sets up LJ caches for each pair of atoms.
 /// Mirrors the force fn's params.
-pub fn setup_lj_cache(
-    tgt: &AtomDynamics,
-    src: &AtomDynamics,
-    indices: LjTableIndices,
-    tables: &mut LjTables,
-) {
-    let (σ, ε) = combine_lj_params(tgt, src);
-
-    match indices {
-        LjTableIndices::DynDyn(indices) => {
-            tables.dynamic.insert(indices, (σ, ε));
-        }
-        // LjTableIndices::DynStatic(indices) => {
-        //     tables.static_.insert(indices, (σ, ε));
-        // }
-        LjTableIndices::DynWater(i) => {
-            tables.water_dyn.insert(i, (σ, ε));
-        }
-        // LjTableIndices::StaticWater(i) => {
-        //     tables.water_static.insert(i, (σ, ε));
-        // }
-        LjTableIndices::WaterWater => (), // None; a single const.
-    }
-}
+// pub fn setup_lj_cache(
+//     tables: &mut LjTables,
+//     tgt: &AtomDynamics,
+//     src: &AtomDynamics,
+//     indices: LjTableIndices,
+// ) {
+//     let (σ, ε) = combine_lj_params(tgt, src);
+//
+//     match indices {
+//         LjTableIndices::DynDyn(indices) => {
+//             tables.dynamic.insert(indices, (σ, ε));
+//         }
+//         LjTableIndices::DynWater(i) => {
+//             tables.water_dyn.insert(i, (σ, ε));
+//         }
+//         LjTableIndices::WaterWater => (), // None; a single const.
+//     }
+// }
 
 impl AddAssign<Self> for ForcesOnWaterMol {
     fn add_assign(&mut self, rhs: Self) {
@@ -153,15 +164,9 @@ enum BodyRef {
 }
 
 impl BodyRef {
-    fn get<'a>(
-        &self,
-        dyns: &'a [AtomDynamics],
-        // statics: &'a [AtomDynamics],
-        waters: &'a [WaterMol],
-    ) -> &'a AtomDynamics {
+    fn get<'a>(&self, dyns: &'a [AtomDynamics], waters: &'a [WaterMol]) -> &'a AtomDynamics {
         match *self {
             BodyRef::Dyn(i) => &dyns[i],
-            // BodyRef::Static(i) => &statics[i],
             BodyRef::Water { mol, site } => match site {
                 WaterSite::O => &waters[mol].o,
                 WaterSite::M => &waters[mol].m,
@@ -184,10 +189,10 @@ struct NonBondedPair {
 
 /// Add a force into the right accumulator (dyn or water). Static never accumulates.
 fn add_to_sink(
-    sink_dyn: &mut [Vec3],
+    sink_dyn: &mut [Vec3F64],
     sink_wat: &mut [ForcesOnWaterMol],
     body_type: BodyRef,
-    f: Vec3,
+    f: Vec3F64,
 ) {
     match body_type {
         BodyRef::Dyn(i) => sink_dyn[i] += f,
@@ -212,7 +217,7 @@ fn calc_force(
     water: &[WaterMol],
     cell: &SimBox,
     lj_tables: &LjTables,
-) -> (Vec<Vec3>, Vec<ForcesOnWaterMol>, f64, f64) {
+) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
     let n_dyn = atoms_dyn.len();
     let n_wat = water.len();
 
@@ -222,7 +227,7 @@ fn calc_force(
             || {
                 (
                     // Sums as f64.
-                    vec![Vec3::new_zero(); n_dyn],
+                    vec![Vec3F64::new_zero(); n_dyn],
                     vec![ForcesOnWaterMol::default(); n_wat],
                     0.0_f64, // Virial sum
                     0.0_f64, // Energy sum
@@ -246,7 +251,8 @@ fn calc_force(
                     p.calc_coulomb,
                 );
 
-                let f: Vec3 = f.into();
+                // Convert to f64 prior to summing.
+                let f: Vec3F64 = f.into();
                 add_to_sink(&mut acc_d, &mut acc_w, p.tgt, f);
                 if p.symmetric {
                     add_to_sink(&mut acc_d, &mut acc_w, p.src, -f);
@@ -267,7 +273,7 @@ fn calc_force(
         .reduce(
             || {
                 (
-                    vec![Vec3::new_zero(); n_dyn],
+                    vec![Vec3F64::new_zero(); n_dyn],
                     vec![ForcesOnWaterMol::default(); n_wat],
                     0.0_f64,
                     0.0_f64,
@@ -302,14 +308,14 @@ fn calc_force_cuda(
     lj_tables: &LjTables,
     cutoff_ewald: f32,
     alpha_ewald: f32,
-) -> (Vec<Vec3>, Vec<ForcesOnWaterMol>, f64, f64) {
+) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
     let n_dyn = atoms_dyn.len();
     let n_water = water.len();
 
     let n = pairs.len();
 
-    let mut posits_tgt: Vec<Vec3F32> = Vec::with_capacity(n);
-    let mut posits_src: Vec<Vec3F32> = Vec::with_capacity(n);
+    let mut posits_tgt: Vec<Vec3> = Vec::with_capacity(n);
+    let mut posits_src: Vec<Vec3> = Vec::with_capacity(n);
 
     let mut sigmas = Vec::with_capacity(n);
     let mut epss = Vec::with_capacity(n);
@@ -366,10 +372,6 @@ fn calc_force_cuda(
                 src_is.push(j as u32);
                 &atoms_dyn[j]
             }
-            // BodyRef::Static(j) => {
-            //     src_is.push(j as u32);
-            //     &atoms_static[j]
-            // }
             BodyRef::Water { mol: j, site } => {
                 src_is.push(j as u32);
 
@@ -405,10 +407,10 @@ fn calc_force_cuda(
 
     // 1-4 scaling, and the symmetric case handled in the kernel.
 
-    let cell_extent: Vec3F32 = cell.extent.into();
+    let cell_extent: Vec3 = cell.extent.into();
 
     // Note that we perform virial accumulation as f64, even on GPU.
-    let (f_on_dyn_f32, f_on_water, virial, energy) = force_nonbonded_gpu(
+    let (f_on_dyn, f_on_water, virial, energy) = force_nonbonded_gpu(
         stream,
         module,
         &tgt_is,
@@ -434,7 +436,7 @@ fn calc_force_cuda(
         n_water,
     );
 
-    let f_on_dyn = f_on_dyn_f32.into_iter().map(|f| f.into()).collect();
+    let f_on_dyn = f_on_dyn.into_iter().map(|f| f.into()).collect();
 
     (f_on_dyn, f_on_water, virial, energy)
 }
@@ -447,7 +449,6 @@ impl MdState {
             ComputationDevice::Cpu => calc_force(
                 &pairs,
                 &self.atoms,
-                // &self.atoms_static,
                 &self.water,
                 &self.cell,
                 &self.lj_tables,
@@ -458,7 +459,6 @@ impl MdState {
                 module,
                 &pairs,
                 &self.atoms,
-                // &self.atoms_static,
                 &self.water,
                 &self.cell,
                 &self.lj_tables,
@@ -469,17 +469,16 @@ impl MdState {
 
         // `.into()` below converts accumulated forces to f32.
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
-            // let f_f64: Vec3 = f_on_dyn[i];
-            let f: Vec3F32 = f_on_dyn[i].into();
+            let f: Vec3 = f_on_dyn[i].into();
             tgt.accel += f;
         }
 
         for (i, tgt) in self.water.iter_mut().enumerate() {
             let f = f_on_water[i];
-            let f_0: Vec3F32 = f.f_o.into();
-            let f_m: Vec3F32 = f.f_m.into();
-            let f_h0: Vec3F32 = f.f_h0.into();
-            let f_h1: Vec3F32 = f.f_h1.into();
+            let f_0: Vec3 = f.f_o.into();
+            let f_m: Vec3 = f.f_m.into();
+            let f_h0: Vec3 = f.f_h0.into();
+            let f_h1: Vec3 = f.f_h1.into();
 
             tgt.o.accel += f_0;
             tgt.m.accel += f_m;
@@ -539,25 +538,6 @@ impl MdState {
             })
             .collect();
 
-        // // Forces from static atoms on dynamic ones
-        // let mut pairs_dyn_static: Vec<_> = (0..n_dyn)
-        //     .flat_map(|i_dyn| {
-        //         self.neighbors_nb.dy_static[i_dyn]
-        //             .iter()
-        //             .copied()
-        //             .map(move |i_st| NonBondedPair {
-        //                 tgt: BodyRef::Dyn(i_dyn),
-        //                 src: BodyRef::Static(i_st),
-        //                 // No scaling with static atoms.
-        //                 scale_14: false,
-        //                 lj_indices: LjTableIndices::DynStatic((i_dyn, i_st)),
-        //                 calc_lj: true,
-        //                 calc_coulomb: true,
-        //                 symmetric: false,
-        //             })
-        //     })
-        //     .collect();
-
         // Forces from water on dynamic atoms, and vice-versa
         let mut pairs_dyn_water: Vec<_> = (0..n_dyn)
             .flat_map(|i_dyn| {
@@ -578,26 +558,6 @@ impl MdState {
                     })
             })
             .collect();
-
-        // // Forces from static atoms on water molecules
-        // let mut pairs_water_static: Vec<_> = (0..n_water_mols)
-        //     .flat_map(|i_water| {
-        //         self.neighbors_nb.water_static[i_water]
-        //             .iter()
-        //             .copied()
-        //             .flat_map(move |i_st| {
-        //                 sites.into_iter().map(move |site| NonBondedPair {
-        //                     tgt: BodyRef::Water { mol: i_water, site },
-        //                     src: BodyRef::Static(i_st),
-        //                     scale_14: false,
-        //                     lj_indices: LjTableIndices::StaticWater(i_st),
-        //                     calc_lj: site == WaterSite::O,
-        //                     calc_coulomb: site != WaterSite::O,
-        //                     symmetric: false,
-        //                 })
-        //             })
-        //     })
-        //     .collect();
 
         // ------ Water on water ------
         let mut pairs_water_water = Vec::new();
@@ -639,24 +599,19 @@ impl MdState {
 
         // todo: Consider just removing the functional parts above, and add to `pairs` directly.
         // Combine pairs into a single set; we compute in one parallel pass.
-        // let len_added = pairs_dyn_static.len()
-        let len_added = pairs_dyn_water.len()
-            // + pairs_water_static.len()
-            + pairs_water_water.len();
+        let len_added = pairs_dyn_water.len() + pairs_water_water.len();
 
         let mut pairs = pairs_dyn_dyn;
         pairs.reserve(len_added);
 
-        // pairs.append(&mut pairs_dyn_static);
         pairs.append(&mut pairs_dyn_water);
-        // pairs.append(&mut pairs_water_static);
         pairs.append(&mut pairs_water_water);
 
         self.apply_force(dev, &pairs);
     }
 }
 
-/// Vdw and (short-range) Coulomb forces. Used by water and non-water.
+/// Lennard Jones and (short-range) Coulomb forces. Used by water and non-water.
 /// We run long-range SPME Coulomb force separately.
 ///
 /// We use a hard distance cutoff for Vdw, enabled by its ^-7 falloff.
@@ -672,7 +627,7 @@ pub fn f_nonbonded(
     // These flags are for use with forces on water.
     calc_lj: bool,
     calc_coulomb: bool,
-) -> (Vec3F32, f32) {
+) -> (Vec3, f32) {
     let diff = cell.min_image(tgt.posit - src.posit);
 
     // We compute these dist-related values once, and share them between
@@ -680,7 +635,7 @@ pub fn f_nonbonded(
     let dist_sq = diff.magnitude_squared();
 
     if dist_sq < 1e-12 {
-        return (Vec3F32::new_zero(), 0.);
+        return (Vec3::new_zero(), 0.);
     }
 
     let dist = dist_sq.sqrt();
@@ -735,7 +690,7 @@ pub fn f_nonbonded(
     let force = f_lj + f_coulomb;
     let energy = energy_lj + energy_coulomb;
 
-    *virial_w += diff.dot(force);
+    *virial_w += diff.dot(force) as f64;
 
     (force, energy)
 }

@@ -270,12 +270,17 @@ fn setup_dynamics(
 }
 
 fn main() {
+    let param_set = FfParamSet::new_amber().unwrap();
+    
     let mol = Mol2::load(Path::new("../CPB.mol2")).unwrap();
     let mut protein = MmCif::load(Path::new("../1c8k.cif")).unwrap();
-
-    let param_set = FfParamSet::new_amber().unwrap();
     let lig_specific = ForceFieldParams::load_frcmod(Path::new("../CPB.frcmod")).unwrap();
-
+    
+    // Or, if you have a small molecule available in Amber Geostd, load it remotely:
+    // let data = bio_apis::amber_geostd::load_mol_files("CPB");
+    // let mol = Mol2::new(&data.mol2);
+    // let lig_specific = ForceFieldParams::from_frcmod(&data.frcmod);
+    
     // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
     // `populdate_peptide_ff_and_q() separately.
@@ -391,6 +396,11 @@ as a publicly exposed string. Set up your application to use it from `dynamics::
 CUDA 13 support, which requires Nvidia driver version 580 or higher.
 
 
+## On unflattening trajactory data
+If you passed multiple molecules, these will be flattened during runtime, and in snapshots. You 
+will need to unflatten them if placing back into their original data structures. 
+
+
 ## Why this when OpenMM exists?
 This library exists as part of a larger Rust biology infrastructure effort. It's not possible to use
 [OpenMM](https://openmm.org/) there due to the language barrier. This library currently only has a limited subset of the 
@@ -433,6 +443,8 @@ locally for testing, once built, by running `pip install .`
 
 ## Eratta
 - Python is CPU-only
+- GPU operations are slower than they should, as we're passing all data between CPU and GPU each
+time step.
 - CPU SIMD unsupported
 
 

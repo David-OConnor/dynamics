@@ -13,3 +13,21 @@ Cargo.lock
 *.exp
 *.lib
 *.ptx
+
+
+# Molecular formats
+*.pdb
+*.cif
+*.bcif
+*.gz
+*.sdf
+*.mol2
+*.pdbqt
+*.mtz
+*.map
+*.frcmod
+*.dat
+*.ff19SB
+*.opc
+*.OL24
+*.dcd

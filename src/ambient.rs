@@ -7,7 +7,7 @@
 //!
 //! Note: We keep most thermostat and barostat code as f64, although we use f32 in most sections.
 
-use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
+use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use rand::prelude::ThreadRng;
 
@@ -20,9 +20,9 @@ const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 /// solvated. We may move it around during the sim.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct SimBox {
-    pub bounds_low: Vec3F32,
-    pub bounds_high: Vec3F32,
-    pub extent: Vec3F32,
+    pub bounds_low: Vec3,
+    pub bounds_high: Vec3,
+    pub extent: Vec3,
 }
 
 impl SimBox {
@@ -30,17 +30,15 @@ impl SimBox {
     pub fn new(atoms: &[AtomDynamics], box_type: &SimBoxInit) -> Self {
         match box_type {
             SimBoxInit::Pad(pad) => {
-                let (mut min, mut max) = (
-                    Vec3F32::splat(f32::INFINITY),
-                    Vec3F32::splat(f32::NEG_INFINITY),
-                );
+                let (mut min, mut max) =
+                    (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
                 for a in atoms {
                     min = min.min(a.posit);
                     max = max.max(a.posit);
                 }
 
-                let bounds_low = min - Vec3F32::splat(*pad);
-                let bounds_high = max + Vec3F32::splat(*pad);
+                let bounds_low = min - Vec3::splat(*pad);
+                let bounds_high = max + Vec3::splat(*pad);
 
                 Self {
                     bounds_low,
@@ -49,8 +47,8 @@ impl SimBox {
                 }
             }
             SimBoxInit::Fixed((bounds_low, bounds_high)) => {
-                let bounds_low: Vec3F32 = (*bounds_low).into();
-                let bounds_high: Vec3F32 = (*bounds_high).into();
+                let bounds_low: Vec3 = (*bounds_low).into();
+                let bounds_high: Vec3 = (*bounds_high).into();
                 Self {
                     bounds_low,
                     bounds_high,
@@ -65,7 +63,7 @@ impl SimBox {
         let half_ext = self.extent / 2.;
 
         // todo: DRY with new.
-        let mut center = Vec3F32::new_zero();
+        let mut center = Vec3::new_zero();
         for atom in atoms {
             center += atom.posit;
         }
@@ -77,7 +75,7 @@ impl SimBox {
 
     /// Wrap an absolute coordinate back into the unit cell. (orthorhombic). We use it to
     /// keep arbitrary coordinates inside it.
-    pub fn wrap(&self, p: Vec3F32) -> Vec3F32 {
+    pub fn wrap(&self, p: Vec3) -> Vec3 {
         let ext = &self.extent;
 
         assert!(
@@ -88,7 +86,7 @@ impl SimBox {
         );
 
         // rem_euclid keeps the value in [0, ext)
-        Vec3F32::new(
+        Vec3::new(
             (p.x - self.bounds_low.x).rem_euclid(ext.x) + self.bounds_low.x,
             (p.y - self.bounds_low.y).rem_euclid(ext.y) + self.bounds_low.y,
             (p.z - self.bounds_low.z).rem_euclid(ext.z) + self.bounds_low.z,
@@ -98,11 +96,11 @@ impl SimBox {
     /// Minimum-image displacement vector. Find the closest copy
     /// of an item to a given site, among all tiled boxes. Maps a displacement vector to the closest
     /// periodic image. Allows distance measurements to use the shortest separation.
-    pub fn min_image(&self, dv: Vec3F32) -> Vec3F32 {
+    pub fn min_image(&self, dv: Vec3) -> Vec3 {
         let ext = &self.extent;
         debug_assert!(ext.x > 0.0 && ext.y > 0.0 && ext.z > 0.0);
 
-        Vec3F32::new(
+        Vec3::new(
             dv.x - (dv.x / ext.x).round() * ext.x,
             dv.y - (dv.y / ext.y).round() * ext.y,
             dv.z - (dv.z / ext.z).round() * ext.z,
@@ -115,7 +113,7 @@ impl SimBox {
             * (self.bounds_high.z - self.bounds_low.z).abs()
     }
 
-    pub fn center(&self) -> Vec3F32 {
+    pub fn center(&self) -> Vec3 {
         (self.bounds_low + self.bounds_high) * 0.5
     }
 
@@ -136,8 +134,8 @@ impl SimBox {
         let hi = c + (self.bounds_high - c) * lam;
 
         // Enforce low <= high per component
-        self.bounds_low = Vec3F32::new(lo.x.min(hi.x), lo.y.min(hi.y), lo.z.min(hi.z));
-        self.bounds_high = Vec3F32::new(lo.x.max(hi.x), lo.y.max(hi.y), lo.z.max(hi.z));
+        self.bounds_low = Vec3::new(lo.x.min(hi.x), lo.y.min(hi.y), lo.z.min(hi.z));
+        self.bounds_high = Vec3::new(lo.x.max(hi.x), lo.y.max(hi.y), lo.z.max(hi.z));
         self.extent = self.bounds_high - self.bounds_low;
 
         debug_assert!({
@@ -244,7 +242,7 @@ impl MdState {
 
         let dof = self.dof_for_thermo().max(2) as f64;
         let ke = self.kinetic_energy_kcal();
-        let ke_bar = 0.5 * dof * KB * t_target_k;
+        let ke_bar = 0.5 * dof * KB as f64 * t_target_k;
 
         let c = (-dt / self.barostat.tau_temp).exp();
         // Draw the two random variates used in the exact CSVR update:

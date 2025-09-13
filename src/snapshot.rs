@@ -6,9 +6,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(feature = "encode")]
+use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, MmCif, Mol2};
 use lin_alg::f32::Vec3;
 
+// Append to any snapshot-saving files every this number of snapshots.
+// todo:  Update A/R. Likely higher.
+pub(crate) const FILE_SAVE_INTERVAL: usize = 100;
+
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Clone, PartialEq, Debug, Default)]
 pub enum SaveType {
     #[default]
@@ -16,6 +23,7 @@ pub enum SaveType {
     Dcd(PathBuf),
 }
 
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Clone, Debug)]
 pub struct SnapshotHandler {
     pub save_type: SaveType,

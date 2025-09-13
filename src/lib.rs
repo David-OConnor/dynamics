@@ -65,7 +65,7 @@
 //! We use SHAKE + RATTLE algorithms for these. In the case of water, it's required for OPC compliance.
 //! For H, it allows us to maintain integrator stability with a greater timestep, e.g. 2fs instead of 1fs.
 //!
-//! On f32 vs f64 floating point precision: f32 may be good enough fo rmost things, and typical MD packages
+//! On f32 vs f64 floating point precision: f32 may be good enough for most things, and typical MD packages
 //! use mixed precision. Long-range electrostatics are a good candidate for using f64. Or, very long
 //! runs.
 //!
@@ -74,8 +74,8 @@
 //! are comparatively insignificant. Building neighbor lists are also significant. These are the areas
 //! we focus on for parallel computation (Thread pools, SIMD, CUDA)
 
-// todo: Long-term, you will need to figure out what to run as f32 vice f64, especially
-// todo for being able to run on GPU.
+// todo: You should keep more data on the GPU betwween time steps, instead of passing back and
+// todo forth each time. If practical.
 
 extern crate core;
 
@@ -100,6 +100,8 @@ use std::{
     collections::HashSet,
     fmt,
     fmt::{Display, Formatter},
+    io,
+    path::Path,
     time::Instant,
 };
 
@@ -127,7 +129,7 @@ use crate::{
         CHARGE_UNIT_SCALER, EWALD_ALPHA, LjTableIndices, LjTables, SCALE_COUL_14, SPME_N,
     },
     params::{FfParamSet, ForceFieldParamsIndexed},
-    snapshot::{SaveType, Snapshot, SnapshotHandler, append_dcd},
+    snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::build_adjacency_list,
     water_init::make_water_mols,
     water_opc::WaterMol,
@@ -215,6 +217,26 @@ pub struct MolDynamics<'a> {
     /// If present, any values here override molecule-type general parameters.
     pub mol_specific_params: Option<&'a ForceFieldParams>,
 }
+
+// impl MolDynamics<'_> {
+//     /// Load an Amber Geostd molecule from an online database.
+//     /// todo: Wonky due to use of refs.
+//     pub fn from_amber_geostd(ident: &str) -> io::Result<Self> {
+//         let data = bio_apis::amber_geostd::load_mol_files("CPB").map_err(|e| io::Error::new(io::ErrorKind::Other, "Error loading data"))?;
+//         let mol = Mol2::new(&data.mol2)?;
+//         let params = ForceFieldParams::from_frcmod(&data.frcmod.unwrap())?;
+//
+//         Ok(Self {
+//             ff_mol_type: FfMolType::SmallOrganic,
+//             atoms: &mol.atoms,
+//             atom_posits: None,
+//             bonds: &mol.bonds,
+//             adjacency_list: None,
+//             static_: false,
+//             mol_specific_params: Some(&params)
+//         })
+//     }
+// }
 
 /// A trimmed-down atom for use with molecular dynamics. Contains parameters for single-atom,
 /// but we use ParametersIndex for multi-atom parameters.
@@ -460,7 +482,7 @@ pub struct MdState {
     /// Current simulation time, in picoseconds.
     pub time: f64,
     pub step_count: usize, // increments.
-    /// This stores
+    /// These are the snapshots we keep in memory, accumulating.
     pub snapshots: Vec<Snapshot>,
     pub cell: SimBox,
     pub neighbors_nb: NeighborsNb,
@@ -482,6 +504,8 @@ pub struct MdState {
     /// kcal/mol
     pub kinetic_energy: f64,
     pub potential_energy: f64,
+    /// Every so many snapshots, write these to file, then clear from memory.
+    snapshot_queue_for_file: Vec<Snapshot>,
 }
 
 impl fmt::Display for MdState {
@@ -680,7 +704,7 @@ impl MdState {
 
         result.water = make_water_mols(
             &result.cell,
-            cfg.temp_target as f64,
+            cfg.temp_target,
             &result.atoms,
             // &result.atoms_static,
         );
@@ -692,56 +716,7 @@ impl MdState {
         result.regen_pme();
 
         // Set up our LJ cache.
-        for i in 0..result.atoms.len() {
-            for &j in &result.neighbors_nb.dy_dy[i] {
-                if j < i {
-                    // Prevents duplication of the pair in the other order.
-                    continue;
-                }
-
-                non_bonded::setup_lj_cache(
-                    &result.atoms[i],
-                    &result.atoms[j],
-                    LjTableIndices::DynDyn((i, j)),
-                    &mut result.lj_tables,
-                );
-            }
-        }
-
-        for (i_lig, a_lig) in result.atoms.iter_mut().enumerate() {
-            // // Dynamic, static
-            // for (i_static, a_static) in result.atoms_static.iter().enumerate() {
-            //     non_bonded::setup_lj_cache(
-            //         a_lig,
-            //         a_static,
-            //         LjTableIndices::DynStatic((i_lig, i_static)),
-            //         &mut result.lj_tables,
-            //     );
-            // }
-
-            // Dynamic, water
-            if !result.water.is_empty() {
-                // Each water is identical, so we only need to do this once per lig, and static atom.
-                non_bonded::setup_lj_cache(
-                    a_lig,
-                    &result.water[0].o,
-                    LjTableIndices::DynWater(i_lig),
-                    &mut result.lj_tables,
-                );
-            }
-        }
-
-        // // Static, water
-        // if !result.water.is_empty() {
-        //     for (i_static, a_static) in result.atoms_static.iter().enumerate() {
-        //         non_bonded::setup_lj_cache(
-        //             a_static,
-        //             &result.water[0].o,
-        //             LjTableIndices::StaticWater(i_static),
-        //             &mut result.lj_tables,
-        //         );
-        //     }
-        // }
+        result.lj_tables = LjTables::new(&result.atoms, &result.water);
 
         Ok(result)
     }
@@ -912,6 +887,7 @@ impl MdState {
 
         let mut updated_ke = false;
         let mut take_ss = false;
+        let mut take_ss_file = false;
 
         for handler in &self.cfg.snapshot_handlers {
             if self.step_count % handler.ratio != 0 {
@@ -926,20 +902,45 @@ impl MdState {
             }
 
             match &handler.save_type {
+                // No action if multiple Memory savetypes are specified.
                 SaveType::Memory => {
                     take_ss = true;
                 }
                 SaveType::Dcd(path) => {
-                    // todo: Don't append each time; do this every few times.
-                    if let Err(e) = append_dcd(&self.snapshots[0..0], &path) {
-                        eprintln!("Error saving snapshot as DCD: {e:?}");
+                    take_ss_file = true;
+
+                    // todo: Handle the case of the final step!
+                    if self.step_count % FILE_SAVE_INTERVAL == 0 {
+                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, &path) {
+                            eprintln!("Error saving snapshot as DCD: {e:?}");
+                        }
+                        self.snapshot_queue_for_file = Vec::new();
                     }
                 }
             }
         }
 
-        if take_ss {
-            self.take_snapshot();
+        if take_ss || take_ss_file {
+            let snapshot = self.take_snapshot();
+
+            if take_ss {
+                // todo: DOn't clone.
+                self.snapshots.push(snapshot.clone());
+            }
+            if take_ss_file {
+                self.snapshot_queue_for_file.push(snapshot);
+            }
+        }
+    }
+
+    // todo: For calling by user at the end (temp), don't force it to append the path.
+    //todo: DRY with in the main step path (Doesn't call this) to avoid a dbl borrow.
+    pub fn save_snapshots_to_file(&mut self, path: &Path) {
+        if self.step_count % FILE_SAVE_INTERVAL == 0 {
+            if let Err(e) = append_dcd(&self.snapshot_queue_for_file, &path) {
+                eprintln!("Error saving snapshot as DCD: {e:?}");
+            }
+            self.snapshot_queue_for_file = Vec::new();
         }
     }
 
@@ -965,7 +966,7 @@ impl MdState {
             }
         };
 
-        self.potential_energy += e_recip;
+        self.potential_energy += e_recip as f64;
 
         // println!("F RECIP: {:?}", &f_recip[0..20]);
 
@@ -1104,7 +1105,7 @@ impl MdState {
             .sum()
     }
 
-    fn take_snapshot(&mut self) {
+    fn take_snapshot(&self) -> Snapshot {
         let mut water_o_posits = Vec::with_capacity(self.water.len());
         let mut water_h0_posits = Vec::with_capacity(self.water.len());
         let mut water_h1_posits = Vec::with_capacity(self.water.len());
@@ -1117,7 +1118,7 @@ impl MdState {
             water_velocities.push(water.o.vel); // Can be from any atom; they should be the same.
         }
 
-        self.snapshots.push(Snapshot {
+        Snapshot {
             time: self.time,
             atom_posits: self.atoms.iter().map(|a| a.posit).collect(),
             atom_velocities: self.atoms.iter().map(|a| a.vel).collect(),
@@ -1127,7 +1128,7 @@ impl MdState {
             water_velocities,
             energy_kinetic: self.kinetic_energy as f32,
             energy_potential: self.potential_energy as f32,
-        })
+        }
     }
 }
 

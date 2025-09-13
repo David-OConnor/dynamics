@@ -544,7 +544,6 @@ fn handle_backbone(
     let mut c_p_posit = None;
 
     for atom in atoms {
-        // let Some(role) = atom.role else { continue };
         let Some(tir) = &atom.type_in_res else {
             continue;
         };
@@ -561,19 +560,6 @@ fn handle_backbone(
             }
             _ => (),
         }
-
-        // match role {
-        //     AtomRole::N_Backbone => {
-        //         n_posit = Some(atom.posit);
-        //     }
-        //     AtomRole::C_Alpha => {
-        //         c_alpha_posit = Some(atom.posit);
-        //     }
-        //     AtomRole::C_Prime => {
-        //         c_p_posit = Some(atom.posit);
-        //     }
-        //     _ => (),
-        // }
     }
 
     let (Some(c_alpha_posit), Some(c_p_posit), Some(n_posit)) = (c_alpha_posit, c_p_posit, n_posit)
@@ -672,13 +658,6 @@ fn handle_backbone(
             -bond_ca_sidechain.to_normalized(),
         ) * LEN_CALPHA_H;
 
-    // H attached to the α carbon.
-    // hydrogens.push(Atom {
-    //     posit: posit_ha,
-    //     type_in_res: Some(AtomTypeInRes::H("HA".to_string())),
-    //     ..h_default.clone()
-    // });
-
     hydrogens.push(AtomGeneric {
         posit: posit_ha,
         type_in_res: Some(AtomTypeInRes::H("HA".to_string())),
@@ -693,13 +672,10 @@ fn handle_backbone(
 /// Returns (dihedral angles, H atoms, (c'_pos, ca_pos)). The parameter and output carbon positions
 /// are for use in calculating dihedral angles associated with other  chains.
 pub fn aa_data_from_coords(
-    // atoms: &[&Atom],
     atoms: &[&AtomGeneric],
-    // residues: &[Residue],
     residues: &[ResidueGeneric],
     residue_type: &ResidueType,
     res_i: usize,
-    // chain_i: usize,
     prev_cp_ca: Option<(Vec3, Vec3)>,
     next_n: Option<Vec3>,
     digit_map: &DigitMap,
