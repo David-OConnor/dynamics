@@ -6,12 +6,13 @@
 Cargo.lock
 /python/target/
 
-/param_data
+# We include param data so CI can publish to Pypi.
+#/param_data
 
 # CUDA
 *.exe
 *.exp
-*.lib
+#*.lib
 *.ptx
 
 
@@ -25,9 +26,9 @@ Cargo.lock
 *.pdbqt
 *.mtz
 *.map
-*.frcmod
-*.dat
-*.ff19SB
+#*.frcmod
+#*.dat
+#*.ff19SB
 *.opc
-*.OL24
+#*.OL24
 *.dcd
