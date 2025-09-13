@@ -40,7 +40,7 @@ flexibility that facilitates integration into bigger systems.
 
 
 ## Installation
-Python: `pip install mol_dynamics`
+Python: `pip install mol-dynamics`
 
 Rust: Add `dynamics` to `Cargo.toml`. Likely `bio_files` as well.
 
@@ -58,7 +58,20 @@ docs links above; those are structs of plain data that can be built from from ar
 you're building an application, you might use a more complicated Atom format; you can create a function that converts 
 between yours, and `AtomGeneric`.
 
-Requirements by molecule type:
+### Small organic molecule note
+There is some trouble with small organic molecule file formats. Some tools like openff-toolkit discourage or disallow
+use of Mol2 due to its lack of well-defined specification. They recommend SDF files instead. This is surprising,
+as SDF files also don't have a standard way to define partial charge or force field type. For example, OpenMM, and
+PubChem use different formats for partial charges. We view this with context: the alternatives also have problems or equal
+or greater severity to this. For example, PDBQT isn't intended for general use; XYZ is minimal; CML uses XML which is not convenient.
+
+We suggest using whichever files are convenient, and converting
+them to in-memory data structure using tools you like, or ones we include. Mol2's ability to store force field type and partial
+charge in column data, having a [published spec](https://zhanggroup.org/DockRMSD/mol2.pdf) variant of Mol, and being
+adopted by Amber's Geostd library makes it a good choice.
+
+
+### Requirements by molecule type:
 - **Proteins**/amino acids chains: No special requirements. Uses `mmCif`. (also known as PdbX). Force field type and
 partial charges are inferred automatically.
 - **Small organic molecules**: Must have Force Field name, and partial charge populated on all atoms. `Mol2` files from 
@@ -130,9 +143,6 @@ We run a relaxation / energy-minimization function prior to starting each simula
 positions to reduce the amount of energy that comes from initial conditions deviating from bonded parameters.
 
 
-
-
-
 ### Floating point precision
 Mixed precision: 32-bit floating points for most operations. We use 64-bit accumulators, and in thermostat 
 and barostat computations.
@@ -169,6 +179,9 @@ We load partial charges for ligands from *mol2*, *PDBQT* etc files. Protein dyna
 using parameters built-in to the program (The Amber one above). Simulating ligands requires the loaded
 file (e.g. *mol2*) include partial charges. we recommend including ligand-specific override
 files as well, e.g. to load dihedral angles from *.frcmod* that aren't present in *Gaff2*.
+
+You can load (and save) combined atom and forcefield data from Amber PRMTOP files; these combine
+these two data types into one file.
 
 
 Example use (Python):
@@ -222,11 +235,15 @@ def main():
     param_set = FfParamSet.new_amber()
     lig_specific = ForceFieldParams.load_frcmod("CPB.frcmod")
     
+    # Or, instead of loading atoms and mol-specific params separately:
+    # mol, lig_specific = load_prmtop("my_mol.prmtop")
+    
     # Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     # included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
-    # `populate_peptide_ff_and_q() separately.
-    protein.atoms = prepare_peptide(
+    # `populate_peptide_ff_and_q() separately. Add bonds.
+    protein.atoms, protein.bonds = prepare_peptide(
         protein.atoms,
+        protein.bonds,
         protein.residues,
         protein.chains,
         param_set.peptide_ff_q_map,
@@ -313,6 +330,9 @@ fn main() {
     let mut protein = MmCif::load(Path::new("1c8k.cif")).unwrap();
     let mol = Mol2::load(Path::new("CPB.mol2")).unwrap();
     let mol_specific = ForceFieldParams::load_frcmod(Path::new("CPB.frcmod")).unwrap();
+
+    // Or, instead of loading atoms and mol-specific params separately:
+    // let (mol, lig_specific) = load_prmtop("my_mol.prmtop");
     
     // Or, if you have a small molecule available in Amber Geostd, load it remotely:
     // let data = bio_apis::amber_geostd::load_mol_files("CPB");
@@ -321,9 +341,10 @@ fn main() {
     
     // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
-    // `populate_peptide_ff_and_q() separately.
+    // `populate_peptide_ff_and_q() separately. Add bonds.
     prepare_peptide(
         &mut protein.atoms,
+        &mut protein.bonds,
         &mut protein.residues,
         &mut protein.chains,
         &param_set.peptide_ff_q_map.as_ref().unwrap(),
@@ -501,3 +522,4 @@ time step.
 - [Amber reference manual](https://ambermd.org/doc12/Amber25.pdf)
 - [Ewald Summation/SPME](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html)
 - [OPC water model](https://arxiv.org/abs/1408.1679)
+- [Tripos Mol2 format](https://zhanggroup.org/DockRMSD/mol2.pdf)

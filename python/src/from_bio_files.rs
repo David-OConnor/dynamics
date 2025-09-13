@@ -505,3 +505,24 @@ impl MmCif {
         format!("{:?}", self.inner)
     }
 }
+
+
+#[pyfunction]
+pub fn save_prmtop(
+    atoms: Vec<PyRef<AtomGeneric>>,
+    params: PyRef<ForceFieldParams>,
+    path: PathBuf,
+) -> io::Result<()> {
+    // Requires that the inner types implement Clone.
+    let atoms: Vec<_> = atoms.into_iter().map(|a| a.inner.clone()).collect();
+    bio_files_rs::prmtop::save_prmtop(&atoms, &params.inner, &path)
+}
+
+#[pyfunction]
+pub fn load_prmtop(path: PathBuf) -> io::Result<(Vec<AtomGeneric>, ForceFieldParams)> {
+    let (atoms, params) = bio_files_rs::prmtop::load_prmtop(&path)?;
+    Ok((
+        atoms.into_iter().map(|a| AtomGeneric { inner: a }).collect(),
+        ForceFieldParams { inner: params },
+    ))
+}

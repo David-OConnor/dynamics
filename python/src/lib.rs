@@ -489,5 +489,8 @@ fn mol_dynamics(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(prepare_peptide, m)?)?;
 
+    m.add_function(wrap_pyfunction!(from_bio_files::load_prmtop, m)?)?;
+    m.add_function(wrap_pyfunction!(from_bio_files::save_prmtop, m)?)?;
+
     Ok(())
 }

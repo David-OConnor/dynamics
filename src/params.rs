@@ -7,13 +7,13 @@ use std::{
 };
 
 use bio_files::{
-    AtomGeneric, ChainGeneric, ResidueEnd, ResidueGeneric, ResidueType,
+    AtomGeneric, BondGeneric, ChainGeneric, ResidueEnd, ResidueGeneric, ResidueType, create_bonds,
     md_params::{
         AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParams,
         LjParams, MassParams, load_amino_charges, parse_amino_charges,
     },
 };
-use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes};
+use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element};
 
 use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};
 
@@ -334,15 +334,32 @@ pub fn populate_peptide_ff_and_q(
     Ok(())
 }
 
+/// Combines several functions that should be run after loading protein files from PDB. Add hydrogens,
+/// load force field parameters and partial charge, and add bonds.
 pub fn prepare_peptide(
     atoms: &mut Vec<AtomGeneric>,
+    bonds: &mut Vec<BondGeneric>,
     residues: &mut Vec<ResidueGeneric>,
     chains: &mut [ChainGeneric],
     ff_map: &ProtFFTypeChargeMap,
     ph: f32, // todo: Implement.
 ) -> Result<Vec<Dihedral>, ParamError> {
-    let dihedrals = populate_hydrogens_dihedrals(atoms, residues, chains, ff_map, ph)?;
+    let mut dihedrals = Vec::new();
+
+    let h_count = atoms
+        .iter()
+        .filter(|a| a.element == Element::Hydrogen)
+        .count();
+    if h_count < 10 {
+        dihedrals = populate_hydrogens_dihedrals(atoms, residues, chains, ff_map, ph)?;
+    }
+
+    // todo: Similar checks for empty etc.
     populate_peptide_ff_and_q(atoms, residues, ff_map)?;
+
+    if bonds.is_empty() {
+        *bonds = create_bonds(atoms);
+    }
 
     Ok(dihedrals)
 }
