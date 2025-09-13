@@ -33,22 +33,19 @@ use crate::{
         bond_vecs::init_local_bond_vecs,
     },
 };
+use crate::add_hydrogens::ph::{his_choice, standard_allowed_at_ph, variant_allowed_at_ph};
 
 pub(crate) mod add_hydrogens_2;
 mod bond_vecs;
 mod sidechain;
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum BondGeometry {
-    Planar,
-    Linear,
-    Tetrahedral,
-    Other,
-}
+mod ph;
 
 // We use the normal AA, vice general form here, as that's the one available in the mmCIF files
 // we're parsing. This is despite the Amber data we are using for the source using the general versions.
 pub type DigitMap = HashMap<AminoAcid, HashMap<char, Vec<u8>>>;
+// pub type DigitMap = HashMap<AminoAcidGeneral, HashMap<char, Vec<u8>>>;
+// todo: Perhaps we use General here, since that's what we need to adjust protenation based on pH.
+
 
 /// We use this to validate H atom type assignments. We derive this directly from `amino19.lib` (Amber)
 /// Returns `true` if valid.
@@ -58,11 +55,9 @@ pub type DigitMap = HashMap<AminoAcid, HashMap<char, Vec<u8>>>;
 ///
 /// We use the `digit_map` vice the `ff_map` directly, so we can merge protenation variants, e.g. for  His.
 fn validate_h_atom_type(
-    // tir: &AtomTypeInRes,
     depth: char,
     digit: u8,
     aa: AminoAcid,
-    // ff_map: &ProtFfMap,
     digit_map: &DigitMap,
 ) -> Result<bool, ParamError> {
     let data = digit_map.get(&aa).ok_or_else(|| {
@@ -85,17 +80,39 @@ fn validate_h_atom_type(
     Ok(false)
 }
 
+fn frac_protonated(p_h: f32, p_ka: f32) -> f32 {
+    // Henderson–Hasselbalch, monoprotic acid/base
+    1.0 / (1.0 + 10f32.powf(p_h - p_ka))
+}
+
 // todo: Include N and C terminus maps A/R.
 /// Helper to get the digit part of the H from what's expected in Amber's naming conventions.
 /// E.g. this might map an incrementing `0` and `1` to `2` and `3` for HE2 and HE3.
-fn make_h_digit_map(ff_map: &ProtFfMap) -> DigitMap {
+fn make_h_digit_map(ff_map: &ProtFfMap, ph: f32) -> DigitMap {
     let mut result: DigitMap = HashMap::new();
 
+    // Preselect a single HIS state at this pH so we don't mix HID/HIE/HIP digits.
+    let his_selected = his_choice(ph);
+
     for (&aa_gen, params) in ff_map {
-        if aa_gen == AminoAcidGeneral::Variant(AminoAcidProtenationVariant::Hyp) {
-            // todo: Sort this out. FOr now, it will allow your code to work better with
-            // todo most prolines we observe in mmCIF data. You need a more robust algo
-            // todo to deal with multiple variants of this, and e.g. His to do it properly.
+        // Filter by pH:
+        let allowed = match aa_gen {
+            AminoAcidGeneral::Standard(aa) => standard_allowed_at_ph(aa, ph),
+            AminoAcidGeneral::Variant(v) => {
+                // Histidine: allow only the chosen tautomer at this pH
+                if matches!(v, AminoAcidProtenationVariant::Hid |
+                                AminoAcidProtenationVariant::Hie |
+                                AminoAcidProtenationVariant::Hip) {
+                    match his_selected {
+                        Some(sel) if sel == v => true,
+                        _ => false,
+                    }
+                } else {
+                    variant_allowed_at_ph(v, ph)
+                }
+            }
+        };
+        if !allowed {
             continue;
         }
 
@@ -132,6 +149,10 @@ fn make_h_digit_map(ff_map: &ProtFfMap) -> DigitMap {
             }
         }
 
+        if per_heavy.is_empty() {
+            continue;
+        }
+
         let aa = match aa_gen {
             AminoAcidGeneral::Standard(a) => a,
             AminoAcidGeneral::Variant(av) => av.get_standard().unwrap(), // todo: Unwrap OK?
@@ -140,25 +161,24 @@ fn make_h_digit_map(ff_map: &ProtFfMap) -> DigitMap {
         // Make the relationship deterministic (ordinal 0 → smallest digit, …)
         for v in per_heavy.values_mut() {
             v.sort_unstable();
+            v.dedup();
         }
 
         // This combines entries in the case of duplicates: This happens in the case of protenation
         // variants, like HIE and HID for HIS.
-        if !per_heavy.is_empty() {
-            if let Some(existing) = result.get_mut(&aa) {
-                for (designator, mut digits) in per_heavy {
-                    existing
-                        .entry(designator)
-                        .or_default()
-                        .extend(digits.drain(..));
-                }
-                for v in existing.values_mut() {
-                    v.sort_unstable();
-                    v.dedup();
-                }
-            } else {
-                result.insert(aa, per_heavy);
+        if let Some(existing) = result.get_mut(&aa) {
+            for (designator, mut digits) in per_heavy {
+                existing
+                    .entry(designator)
+                    .or_default()
+                    .extend(digits.drain(..));
             }
+            for v in existing.values_mut() {
+                v.sort_unstable();
+                v.dedup();
+            }
+        } else {
+            result.insert(aa, per_heavy);
         }
     }
 
@@ -386,7 +406,7 @@ pub fn populate_hydrogens_dihedrals(
     let res_clone = residues.clone();
 
     // todo: Handle the N and C term A/R.
-    let digit_map = make_h_digit_map(&ff_map.internal);
+    let digit_map = make_h_digit_map(&ff_map.internal, ph);
 
     // Increment H serial number, starting with the final atom present prior to adding H + 1)
     let mut highest_sn = 0;
@@ -423,7 +443,7 @@ pub fn populate_hydrogens_dihedrals(
             &atoms_this_res,
             &res_clone,
             &res.res_type,
-            res_i,
+            // res_i,
             // chain_i,
             prev_cp_ca,
             n_next_pos,

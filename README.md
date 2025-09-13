@@ -148,6 +148,12 @@ Mixed precision: 32-bit floating points for most operations. We use 64-bit accum
 and barostat computations.
 
 
+### How pH adjustment works
+pH in proteins is represented by the protenation state of certain amino acids. In particular, His,
+Asp, Cys, Glu, and Lys are affected. These changes are affected in utility functions we provide that
+add Hydrogen atoms.
+
+
 ### Saving results
 Snapshots of results can be returned in memory, or saved to disk in [DCD](https://docs.openmm.org/7.1.0/api-python/generated/simtk.openmm.app.dcdfile.DCDFile.html) format.
 

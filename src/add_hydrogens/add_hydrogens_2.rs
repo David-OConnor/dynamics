@@ -675,7 +675,7 @@ pub fn aa_data_from_coords(
     atoms: &[&AtomGeneric],
     residues: &[ResidueGeneric],
     residue_type: &ResidueType,
-    res_i: usize,
+    // res_i: usize,
     prev_cp_ca: Option<(Vec3, Vec3)>,
     next_n: Option<Vec3>,
     digit_map: &DigitMap,
