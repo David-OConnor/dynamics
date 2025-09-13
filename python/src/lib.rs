@@ -1,8 +1,9 @@
 use std::{path::PathBuf, str::FromStr};
 
 use dynamics_rs;
-use lin_alg::f64::Vec3;
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyType, Py};
+use lin_alg::f32::Vec3;
+use lin_alg::f64::Vec3 as Vec3F64;
+use pyo3::{Py, exceptions::PyValueError, prelude::*, types::PyType};
 
 mod from_bio_files;
 mod params;
@@ -10,7 +11,7 @@ mod prep;
 
 use crate::{
     from_bio_files::*,
-    params::FfParamSet,
+    params::{FfParamSet, prepare_peptide},
     prep::{HydrogenConstraint, merge_params},
 };
 
@@ -47,6 +48,69 @@ struct Snapshot {
     inner: dynamics_rs::snapshot::Snapshot,
 }
 
+#[pymethods]
+impl Snapshot {
+    //     pub atom_velocities: Vec<Vec3>,
+    //     pub water_o_posits: Vec<Vec3>,
+    //     pub water_h0_posits: Vec<Vec3>,
+    //     pub water_h1_posits: Vec<Vec3>,
+    //     /// Single velocity per water molecule, as it's rigid.
+    //     pub water_velocities: Vec<Vec3>,
+    //     pub energy_kinetic: f32,
+    //     pub energy_potential: f32,
+    #[getter]
+    fn time(&self) -> f64 {
+        self.inner.time
+    }
+    #[setter(time)]
+    fn time_set(&mut self, v: f64) {
+        self.inner.time = v;
+    }
+    #[getter]
+    fn atom_posits(&self) -> Vec<[f32; 3]> {
+        self.inner.atom_posits.iter().map(|v| v.to_arr()).collect()
+    }
+    #[setter(atom_posits)]
+    fn atom_posits_set(&mut self, v: Vec<[f32; 3]>) {
+        self.inner.water_o_posits = v.iter().map(|v| Vec3::from_slice(v).unwrap()).collect();
+    }
+    #[getter]
+    fn water_o_posits(&self) -> Vec<[f32; 3]> {
+        self.inner.atom_posits.iter().map(|v| v.to_arr()).collect()
+    }
+    #[setter(water_o_posits)]
+    fn water_o_posits_set(&mut self, v: Vec<[f32; 3]>) {
+        self.inner.water_o_posits = v.iter().map(|v| Vec3::from_slice(v).unwrap()).collect();
+    }
+    // todo: Impl teh other fields.
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
+#[pyclass]
+struct SnapshotHandler {
+    inner: dynamics_rs::snapshot::SnapshotHandler,
+}
+
+#[pymethods]
+impl SnapshotHandler {
+    // todo: Impl Save type field and its enum
+    #[getter]
+    fn ratio(&self) -> usize {
+        self.inner.ratio
+    }
+    #[setter(ratio)]
+    fn ratio_set(&mut self, v: usize) {
+        self.inner.ratio = v;
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
 // #[classmethod]
 // fn from_str(_cls: &Bound<'_, PyType>, str: &str) -> PyResult<Self> {
 //     Ok(bio_files_rs::BondType::from_str(str)?.into())
@@ -67,45 +131,45 @@ impl AtomDynamics {
     // field!(element, Element);
 
     #[getter]
-    fn posit(&self) -> [f64; 3] {
+    fn posit(&self) -> [f32; 3] {
         self.inner.posit.to_arr()
     }
     #[setter(posit)]
-    fn posit_set(&mut self, posit: [f64; 3]) {
+    fn posit_set(&mut self, posit: [f32; 3]) {
         self.inner.posit = Vec3::from_slice(&posit).unwrap()
     }
     #[getter]
-    fn vel(&self) -> [f64; 3] {
+    fn vel(&self) -> [f32; 3] {
         self.inner.vel.to_arr()
     }
     #[setter(vel)]
-    fn vel_set(&mut self, vel: [f64; 3]) {
+    fn vel_set(&mut self, vel: [f32; 3]) {
         self.inner.vel = Vec3::from_slice(&vel).unwrap()
     }
     #[getter]
-    fn accel(&self) -> [f64; 3] {
+    fn accel(&self) -> [f32; 3] {
         self.inner.accel.to_arr()
     }
     #[setter(accel)]
-    fn accel_set(&mut self, accel: [f64; 3]) {
+    fn accel_set(&mut self, accel: [f32; 3]) {
         self.inner.accel = Vec3::from_slice(&accel).unwrap()
     }
 
     #[getter]
-    fn mass(&self) -> f64 {
+    fn mass(&self) -> f32 {
         self.inner.mass
     }
     #[setter(mass)]
-    fn mass_set(&mut self, mass: f64) {
+    fn mass_set(&mut self, mass: f32) {
         self.inner.mass = mass
     }
     #[getter]
-    fn partial_charge(&self) -> f64 {
+    fn partial_charge(&self) -> f32 {
         self.inner.partial_charge
     }
     #[setter(partial_charge)]
-    fn partial_charge_set(&mut self, partial_charge: f64) {
-        self.inner.partial_charge = partial_charge
+    fn partial_charge_set(&mut self, v: f32) {
+        self.inner.partial_charge = v
     }
 
     fn __repr__(&self) -> String {
@@ -127,13 +191,14 @@ make_enum!(
 #[pyclass]
 struct MolDynamics {
     // We don't use the inner pattern here, as we can't use lifetimes in Pyo3.
+    // This contains owned equivalents.
     pub ff_mol_type: FfMolType,
     pub atoms: Vec<AtomGeneric>,
-    pub atom_posits: Option<Vec<Vec3>>,
+    pub atom_posits: Option<Vec<Vec3F64>>,
     pub bonds: Vec<BondGeneric>,
     pub adjacency_list: Option<Vec<Vec<usize>>>,
     pub static_: bool,
-    pub mol_specific_params: Option<ForceFieldParamsKeyed>,
+    pub mol_specific_params: Option<ForceFieldParams>,
 }
 
 #[pymethods]
@@ -147,19 +212,19 @@ impl MolDynamics {
         bonds: Vec<Py<from_bio_files::BondGeneric>>,
         adjacency_list: Option<Vec<Vec<usize>>>,
         static_: bool,
-        mol_specific_params: Option<Py<from_bio_files::ForceFieldParamsKeyed>>,
+        mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
     ) -> Self {
+
         // NOTE: Py<T>::borrow(py) — no .as_ref(py)
         let atoms: Vec<from_bio_files::AtomGeneric> =
             atoms.into_iter().map(|p| p.borrow(py).clone()).collect();
         let bonds: Vec<from_bio_files::BondGeneric> =
             bonds.into_iter().map(|p| p.borrow(py).clone()).collect();
-        let mol_specific_params =
-            mol_specific_params.map(|p| p.borrow(py).clone());
+        let mol_specific_params = mol_specific_params.map(|p| p.borrow(py).clone());
 
         let atom_posits = atom_posits.map(|v| {
             v.into_iter()
-                .map(|a| Vec3::from_slice(&a).unwrap())
+                .map(|a| Vec3F64::new(a[0] as f64, a[1] as f64, a[2] as f64))
                 .collect()
         });
 
@@ -176,8 +241,9 @@ impl MolDynamics {
 }
 
 #[pyclass]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Integrator {
-    VelocityVerlet,
+    VerletVelocity,
     Langevin,
     LangevinMiddle,
 }
@@ -185,14 +251,16 @@ enum Integrator {
 impl Integrator {
     pub fn to_native(self) -> dynamics_rs::Integrator {
         match self {
-            Self::VelocityVerlet => dynamics_rs::Integrator::VelocityVerlet,
-            Self::Integrator::Langevin => dynamics_rs::Integrator::Langevin  { gamma: 1.0 },
-            Self::Integrator::LangevinMiddle => dynamics_rs::Integrator::LangevinMiddle { gamma: 1.0 },
+            Self::VerletVelocity => dynamics_rs::Integrator::VerletVelocity,
+            Self::Langevin => dynamics_rs::Integrator::Langevin { gamma: 1.0 },
+            Self::LangevinMiddle => {
+                dynamics_rs::Integrator::LangevinMiddle { gamma: 1.0 }
+            }
         }
     }
     pub fn from_native(native: dynamics_rs::Integrator) -> Self {
         match native {
-            dynamics_rs::Integrator::VelocityVerlet => Self::VelocityVerlet,
+            dynamics_rs::Integrator::VerletVelocity => Self::VerletVelocity,
             dynamics_rs::Integrator::Langevin { gamma: _ } => Self::Langevin,
             dynamics_rs::Integrator::LangevinMiddle { gamma: _ } => Self::LangevinMiddle,
         }
@@ -215,7 +283,7 @@ impl MdConfig {
 
     #[getter]
     fn integrator(&self) -> Integrator {
-        self.inner.integrator.into()
+        Integrator::from_native(self.inner.integrator.clone())
     }
     #[setter(integrator)]
     fn integrator_set(&mut self, v: Integrator) {
@@ -254,20 +322,15 @@ impl MdConfig {
         self.inner.hydrogen_constraint = v.to_native();
     }
     #[getter]
-    fn snapshot_ratio_memory(&self) -> usize {
-        self.inner.snapshot_ratio_memory
+    fn snapshot_handlers(&self) -> Vec<SnapshotHandler> {
+        self.inner.snapshot_handlers.clone()
+            .into_iter()
+            .map(|v| SnapshotHandler { inner: v })
+            .collect()
     }
-    #[setter(snapshot_ratio_memory)]
-    fn snapshot_ratio_memory_set(&mut self, v: usize) {
-        self.inner.snapshot_ratio_memory = v;
-    }
-    #[getter]
-    fn snapshot_ratio_file(&self) -> usize {
-        self.inner.snapshot_ratio_file
-    }
-    #[setter(snapshot_ratio_file)]
-    fn snapshot_ratio_file_set(&mut self, v: usize) {
-        self.inner.snapshot_ratio_file = v;
+    #[setter(snapshot_handlers)]
+    fn snapshot_handlers_set(&mut self, v: Vec<PyRef<SnapshotHandler>>) {
+        self.inner.snapshot_handlers = v.into_iter().map(|v| v.inner.clone()).collect();
     }
 
     fn __repr__(&self) -> String {
@@ -280,74 +343,85 @@ struct MdState {
     inner: dynamics_rs::MdState,
 }
 
+// todo: Determine how to implement.
+#[cfg(feature = "cuda")]
+fn get_dev() -> dynamics_rs::ComputationDevice {
+    if cudarc::driver::result::init().is_ok() {
+        let ctx = CudaContext::new(0).unwrap();
+        let stream = ctx.default_stream();
+
+        // let module = ctx.load_module(Ptx::from_src(PTX));
+        let module_dynamics = ctx.load_module(Ptx::from_src(dynamics_rs::PTX));
+
+        match module_dynamics {
+            Ok(m) => ComputationDevice::Gpu((stream, m)),
+            Err(e) => {
+                eprintln!(
+                    "Error loading CUDA module: {}; not using CUDA. Error: {e}",
+                    dynamics_rs::PTX
+                );
+                ComputationDevice::Cpu
+            }
+        }
+    } else {
+        ComputationDevice::Cpu
+    }
+}
+
 #[pymethods]
 impl MdState {
     #[new]
     fn new(
         py: Python<'_>,
         cfg: &MdConfig,
-        mols: Vec<Py<MolDynamics>>,
+        mols: Vec<Py<MolDynamics>>, // <-- Py-wrapped so PyO3 can extract
         param_set: &FfParamSet,
     ) -> PyResult<Self> {
-        let n = mols.len();
+        let n_mols = mols.len();
 
-        // First pass: copy data out of Python objects while holding the GIL.
-        let mut ff_types = Vec::with_capacity(n);
-        let mut static_flags = Vec::with_capacity(n);
+        // Per-molecule ownership
+        let mut atoms_bufs: Vec<Vec<bio_files::AtomGeneric>> = Vec::with_capacity(n_mols);
+        let mut posit_bufs: Vec<Option<Vec<Vec3F64>>> = Vec::with_capacity(n_mols);
+        let mut bonds_bufs: Vec<Vec<bio_files::BondGeneric>> = Vec::with_capacity(n_mols);
+        let mut adj_bufs: Vec<Option<Vec<Vec<usize>>>> = Vec::with_capacity(n_mols);
+        let mut msp_bufs: Vec<Option<from_bio_files::ForceFieldParams>> = Vec::with_capacity(n_mols);
 
-        let mut atoms_bufs: Vec<bio_files::AtomGeneric> = Vec::with_capacity(n);
-        let mut bonds_bufs = Vec::with_capacity(n);
-
-        let mut posits_bufs: Vec<Option<Vec<Vec3>>> = Vec::with_capacity(n);
-
-        let mut adj_bufs: Vec<Option<Vec<Vec<usize>>>> = Vec::with_capacity(n);
-        let mut msp_bufs: Vec<Option<from_bio_files::ForceFieldParamsKeyed>> =
-            Vec::with_capacity(n);
-
-        for mol_py in &mols {
-            let v = mol_py.borrow(py); // PyRef<MolDynamics>
-
-            ff_types.push(v.ff_mol_type.to_native());
-            static_flags.push(v.static_);
+        for mol in &mols {
+            let v = mol.borrow(py);
 
             atoms_bufs.push(v.atoms.iter().map(|a| a.inner.clone()).collect());
+            posit_bufs.push(v.atom_posits.clone());
             bonds_bufs.push(v.bonds.iter().map(|b| b.inner.clone()).collect());
-
-            posits_bufs.push(v.atom_posits.clone());
             adj_bufs.push(v.adjacency_list.clone());
             msp_bufs.push(v.mol_specific_params.clone());
         }
 
-        // Second pass: build borrowed views into our owned buffers.
-        let mut mols_native = Vec::with_capacity(n);
-        for i in 0..n {
+        let mut mols_native = Vec::with_capacity(n_mols);
+
+        for (i, mol) in mols.iter().enumerate() {
+            let v = mol.borrow(py);
+
             let atoms_slice = atoms_bufs[i].as_slice();
             let bonds_slice = bonds_bufs[i].as_slice();
-
-            let atom_posits_slice = posits_bufs[i].as_ref().map(|v| v.as_slice());
-            let adjacency_slice: Option<&[Vec<usize>]> =
-                adj_bufs[i].as_ref().map(|v| v.as_slice());
+            let atom_posits_slice: Option<&[Vec3F64]> = posit_bufs[i].as_deref();
+            let adjacency_slice: Option<&[Vec<usize>]> = adj_bufs[i].as_deref();
             let mol_specific_params = msp_bufs[i].as_ref().map(|p| &p.inner);
 
             mols_native.push(dynamics_rs::MolDynamics {
-                ff_mol_type: ff_types[i],
+                ff_mol_type: v.ff_mol_type.to_native(),
                 atoms: atoms_slice,
                 atom_posits: atom_posits_slice,
                 bonds: bonds_slice,
                 adjacency_list: adjacency_slice,
-                static_: static_flags[i],
+                static_: v.static_,
                 mol_specific_params,
             });
         }
 
-        Ok(Self {
-            inner: dynamics_rs::MdState::new(
-                &cfg.inner,
-                &mols_native,
-                &param_set.inner,
-            )
-                .map_err(|e| PyValueError::new_err(e.descrip))?,
-        })
+        let inner = dynamics_rs::MdState::new(&cfg.inner, &mols_native, &param_set.inner)
+            .map_err(|e| PyValueError::new_err(e.descrip))?;
+
+        Ok(Self { inner })
     }
 
     fn step(&mut self, dt: f32) {
@@ -366,8 +440,10 @@ impl MdState {
 
 #[pyfunction]
 fn save_snapshots(py: Python<'_>, snapshots: Vec<Py<Snapshot>>, path: PathBuf) -> PyResult<()> {
-    let snapshots_native: Vec<_> =
-        snapshots.into_iter().map(|p| p.borrow(py).inner.clone()).collect();
+    let snapshots_native: Vec<_> = snapshots
+        .into_iter()
+        .map(|p| p.borrow(py).inner.clone())
+        .collect();
     dynamics_rs::save_snapshots(&snapshots_native, &path)?;
     Ok(())
 }
@@ -394,15 +470,19 @@ fn mol_dynamics(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<FfMolType>()?;
     m.add_class::<FfParamSet>()?;
     m.add_class::<Snapshot>()?;
+    m.add_class::<SnapshotHandler>()?;
 
     m.add_class::<from_bio_files::AtomGeneric>()?;
     m.add_class::<from_bio_files::BondGeneric>()?;
     m.add_class::<from_bio_files::ResidueGeneric>()?;
-    m.add_class::<from_bio_files::ForceFieldParamsKeyed>()?;
+    m.add_class::<from_bio_files::ChainGeneric>()?;
+    m.add_class::<from_bio_files::ForceFieldParams>()?;
 
     m.add_function(wrap_pyfunction!(merge_params, m)?)?;
     m.add_function(wrap_pyfunction!(save_snapshots, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshots, m)?)?;
+
+    m.add_function(wrap_pyfunction!(prepare_peptide, m)?)?;
 
     Ok(())
 }

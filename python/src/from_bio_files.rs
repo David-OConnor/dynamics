@@ -98,7 +98,48 @@ pub struct ResidueGeneric {
 }
 
 #[pyclass]
+pub struct ChainGeneric {
+    pub inner: bio_files::ChainGeneric,
+}
+
+#[pyclass]
 #[derive(Clone)]
-pub struct ForceFieldParamsKeyed {
-    pub inner: bio_files::amber_params::ForceFieldParamsKeyed,
+pub struct ForceFieldParams {
+    pub inner: bio_files::md_params::ForceFieldParams,
+}
+
+// All C+P from bio_files.
+#[pymethods]
+impl ForceFieldParams {
+    // #[classmethod]
+    // fn from_frcmod(_cls: &Bound<'_, PyType>, text: &str) -> PyResult<Self> {
+    //     Ok(Self {
+    //         inner: bio_files_rs::md_params::ForceFieldParams::from_frcmod(text)?,
+    //     })
+    // }
+    //
+    // #[classmethod]
+    // fn from_dat(_cls: &Bound<'_, PyType>, text: &str) -> PyResult<Self> {
+    //     Ok(Self {
+    //         inner: bio_files_rs::md_params::ForceFieldParams::from_dat(text)?,
+    //     })
+    // }
+    //
+    // #[classmethod]
+    // fn load_frcmod(_cls: &Bound<'_, PyType>, path: PathBuf) -> PyResult<Self> {
+    //     Ok(Self {
+    //         inner: bio_files_rs::md_params::ForceFieldParams::load_frcmod(&path)?,
+    //     })
+    // }
+    //
+    // #[classmethod]
+    // fn load_dat(_cls: &Bound<'_, PyType>, path: PathBuf) -> PyResult<Self> {
+    //     Ok(Self {
+    //         inner: bio_files_rs::md_params::ForceFieldParams::load_dat(&path)?,
+    //     })
+    // }
+
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
 }

@@ -13,3 +13,15 @@ dynamics_rs = { package = "dynamics", path = ".." }
 bio_files = "0.2.11"
 pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py310"] }
 lin_alg = "1.3.6"
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+cudarc = { version = "0.17.2", default-features = false, features = ["std", "driver", "dynamic-linking", "cuda-13000"], optional=true }
+[target.'cfg(target_os = "windows")'.dependencies]
+cudarc = { version = "0.17.2", default-features = false, features = ["std", "driver", "dynamic-loading", "cuda-13000"], optional=true }
+
+
+[build-dependencies]
+cuda_setup = { version = "0.1.7", optional = true }
+
+[features]
+cuda = ["cudarc", "dynamics_rs/cuda"]

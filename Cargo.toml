@@ -33,7 +33,7 @@ include = [
 [dependencies]
 lin_alg = "1.3.6"
 na_seq = "0.3.6"
-bio_files = "0.2.13"
+bio_files = "0.2.15"
 ewald = { version = "0.1.6" }
 # bio_apis = "0.1.6"
 
@@ -58,7 +58,7 @@ cuda_setup = { version = "0.1.7", optional = true }
 
 [patch.crates-io]
 ewald = { path = "../ewald" }
-bio_files = { path = "../bio_files" }
+#bio_files = { path = "../bio_files" }
 
 
 [features]

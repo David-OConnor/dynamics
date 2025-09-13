@@ -355,6 +355,7 @@ pub(crate) fn h_type_in_res_sidechain(
 /// Uses Amber (or similar)-provided parameters as a guide.
 ///
 /// Returns dihedrals.
+/// todo: This needs to add bonds too!
 pub fn populate_hydrogens_dihedrals(
     atoms: &mut Vec<AtomGeneric>,
     residues: &mut Vec<ResidueGeneric>,

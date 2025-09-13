@@ -199,7 +199,7 @@ pub(crate) struct ForceFieldParamsIndexed {
     pub lennard_jones: HashMap<usize, LjParams>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 /// Maps type-in-residue (found in, e.g. mmCIF and PDB files) to Amber FF type, and partial charge.
 /// We assume that if one of these is loaded, so are the others. So, these aren't `Options`s, but
 /// the field that holds this struct should be one.

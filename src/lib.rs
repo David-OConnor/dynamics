@@ -1,5 +1,7 @@
 #![allow(non_snake_case)]
 
+//! See the [https://github.com/David-OConnor/dynamics/blob/main/README.md](Readme) for a general overview.
+//!
 //! This module contains a traditional molecular dynamics approach
 //!
 //! [Good article](https://www.owlposting.com/p/a-primer-on-molecular-dynamics)
@@ -27,22 +29,18 @@
 //! of which is an approximation for Van der Waals force.
 //!
 //! ## A broad list of components of this simulation:
-//! - Atoms are divided into three categories:
-//! -- Dynamic: Atoms that move
-//! -- Static: Atoms that don't move, but have mutual non-bonded interactions with dynamic atoms and water
-//! -- Water: Rigid OPC water molecules that have mutual non-bonded interactions with dynamic atoms and water
-//!
+//! - Water: Rigid OPC water molecules that have mutual non-bonded interactions with dynamic atoms and water
 //! - Thermostat/barostat, with a way to specify temp, pressure, water density
 //! - OPC water model
 //! - Cell wrapping
 //! - Verlet integration (Water and non-water)
 //! - Amber parameters for mass, partial charge, VdW (via LJ), dihedral/improper, angle, bond len
-//! - Optimizations for Coulomb: Ewald/PME/SPME?
+//! - Optimizations for Coulomb: Ewald/SPME.
 //! - Optimizations for LJ: Dist cutoff for now.
 //! - Amber 1-2, 1-3 exclusions, and 1-4 scaling of covalently-bonded atoms.
 //! - Rayon parallelization of non-bonded forces
 //! - WIP SIMD and CUDA parallelization of non-bonded forces, depending on hardware availability. todo
-//! - A thermostat+barostat for the whole system. (Is water and dyn separate here?) todo
+//! - A thermostat and barostat
 //! - An energy-measuring system.
 //!
 //! --------

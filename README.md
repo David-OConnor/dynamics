@@ -6,7 +6,7 @@
 A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac.
 Uses CPU with threadpools and SIMD, or an Nvidia GPU.
 
-## Warning: Very early release! Lots of missing features. If you see something, post a Github issue.
+## Warning: Early release! Lots of missing features. If you see something, post a Github issue.
 
 It uses traditional forcefield-based molecular dynamics, and is inspired by Amber.
 It does not use quantum-mechanics, nor ab-initio methods.
@@ -22,6 +22,16 @@ as well.
 **Note: We currently only support saving and loading snapshots/trajectories in a custom format.**
 
 
+## Use of this library
+This is intended for integration into a Rust or Python program, another Rust or Python library, or in small scripts that 
+describe a workflow. When scripting, you will likely load molecule files directly, use integrated force fields or load them
+from file, and save results to a reporter format like DCD. If incorporating into an application, you might do more in
+memory using the [data structures](https://docs.rs/dynamics/latest/dynamics/) we provide.
+
+Our API goal is to both provide a default terse syntax with safe defaults, and allow customization and 
+flexibility that facilitates integration into bigger systems.
+
+
 ## Goals
 - Runs traditional MD algorithms accurately
 - Easy to install, learn, and use
@@ -32,10 +42,33 @@ as well.
 ## Installation
 Python: `pip install mol_dynamics biology_files`
 
-Rust: `Ad dynamics` to `Cargo.toml`
+Rust: Add `dynamics` to `Cargo.toml`. Likely `bio_files` as well.
 
 For a GUI application that uses this library, download the [Daedalus molecule viewer](https://github.com/david-oconnor/daedalus) This
 provides an easy-to-use way to set up the simulation, and play back trajectories.
+
+
+## Input topology
+The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/bio_files/struct.AtomGeneric.html) and 
+[BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading molecular
+file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library 
+([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them 
+directly. See examples below and in the examples folder, and the 
+docs links above; those are structs of plain data that can be built from from arbitrary input sources. For example, if
+you're building an application, you might use a more complicated Atom format; you can create a function that converts 
+between yours, and `AtomGeneric`.
+
+Requirements by molecule type:
+- **Proteins**/amino acids chains: No special requirements. Uses `mmCif`. (also known as PdbX). Force field type and
+partial charges are inferred automatically.
+- **Small organic molecules**: Must have Force Field name, and partial charge populated on all atoms. `Mol2` files from 
+- Amber's GeoStd library have these. SDF files from Drugbank are generally missing these fields.  SDF files from 
+PubChem usually includes partial charges, but not forcefield names. Molecule-specific
+parameters (e.g. from .frcmod files) may be required; these can also be [automatically] loaded from Amber Geostd.
+- **Lipids**: TBD
+- **Nucleic acids**: TBD
+- **Carbohydrates**: TBD
+- **Lipids**: TBD
 
 
 ## Parameters
@@ -52,7 +85,7 @@ Integrates the following [Amber parameters](https://ambermd.org/AmberModels.php)
 This library uses a traditional MD workflow. We use the following components:
 
 
-### Integrators, and thermostats/barostats
+### Integrators, thermostats, barostats
 We provide a Velocity-Verlet integrator. It can be used with a Berendsen barostat, and either a 
 CSVR/Bussi, or Langevin thermostat (Middle or traditional). These continuously update atom velocities (for molecules and
 solvents) to match target pressure and temperatures. The Langevin Middle thermostat is a good starting point.
@@ -140,8 +173,8 @@ files as well, e.g. to load dihedral angles from *.frcmod* that aren't present i
 
 Example use (Python):
 ```python
-from biology_files import Mol2, MmCif, ForceFieldParams
 from mol_dynamics import *
+from biology_files import Mol2, MmCif, ForceFieldParams
 
 
 def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParams) -> MdState:
@@ -192,8 +225,8 @@ def main():
     
     # Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     # included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
-    # `populdate_peptide_ff_and_q() separately.
-    prepare_peptide(
+    # `populate_peptide_ff_and_q() separately.
+    protein.atoms = prepare_peptide(
         protein.atoms,
         protein.residues,
         protein.chains,
@@ -277,19 +310,19 @@ fn setup_dynamics(
 fn main() {
     let dev = ComputationDevice::Cpu;
     let param_set = FfParamSet::new_amber().unwrap();
-    
-    let mol = Mol2::load(Path::new("../CPB.mol2")).unwrap();
-    let mut protein = MmCif::load(Path::new("../1c8k.cif")).unwrap();
-    let lig_specific = ForceFieldParams::load_frcmod(Path::new("../CPB.frcmod")).unwrap();
+
+    let mut protein = MmCif::load(Path::new("1c8k.cif")).unwrap();
+    let mol = Mol2::load(Path::new("CPB.mol2")).unwrap();
+    let mol_specific = ForceFieldParams::load_frcmod(Path::new("CPB.frcmod")).unwrap();
     
     // Or, if you have a small molecule available in Amber Geostd, load it remotely:
     // let data = bio_apis::amber_geostd::load_mol_files("CPB");
     // let mol = Mol2::new(&data.mol2);
-    // let lig_specific = ForceFieldParams::from_frcmod(&data.frcmod);
+    // let mol_specific = ForceFieldParams::from_frcmod(&data.frcmod);
     
     // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
-    // `populdate_peptide_ff_and_q() separately.
+    // `populate_peptide_ff_and_q() separately.
     prepare_peptide(
         &mut protein.atoms,
         &mut protein.residues,
@@ -299,7 +332,7 @@ fn main() {
     )
         .unwrap();
 
-    let mut md = setup_dynamics(&mol, &protein, &param_set, &lig_specific);
+    let mut md = setup_dynamics(&mol, &protein, &param_set, &mol_specific);
 
     let n_steps = 100;
     let dt = 0.002; // picoseconds.
@@ -328,12 +361,12 @@ fn main() {
 Example of loading your own parameter files:
 ```python
     param_paths = ParamGeneralPaths(
-        peptide=Some("parm19.dat"),
-        peptide_mod=Some("frcmod.ff19SB"),
-        peptide_ff_q=Some("amino19.lib"),
-        peptide_ff_q_c=Some("aminoct12.lib"),
-        peptide_ff_q_n=Some("aminont12.lib"),
-        small_organic=Some("gaff2.dat")),
+        peptide="parm19.dat",
+        peptide_mod="frcmod.ff19SB",
+        peptide_ff_q="amino19.lib",
+        peptide_ff_q_c="aminoct12.lib",
+        peptide_ff_q_n=None,
+        small_organic="gaff2.dat",
     )
     
     param_set = FfParamSet(param_paths)
@@ -353,7 +386,8 @@ Example of loading your own parameter files:
     let param_set = FfParamSet::new(&param_paths);
 ```
 
-An overview of configuration parameters.
+An overview of configuration parameters. You may wish to (Rust) use a baseline of the `Default` implementation,
+then override specific fields you wish to change.
 ```rust
 let cfg = MdConfig {
     // Defaults to Langevin middle.
@@ -394,7 +428,9 @@ cfg.temp_target = 310.
 
 ## Using with GPU
 
-Rust setup with cudarc. Pass this to the `step` function.
+We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA) integration.
+
+Rust setup example with Cudarc. Pass this to the `step` function.
 ```rust
 let ctx = CudaContext::new(0).unwrap();
 let stream = ctx.default_stream();
@@ -411,24 +447,24 @@ CUDA 13 support, which requires Nvidia driver version 580 or higher.
 
 ## On unflattening trajactory data
 If you passed multiple molecules, these will be flattened during runtime, and in snapshots. You 
-will need to unflatten them if placing back into their original data structures. 
+need to unflatten them if placing back into their original data structures. 
 
 
 ## Why this when OpenMM exists?
 This library exists as part of a larger Rust biology infrastructure effort. It's not possible to use
 [OpenMM](https://openmm.org/) there due to the language barrier. This library currently only has a limited subset of the 
 functionality of OpenMM. It's unfortunate that, as a society, we've embraced a model of computing replete with obstacles. In this case, the major
-the obstacle is the one placed between programming languages.
+one is the one placed between programming languages.
 
-While going around this obstacle, but would like to jump over others in the process to making molecular dynamics accessible.
+While going around this obstacle, we attempt to jump over others, to make molecular dynamics more accessible.
 This includes operating systems, software distribution, and user experience. We hope that this is easier to install and use
 than OpenMM; it can be used on any
 Operating system, and any Python version >= 3.10, installable using `pip` or `cargo`.
 
 This library is intended to *just work*. OpenMM itself is easy to install with Pip, but the additional libraries
-it requires to load force fields and files are higher-friction. Additionally, it's easy to run into errors when
+it requires to load force fields are higher-friction. Additionally, it's easy to run into errors when
 using it with proteins from RCSB PDB, and small molecules broadly. Getting a functional OpenMM configuration
-involves work which we hope to eschew here.
+for a given system involves work which we hope to eschew.
 
 
 
