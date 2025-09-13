@@ -40,7 +40,7 @@ flexibility that facilitates integration into bigger systems.
 
 
 ## Installation
-Python: `pip install mol_dynamics biology_files`
+Python: `pip install mol_dynamics`
 
 Rust: Add `dynamics` to `Cargo.toml`. Likely `bio_files` as well.
 
@@ -174,7 +174,6 @@ files as well, e.g. to load dihedral angles from *.frcmod* that aren't present i
 Example use (Python):
 ```python
 from mol_dynamics import *
-from biology_files import Mol2, MmCif, ForceFieldParams
 
 
 def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParams) -> MdState:

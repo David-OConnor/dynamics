@@ -1,8 +1,7 @@
 use std::{path::PathBuf, str::FromStr};
 
 use dynamics_rs;
-use lin_alg::f32::Vec3;
-use lin_alg::f64::Vec3 as Vec3F64;
+use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use pyo3::{Py, exceptions::PyValueError, prelude::*, types::PyType};
 
 mod from_bio_files;
@@ -214,7 +213,6 @@ impl MolDynamics {
         static_: bool,
         mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
     ) -> Self {
-
         // NOTE: Py<T>::borrow(py) — no .as_ref(py)
         let atoms: Vec<from_bio_files::AtomGeneric> =
             atoms.into_iter().map(|p| p.borrow(py).clone()).collect();
@@ -253,9 +251,7 @@ impl Integrator {
         match self {
             Self::VerletVelocity => dynamics_rs::Integrator::VerletVelocity,
             Self::Langevin => dynamics_rs::Integrator::Langevin { gamma: 1.0 },
-            Self::LangevinMiddle => {
-                dynamics_rs::Integrator::LangevinMiddle { gamma: 1.0 }
-            }
+            Self::LangevinMiddle => dynamics_rs::Integrator::LangevinMiddle { gamma: 1.0 },
         }
     }
     pub fn from_native(native: dynamics_rs::Integrator) -> Self {
@@ -323,7 +319,9 @@ impl MdConfig {
     }
     #[getter]
     fn snapshot_handlers(&self) -> Vec<SnapshotHandler> {
-        self.inner.snapshot_handlers.clone()
+        self.inner
+            .snapshot_handlers
+            .clone()
             .into_iter()
             .map(|v| SnapshotHandler { inner: v })
             .collect()
@@ -384,7 +382,8 @@ impl MdState {
         let mut posit_bufs: Vec<Option<Vec<Vec3F64>>> = Vec::with_capacity(n_mols);
         let mut bonds_bufs: Vec<Vec<bio_files::BondGeneric>> = Vec::with_capacity(n_mols);
         let mut adj_bufs: Vec<Option<Vec<Vec<usize>>>> = Vec::with_capacity(n_mols);
-        let mut msp_bufs: Vec<Option<from_bio_files::ForceFieldParams>> = Vec::with_capacity(n_mols);
+        let mut msp_bufs: Vec<Option<from_bio_files::ForceFieldParams>> =
+            Vec::with_capacity(n_mols);
 
         for mol in &mols {
             let v = mol.borrow(py);
@@ -465,6 +464,7 @@ fn mol_dynamics(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
 
     m.add_class::<Integrator>()?;
     m.add_class::<HydrogenConstraint>()?;
+    m.add_class::<MdConfig>()?;
     m.add_class::<MdState>()?;
 
     m.add_class::<FfMolType>()?;
@@ -476,7 +476,12 @@ fn mol_dynamics(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<from_bio_files::BondGeneric>()?;
     m.add_class::<from_bio_files::ResidueGeneric>()?;
     m.add_class::<from_bio_files::ChainGeneric>()?;
+
     m.add_class::<from_bio_files::ForceFieldParams>()?;
+    m.add_class::<from_bio_files::Mol2>()?;
+    m.add_class::<from_bio_files::MolType>()?;
+    m.add_class::<from_bio_files::Sdf>()?;
+    m.add_class::<from_bio_files::MmCif>()?;
 
     m.add_function(wrap_pyfunction!(merge_params, m)?)?;
     m.add_function(wrap_pyfunction!(save_snapshots, m)?)?;

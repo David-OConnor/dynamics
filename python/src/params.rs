@@ -3,7 +3,7 @@ use std::str::FromStr;
 use dynamics_rs;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
 
-use crate::from_bio_files::{AtomGeneric, ResidueGeneric, ChainGeneric};
+use crate::from_bio_files::{AtomGeneric, ChainGeneric, ResidueGeneric};
 
 #[pyclass]
 #[derive(Clone)]
@@ -36,9 +36,7 @@ impl FfParamSet {
     #[getter]
     fn peptide_ff_q_map(&self) -> Option<ProtFFTypeChargeMap> {
         match self.inner.peptide_ff_q_map.clone() {
-            Some(v) => Some(ProtFFTypeChargeMap {
-                inner: v
-            }),
+            Some(v) => Some(ProtFFTypeChargeMap { inner: v }),
             None => None,
         }
     }
@@ -46,7 +44,6 @@ impl FfParamSet {
     fn peptide_ff_q_map_set(&mut self, v: ProtFFTypeChargeMap) {
         self.inner.peptide_ff_q_map = Some(v.inner);
     }
-
 
     // pub peptide: Option<ForceFieldParams>,
     // pub small_mol: Option<ForceFieldParams>,
@@ -74,7 +71,6 @@ struct ProtFFTypeChargeMap {
 // ) -> Result<(), ParamError> {
 //     dynamics_rs::populate_peptide_ff_and_q(atoms, residues, &ff_type_charge.inner)
 // }
-
 
 #[pyfunction]
 // Different from the inner version. Doesn't mutate in-place; returns new values.
@@ -105,6 +101,9 @@ pub fn prepare_peptide(
     dynamics_rs::params::prepare_peptide(&mut atoms, &mut residues, &mut chains, &ff_map.inner, ph)
         .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
 
-    let atoms_res = atoms.into_iter().map(|a| AtomGeneric { inner: a }).collect();
+    let atoms_res = atoms
+        .into_iter()
+        .map(|a| AtomGeneric { inner: a })
+        .collect();
     Ok(atoms_res)
 }
