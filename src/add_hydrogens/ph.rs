@@ -1,19 +1,19 @@
 //! Logic for pH-related adjustment to the DigitMap.
-//! 
+//!
 //! How this affects protenation based on pH:
 //! At low pH:
 //! - HIP provides both HD* and HE* hydrogens on His.
 //! - ASH, GLH hydrogens become valid; standard ASP/GLU are excluded.
 //! - CYS stays protonated; CYM excluded.
 //! - LYS stays protonated; LYN excluded.
-//! 
+//!
 //! At neutral pH (~7):
 //! - His becomes neutral (we pick HIE by default here). Only HE* hydrogens will be “valid”; HD* are not,
 //! unless we later swap to HID by an environment rule.
 //! - ASP/GLU are deprotonated; ASH/GLH excluded.
 //! - CYS is protonated; CYM excluded.
 //! - LYS remains protonated; LYN excluded.
-//! 
+//!
 //! At high pH:
 //! - LYN appears (no LYS hydrogens).
 //! - CYM may appear if pH is sufficiently high.
@@ -25,7 +25,6 @@
 // accept H-bond). If it picks ND1 → use HID; if NE2 → HIE. Then pass that choice into
 // make_h_digit_map (e.g. extra arg) or cache a per-run his_selected before you call it.
 // That’s still a localized change.
-
 
 use na_seq::AminoAcidProtenationVariant;
 
@@ -56,8 +55,9 @@ pub(crate) fn variant_allowed_at_ph(aa_var: AminoAcidProtenationVariant, ph: f32
     match aa_var {
         // Histidine: HIP at low pH; HID/HIE at high pH. We pick a single tautomer upstream.
         AminoAcidProtenationVariant::Hip => ph <= PKA_HIS - WINDOW,
-        AminoAcidProtenationVariant::Hid |
-        AminoAcidProtenationVariant::Hie => ph >= PKA_HIS - WINDOW, // allow neutral above/borderline
+        AminoAcidProtenationVariant::Hid | AminoAcidProtenationVariant::Hie => {
+            ph >= PKA_HIS - WINDOW
+        } // allow neutral above/borderline
 
         // Acids: protonated variants (ASH/GLH) only well below their pKa
         AminoAcidProtenationVariant::Ash => ph <= PKA_ASP - WINDOW,
@@ -73,10 +73,10 @@ pub(crate) fn variant_allowed_at_ph(aa_var: AminoAcidProtenationVariant, ph: f32
         AminoAcidProtenationVariant::Lyn => ph >= PKA_LYS + WINDOW,
 
         // Capping or special forms (not pH-driven)
-        AminoAcidProtenationVariant::Ace |
-        AminoAcidProtenationVariant::Nhe |
-        AminoAcidProtenationVariant::Nme |
-        AminoAcidProtenationVariant::Hyp => false,
+        AminoAcidProtenationVariant::Ace
+        | AminoAcidProtenationVariant::Nhe
+        | AminoAcidProtenationVariant::Nme
+        | AminoAcidProtenationVariant::Hyp => false,
     }
 }
 

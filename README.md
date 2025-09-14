@@ -18,7 +18,6 @@ Please reference the [API documentation](https://docs.rs/dynamics) for details o
 of each data structure and function. You may with to reference the [Bio Files API docs](https://docs.rs/bio-files)
 as well.
 
-**Note: The Python version is CPU-only for now**
 **Note: We currently only support saving and loading snapshots/trajectories in a custom format.**
 
 
@@ -247,14 +246,13 @@ def main():
     # Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     # included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
     # `populate_peptide_ff_and_q() separately. Add bonds.
-    protein.atoms, protein.bonds = prepare_peptide(
-        protein.atoms,
-        protein.bonds,
-        protein.residues,
-        protein.chains,
+    _bonds, _dihedrals = prepare_peptide_mmcif(
+        protein,
         param_set.peptide_ff_q_map,
         7.0,
     )
+    # A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
+    # lists, for flexibility.
     
     md = setup_dynamics(mol, protein, param_set, lig_specific)
     
@@ -295,6 +293,7 @@ use dynamics::{
 /// Set up dynamics between a small molecule we treat with full dynamics, and a rigid one
 /// which acts on the system, but doesn't move.
 fn setup_dynamics(
+    dev: &ComputationDevice,
     mol: &Mol2,
     protein: &MmCif,
     param_set: &FfParamSet,
@@ -303,11 +302,11 @@ fn setup_dynamics(
     let mols = vec![
         MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
-            atoms: &mol.atoms,
+            atoms: mol.atoms.clone(),
             // Pass a &[Vec3] of starting atom positions. If absent,
             // will use the positions stored in atoms.
             atom_posits: None,
-            bonds: &mol.bonds,
+            bonds: mol.bonds.clone(),
             // Pass your own from cache if you want, or it will build.
             adjacency_list: None,
             static_: false,
@@ -317,16 +316,16 @@ fn setup_dynamics(
         },
         MolDynamics {
             ff_mol_type: FfMolType::Peptide,
-            atoms: &protein.atoms,
+            atoms: protein.atoms.clone(),
             atom_posits: None,
-            bonds: &[], // Not required if static.
+            bonds: Vec::new(), // Not required if static.
             adjacency_list: None,
             static_: true,
             mol_specific_params: None,
         },
     ];
 
-    MdState::new(&MdConfig::default(), &mols, param_set).unwrap()
+    MdState::new(dev, &MdConfig::default(), &mols, param_set).unwrap()
 }
 
 fn main() {
@@ -348,17 +347,16 @@ fn main() {
     // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
     // `populate_peptide_ff_and_q() separately. Add bonds.
-    prepare_peptide(
-        &mut protein.atoms,
-        &mut protein.bonds,
-        &mut protein.residues,
-        &mut protein.chains,
+    let (_bonds, _dihedrals) = prepare_peptide_mmcif(
+        &mut protein,
         &param_set.peptide_ff_q_map.as_ref().unwrap(),
         7.0,
     )
         .unwrap();
+    // A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
+    // lists, for flexibility.
 
-    let mut md = setup_dynamics(&mol, &protein, &param_set, &mol_specific);
+    let mut md = setup_dynamics(&dev, &mol, &protein, &param_set, &mol_specific);
 
     let n_steps = 100;
     let dt = 0.002; // picoseconds.
@@ -464,8 +462,6 @@ let module = ctx.load_module(Ptx::from_src(dynamics::PTX)).unwrap();
 let dev = ComputationDevice::Gpu((stream, module));
 ```
 
-**Note: Currently GPU isn't supported in the python bindings**
-
 To use with an Nvidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions
 as a publicly exposed string. Set up your application to use it from `dynamics::PTX`. It requires
 CUDA 13 support, which requires Nvidia driver version 580 or higher.
@@ -517,7 +513,6 @@ To build the Python library wheel, from the `python` subdirectory, run `maturin 
 locally for testing, once built, by running `pip install .`
 
 ## Eratta
-- Python is CPU-only
 - GPU operations are slower than they should, as we're passing all data between CPU and GPU each
 time step.
 - CPU SIMD unsupported

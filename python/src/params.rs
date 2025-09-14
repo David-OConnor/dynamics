@@ -3,7 +3,7 @@ use std::str::FromStr;
 use dynamics_rs;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
 
-use crate::from_bio_files::{AtomGeneric, ChainGeneric, ResidueGeneric};
+use crate::from_bio_files::{AtomGeneric, ChainGeneric, ResidueGeneric, MmCif};
 
 #[pyclass]
 #[derive(Clone)]
@@ -73,37 +73,93 @@ struct ProtFFTypeChargeMap {
 // }
 
 #[pyfunction]
-// Different from the inner version. Doesn't mutate in-place; returns new values.
-// todo: for now, atoms only. And doesn't return dihedrals.
 pub fn prepare_peptide(
     py: Python<'_>,
     atoms: Vec<Py<AtomGeneric>>,
+    mut bonds: Vec<Py<BondGeneric>>, // we’ll return fresh BondGeneric objects instead of trying to edit this list
     residues: Vec<Py<ResidueGeneric>>,
     chains: Vec<Py<ChainGeneric>>,
     ff_map: ProtFFTypeChargeMap,
     ph: f32,
-) -> PyResult<Vec<AtomGeneric>> {
-    let mut atoms: Vec<_> = atoms
-        .into_iter()
-        .map(|a| a.borrow(py).inner.clone())
+) -> PyResult<(Vec<BondGeneric>, Vec<Dihedral>)> {
+    // Move out inners
+    let mut atoms_inner: Vec<_> = atoms
+        .iter()
+        .map(|a| {
+            let mut b = a.borrow_mut(py);
+            std::mem::take(&mut b.inner)
+        })
         .collect();
 
-    let mut residues: Vec<_> = residues
-        .into_iter()
-        .map(|r| r.borrow(py).inner.clone())
+    let mut bonds_inner: Vec<_> = bonds
+        .iter()
+        .map(|bnd| {
+            let mut b = bnd.borrow_mut(py);
+            std::mem::take(&mut b.inner)
+        })
         .collect();
 
-    let mut chains: Vec<_> = chains
-        .into_iter()
-        .map(|c| c.borrow(py).inner.clone())
+    let mut residues_inner: Vec<_> = residues
+        .iter()
+        .map(|r| {
+            let mut b = r.borrow_mut(py);
+            std::mem::take(&mut b.inner)
+        })
         .collect();
 
-    dynamics_rs::params::prepare_peptide(&mut atoms, &mut residues, &mut chains, &ff_map.inner, ph)
+    let mut chains_inner: Vec<_> = chains
+        .iter()
+        .map(|c| {
+            let mut b = c.borrow_mut(py);
+            std::mem::take(&mut b.inner)
+        })
+        .collect();
+
+    // Run the pure-Rust routine
+    let dihedrals = dynamics_rs::params::prepare_peptide(
+        &mut atoms_inner,
+        &mut bonds_inner,
+        &mut residues_inner,
+        &mut chains_inner,
+        &ff_map.inner,
+        ph,
+    )
         .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
 
-    let atoms_res = atoms
-        .into_iter()
-        .map(|a| AtomGeneric { inner: a })
-        .collect();
-    Ok(atoms_res)
+    // Write results back into the *same* Python objects
+    for (obj, new_inner) in atoms.iter().zip(atoms_inner.into_iter()) {
+        obj.borrow_mut(py).inner = new_inner;
+    }
+    for (obj, new_inner) in residues.iter().zip(residues_inner.into_iter()) {
+        obj.borrow_mut(py).inner = new_inner;
+    }
+    for (obj, new_inner) in chains.iter().zip(chains_inner.into_iter()) {
+        obj.borrow_mut(py).inner = new_inner;
+    }
+
+    // Bonds may have been created/removed; return fresh wrappers instead of trying to resize the passed list.
+    let bonds_out: Vec<BondGeneric> = bonds_inner.into_iter().map(|inner| BondGeneric { inner }).collect();
+
+    Ok((bonds_out, dihedrals))
+}
+
+
+#[pyfunction]
+pub fn prepare_peptide_mmcif(
+    py: Python<'_>,
+    mol: Bound<'_, PyCell<Mmcif>>,
+    ff_map: ProtFFTypeChargeMap,
+    ph: f32,
+) -> PyResult<(Vec<BondGeneric>, Vec<Dihedral>)> {
+    let mut mol_b = mol.borrow_mut(py);
+
+    let (bonds, dihedrals) = dynamics_rs::params::prepare_peptide_mmcif(
+        &mut mol_b.inner,
+        &ff_map.inner,
+        ph,
+    )
+        .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
+
+    let bonds_out = bonds.into_iter().map(|inner| BondGeneric { inner }).collect();
+    Ok((bonds_out, dihedrals))
 }

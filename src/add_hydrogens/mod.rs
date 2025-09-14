@@ -31,21 +31,20 @@ use crate::{
     add_hydrogens::{
         add_hydrogens_2::{Dihedral, aa_data_from_coords},
         bond_vecs::init_local_bond_vecs,
+        ph::{his_choice, standard_allowed_at_ph, variant_allowed_at_ph},
     },
 };
-use crate::add_hydrogens::ph::{his_choice, standard_allowed_at_ph, variant_allowed_at_ph};
 
 pub(crate) mod add_hydrogens_2;
 mod bond_vecs;
-mod sidechain;
 mod ph;
+mod sidechain;
 
 // We use the normal AA, vice general form here, as that's the one available in the mmCIF files
 // we're parsing. This is despite the Amber data we are using for the source using the general versions.
 pub type DigitMap = HashMap<AminoAcid, HashMap<char, Vec<u8>>>;
 // pub type DigitMap = HashMap<AminoAcidGeneral, HashMap<char, Vec<u8>>>;
 // todo: Perhaps we use General here, since that's what we need to adjust protenation based on pH.
-
 
 /// We use this to validate H atom type assignments. We derive this directly from `amino19.lib` (Amber)
 /// Returns `true` if valid.
@@ -100,9 +99,12 @@ fn make_h_digit_map(ff_map: &ProtFfMap, ph: f32) -> DigitMap {
             AminoAcidGeneral::Standard(aa) => standard_allowed_at_ph(aa, ph),
             AminoAcidGeneral::Variant(v) => {
                 // Histidine: allow only the chosen tautomer at this pH
-                if matches!(v, AminoAcidProtenationVariant::Hid |
-                                AminoAcidProtenationVariant::Hie |
-                                AminoAcidProtenationVariant::Hip) {
+                if matches!(
+                    v,
+                    AminoAcidProtenationVariant::Hid
+                        | AminoAcidProtenationVariant::Hie
+                        | AminoAcidProtenationVariant::Hip
+                ) {
                     match his_selected {
                         Some(sel) if sel == v => true,
                         _ => false,

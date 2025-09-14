@@ -47,8 +47,10 @@ impl Display for Integrator {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Integrator::VerletVelocity => write!(f, "Verlet Vel"),
-            Integrator::Langevin { gamma } => write!(f, "Langevin. γ: {gamma}"),
-            Integrator::LangevinMiddle { gamma } => write!(f, "Langevin Mid. γ: {gamma}"),
+            // Integrator::Langevin { gamma } => write!(f, "Langevin. γ: {gamma}"),
+            // Integrator::LangevinMiddle { gamma } => write!(f, "Langevin Mid. γ: {gamma}"),
+            Integrator::Langevin { gamma } => write!(f, "Langevin"),
+            Integrator::LangevinMiddle { gamma } => write!(f, "Langevin Mid"),
         }
     }
 }
@@ -281,7 +283,7 @@ impl MdState {
         }
     }
 
-    fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
+    pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
         const K_COUL: f32 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
 
         let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();

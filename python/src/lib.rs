@@ -341,17 +341,15 @@ struct MdState {
     inner: dynamics_rs::MdState,
 }
 
-// todo: Determine how to implement.
 #[cfg(feature = "cuda")]
 fn get_dev() -> dynamics_rs::ComputationDevice {
     if cudarc::driver::result::init().is_ok() {
         let ctx = CudaContext::new(0).unwrap();
+
         let stream = ctx.default_stream();
+        let module = ctx.load_module(Ptx::from_src(dynamics_rs::PTX));
 
-        // let module = ctx.load_module(Ptx::from_src(PTX));
-        let module_dynamics = ctx.load_module(Ptx::from_src(dynamics_rs::PTX));
-
-        match module_dynamics {
+        match module {
             Ok(m) => ComputationDevice::Gpu((stream, m)),
             Err(e) => {
                 eprintln!(
@@ -417,15 +415,16 @@ impl MdState {
             });
         }
 
-        let inner = dynamics_rs::MdState::new(&cfg.inner, &mols_native, &param_set.inner)
+        let dev = get_dev();
+        let inner = dynamics_rs::MdState::new(&dev, &cfg.inner, &mols_native, &param_set.inner)
             .map_err(|e| PyValueError::new_err(e.descrip))?;
 
         Ok(Self { inner })
     }
 
     fn step(&mut self, dt: f32) {
-        // CPU only is temp.
-        self.inner.step(&dynamics_rs::ComputationDevice::Cpu, dt);
+        let dev = get_dev();
+        self.inner.step(&dev, dt);
     }
 
     fn __str__(&self) -> String {
@@ -488,6 +487,7 @@ fn mol_dynamics(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_snapshots, m)?)?;
 
     m.add_function(wrap_pyfunction!(prepare_peptide, m)?)?;
+    m.add_function(wrap_pyfunction!(prepare_peptide_mmcif, m)?)?;
 
     m.add_function(wrap_pyfunction!(from_bio_files::load_prmtop, m)?)?;
     m.add_function(wrap_pyfunction!(from_bio_files::save_prmtop, m)?)?;

@@ -7,7 +7,8 @@ use std::{
 };
 
 use bio_files::{
-    AtomGeneric, BondGeneric, ChainGeneric, ResidueEnd, ResidueGeneric, ResidueType, create_bonds,
+    AtomGeneric, BondGeneric, ChainGeneric, MmCif, ResidueEnd, ResidueGeneric, ResidueType,
+    create_bonds,
     md_params::{
         AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParams,
         LjParams, MassParams, load_amino_charges, parse_amino_charges,
@@ -362,4 +363,35 @@ pub fn prepare_peptide(
     }
 
     Ok(dihedrals)
+}
+
+/// See docs on `prepare_peptide`. This is a convenience variant that uses an `MmCif` file.
+pub fn prepare_peptide_mmcif(
+    mol: &mut MmCif,
+    ff_map: &ProtFFTypeChargeMap,
+    ph: f32, // todo: Implement.
+) -> Result<(Vec<BondGeneric>, Vec<Dihedral>), ParamError> {
+    let mut dihedrals = Vec::new();
+
+    let h_count = mol
+        .atoms
+        .iter()
+        .filter(|a| a.element == Element::Hydrogen)
+        .count();
+    if h_count < 10 {
+        dihedrals = populate_hydrogens_dihedrals(
+            &mut mol.atoms,
+            &mut mol.residues,
+            &mut mol.chains,
+            ff_map,
+            ph,
+        )?;
+    }
+
+    // todo: Similar checks for empty etc.
+    populate_peptide_ff_and_q(&mut mol.atoms, &mol.residues, ff_map)?;
+
+    let bonds = create_bonds(&mol.atoms);
+
+    Ok((bonds, dihedrals))
 }

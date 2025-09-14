@@ -206,12 +206,12 @@ pub enum FfMolType {
 pub struct MolDynamics<'a> {
     pub ff_mol_type: FfMolType,
     /// These must hold force field type and partial charge.
-    pub atoms: &'a [AtomGeneric],
+    pub atoms: Vec<AtomGeneric>,
     /// Separate from `atoms`; this may be more convenient than mutating the atoms
     /// as they may move! If None, we use the positions stored in the atoms.
     pub atom_posits: Option<&'a [Vec3]>,
     /// Not required if static.
-    pub bonds: &'a [BondGeneric],
+    pub bonds: Vec<BondGeneric>,
     /// If None, will be generated automatically from atoms and bonds. Use this
     /// if you wish to cache.
     pub adjacency_list: Option<&'a [Vec<usize>]>,
@@ -509,18 +509,11 @@ impl fmt::Display for MdState {
 
 impl MdState {
     pub fn new(
+        dev: &ComputationDevice,
         cfg: &MdConfig,
         mols: &[MolDynamics],
         param_set: &FfParamSet,
     ) -> Result<Self, ParamError> {
-        // todo: QC how you handle hydrogen_md_type.
-
-        if mols.iter().filter(|m| !m.static_).count() != 1 {
-            return Err(ParamError::new(
-                &"We currently only support exactly 1 dynamic molecule. Sorry!",
-            ));
-        }
-
         // We create a flattened atom list, which simplifies our workflow, and is conducive to
         // parallel operations.
         // These Vecs all share indices, and all include all molecules.
@@ -543,14 +536,14 @@ impl MdState {
         // Used for updating indices for tracking purposes.
         let mut total_atom_count = 0;
 
-        for (i, mol) in mols.iter().enumerate() {
+        for mol in mols {
             // Filter out hetero atoms in proteins. These are often example ligands that we do
             // not wish to model.
             // We must perform this filter prior to most of the other steps in this function.
             let atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
                 FfMolType::Peptide => mol
                     .atoms
-                    .into_iter()
+                    .iter()
                     .filter(|a| !a.hetero)
                     .map(|a| a.clone())
                     .collect(),
@@ -622,7 +615,7 @@ impl MdState {
             // Use the included adjacency list if available. If not, construct it.
             let adjacency_list_ = match mol.adjacency_list {
                 Some(a) => a,
-                None => &build_adjacency_list(&atoms, mol.bonds)?,
+                None => &build_adjacency_list(&atoms, &mol.bonds)?,
             };
 
             for aj in adjacency_list_ {
@@ -703,6 +696,8 @@ impl MdState {
         // Set up our LJ cache.
         result.lj_tables = LjTables::new(&result.atoms, &result.water);
 
+        result.minimize_energy(dev);
+
         Ok(result)
     }
 
@@ -730,7 +725,8 @@ impl MdState {
         let mut start = Instant::now();
         self.apply_bond_stretching_forces();
 
-        if self.step_count == 0 {
+        if self.step_count == 1 {
+            // Not 0 to avoid this happening during energy minimization.
             let elapsed = start.elapsed();
             println!("Bond stretching time: {:?} μs", elapsed.as_micros());
         }
@@ -779,7 +775,168 @@ impl MdState {
 
     /// Relaxes the molecules. Use this at the start of the simulation to control kinetic energy that
     /// arrises from differences between atom positions, and bonded parameters.
-    fn minimize_energy(&mut self, dev: &ComputationDevice) {}
+    ///
+    /// todo: QC
+    fn minimize_energy(&mut self, dev: &ComputationDevice) {
+        println!("Minimizing energy...");
+        // Tunables
+        const MAX_ITERS: usize = 2000;
+        const F_TOL: f32 = 1.0e-3; // stop when max |F| is below this (force units used in your accel pre-division)
+        const STEP_INIT: f32 = 1.0e-4; // initial step along +F (Å per force-unit)
+        const STEP_MAX: f32 = 0.2; // cap per-atom displacement per iteration (Å)
+        const GROW: f32 = 1.2; // expand step if energy decreased
+        const SHRINK: f32 = 0.5; // backtrack factor if energy increased
+        const ALPHA_MIN: f32 = 1.0e-8;
+        const ALPHA_MAX: f32 = 1.0e-2;
+
+        // Zero velocities; we’re minimizing, not integrating.
+        for a in &mut self.atoms {
+            a.vel = Vec3F32::new_zero();
+            a.accel = Vec3F32::new_zero();
+        }
+        for w in &mut self.water {
+            w.o.vel = Vec3F32::new_zero();
+            w.h0.vel = Vec3F32::new_zero();
+            w.h1.vel = Vec3F32::new_zero();
+            w.m.vel = Vec3F32::new_zero();
+            w.o.accel = Vec3F32::new_zero();
+            w.h0.accel = Vec3F32::new_zero();
+            w.h1.accel = Vec3F32::new_zero();
+            w.m.accel = Vec3F32::new_zero();
+        }
+
+        // Force/E at current geometry
+        let mut compute_forces_and_energy = |this: &mut MdState| {
+            this.reset_accels();
+            this.potential_energy = 0.0;
+            this.apply_all_forces(dev);
+            this.handle_spme_recip(dev);
+        };
+
+        compute_forces_and_energy(self);
+
+        // Helper to measure convergence
+        let mut max_f = 0.0f32;
+        let mut rms_f = 0.0f32;
+        let mut force_stats = |this: &MdState| -> (f32, f32) {
+            let mut max_f_loc = 0.0f32;
+            let mut sum = 0.0f32;
+            let mut n = 0usize;
+            for a in &this.atoms {
+                if a.static_ {
+                    continue;
+                }
+                let f = a.accel; // pre-mass, pre-unit-conversion accumulator is your net force vector
+                let m = f.magnitude();
+                max_f_loc = max_f_loc.max(m);
+                sum += m * m;
+                n += 1;
+            }
+            let rms = if n > 0 { (sum / n as f32).sqrt() } else { 0.0 };
+            (max_f_loc, rms)
+        };
+
+        (max_f, rms_f) = force_stats(self);
+        if max_f <= F_TOL {
+            return;
+        }
+
+        // Per-atom last step for backtracking
+        let n_atoms = self.atoms.len();
+        let mut last_step: Vec<Vec3> = vec![Vec3::new_zero(); n_atoms];
+
+        let mut alpha = STEP_INIT;
+        let mut e_prev = self.potential_energy;
+
+        'outer: for _iter in 0..MAX_ITERS {
+            // Propose a step along +F (since F = -∇E)
+            for (i, a) in self.atoms.iter_mut().enumerate() {
+                last_step[i] = Vec3::new_zero();
+                if a.static_ {
+                    continue;
+                }
+
+                let mut s = a.accel * alpha; // Å
+                let mag = s.magnitude();
+                if mag > STEP_MAX {
+                    s = s * (STEP_MAX / mag);
+                }
+
+                if mag > 0.0 {
+                    a.posit += s;
+                    a.posit = self.cell.wrap(a.posit);
+                    last_step[i] = s.into();
+
+                    // keep NB displacement tracker current
+                    self.neighbors_nb.max_displacement_sq = self
+                        .neighbors_nb
+                        .max_displacement_sq
+                        .max(s.magnitude_squared());
+                }
+            }
+
+            // Project constrained bonds if requested
+            if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+                self.shake_hydrogens();
+            }
+
+            // Optional: rebuild neighbors if needed (uses your internal thresholding)
+            self.build_neighbors_if_needed();
+
+            // Evaluate new energy
+            compute_forces_and_energy(self);
+            let e_new = self.potential_energy;
+
+            // Accept/reject with backtracking
+            if e_new <= e_prev {
+                // Success: expand step modestly
+                e_prev = e_new;
+                alpha = (alpha * GROW).min(ALPHA_MAX);
+
+                // Check convergence
+                (max_f, rms_f) = force_stats(self);
+                if max_f <= F_TOL {
+                    break 'outer;
+                }
+            } else {
+                // Reject: revert positions, shrink step, try once more at smaller alpha.
+                for (i, a) in self.atoms.iter_mut().enumerate() {
+                    if last_step[i] != Vec3::new_zero() {
+                        a.posit = last_step[i].into();
+                        a.posit = self.cell.wrap(a.posit);
+                    }
+                }
+
+                // Recompute forces at reverted geometry only if we keep looping
+                compute_forces_and_energy(self);
+
+                alpha *= SHRINK;
+                if alpha < ALPHA_MIN {
+                    break 'outer;
+                }
+
+                // Try another trial step at smaller alpha on the next loop iteration.
+                continue;
+            }
+        }
+
+        // Final cleanups: zero velocities, recenter, and refresh PME grid if you do this routinely elsewhere.
+        for a in &mut self.atoms {
+            a.vel = Vec3F32::new_zero();
+        }
+        for w in &mut self.water {
+            w.o.vel = Vec3F32::new_zero();
+            w.h0.vel = Vec3F32::new_zero();
+            w.h1.vel = Vec3F32::new_zero();
+            w.m.vel = Vec3F32::new_zero();
+        }
+
+        // Keep consistent with your normal cadence.
+        self.cell.recenter(&self.atoms);
+        self.regen_pme();
+
+        println!("Complete");
+    }
 
     // todo: For calling by user at the end (temp), don't force it to append the path.
     //todo: DRY with in the main step path (Doesn't call this) to avoid a dbl borrow.
