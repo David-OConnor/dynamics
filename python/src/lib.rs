@@ -189,15 +189,16 @@ make_enum!(
 
 #[pyclass]
 struct MolDynamics {
-    // We don't use the inner pattern here, as we can't use lifetimes in Pyo3.
-    // This contains owned equivalents.
-    pub ff_mol_type: FfMolType,
-    pub atoms: Vec<AtomGeneric>,
-    pub atom_posits: Option<Vec<Vec3F64>>,
-    pub bonds: Vec<BondGeneric>,
-    pub adjacency_list: Option<Vec<Vec<usize>>>,
-    pub static_: bool,
-    pub mol_specific_params: Option<ForceFieldParams>,
+    // // We don't use the inner pattern here, as we can't use lifetimes in Pyo3.
+    // // This contains owned equivalents.
+    // pub ff_mol_type: FfMolType,
+    // pub atoms: Vec<AtomGeneric>,
+    // pub atom_posits: Option<Vec<Vec3F64>>,
+    // pub bonds: Vec<BondGeneric>,
+    // pub adjacency_list: Option<Vec<Vec<usize>>>,
+    // pub static_: bool,
+    // pub mol_specific_params: Option<ForceFieldParams>,
+    inner: dynamics_rs::MolDynamics,
 }
 
 #[pymethods]
@@ -213,27 +214,71 @@ impl MolDynamics {
         static_: bool,
         mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
     ) -> Self {
-        // NOTE: Py<T>::borrow(py) — no .as_ref(py)
-        let atoms: Vec<from_bio_files::AtomGeneric> =
-            atoms.into_iter().map(|p| p.borrow(py).clone()).collect();
-        let bonds: Vec<from_bio_files::BondGeneric> =
-            bonds.into_iter().map(|p| p.borrow(py).clone()).collect();
-        let mol_specific_params = mol_specific_params.map(|p| p.borrow(py).clone());
+        let atoms = atoms
+            .into_iter()
+            .map(|p| p.borrow(py).inner.clone())
+            .collect();
+
+        let bonds = bonds
+            .into_iter()
+            .map(|p| p.borrow(py).inner.clone())
+            .collect();
+
+        let mol_specific_params = mol_specific_params.map(|p| p.borrow(py).inner.clone());
 
         let atom_posits = atom_posits.map(|v| {
             v.into_iter()
-                .map(|a| Vec3F64::new(a[0] as f64, a[1] as f64, a[2] as f64))
+                .map(|a| Vec3F64::new(a[0], a[1], a[2]))
                 .collect()
         });
 
         Self {
-            ff_mol_type,
-            atoms,
-            atom_posits,
-            bonds,
-            adjacency_list,
-            static_,
-            mol_specific_params,
+            inner: dynamics_rs::MolDynamics {
+                ff_mol_type,
+                atoms,
+                atom_posits,
+                bonds,
+                adjacency_list,
+                static_,
+                mol_specific_params,
+            },
+        }
+    }
+
+    #[classmethod]
+    fn from_mol2(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        mol: Py<from_bio_files::Mol2>,
+        mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
+    ) -> PyResult<Self> {
+        let mol_specific_params = mol_specific_params.map(|p| p.borrow(py).inner.clone());
+        let inner =
+            dynamics_rs::MolDynamics::from_mol2(&mol.borrow(py).inner, mol_specific_params);
+        Ok(Self { inner })
+    }
+
+    #[classmethod]
+    fn from_sdf(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        mol: Py<from_bio_files::Sdf>,
+        mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
+    ) -> PyResult<Self> {
+        let mol_specific_params = mol_specific_params.map(|p| p.borrow(py).inner.clone());
+        let inner =
+            dynamics_rs::MolDynamics::from_sdf(&mol.borrow(py).inner, mol_specific_params);
+        Ok(Self { inner })
+    }
+
+    #[classmethod]
+    fn from_amber_geostd(
+        _cls: &Bound<'_, PyType>,
+        ident: &str,
+    ) -> PyResult<Self> {
+        match dynamics_rs::MolDynamics::from_amber_geostd(ident) {
+            Ok(inner) => Ok(Self { inner }),
+            Err(e) => Err(PyIOError::new_err(e.to_string())),
         }
     }
 }

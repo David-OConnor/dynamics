@@ -200,6 +200,11 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
     which acts on the system, but doesn't move.
     """
 
+    # Or, consider using these terse helpers instead for small organic molecules.
+    # MolDynamics.from_amber_geostd("CPB")
+    # MolDynamics.from_mol2(mol, lig_specific)
+    # MolDynamics.from_sdf(mol, lig_specific)
+
     mols = [
         MolDynamics(
             ff_mol_type=FfMolType.SmallOrganic,
@@ -297,8 +302,14 @@ fn setup_dynamics(
     mol: &Mol2,
     protein: &MmCif,
     param_set: &FfParamSet,
-    lig_specific: &ForceFieldParams,
+    lig_specific: ForceFieldParams,
 ) -> MdState {
+    
+    // Or, consider using these terse helpers instead for small organic molecules.
+    // MolDynamics::from_amber_geostd("CPB").unwrap();
+    // MolDynamics::from_mol2(&mol, Some(lig_specific)).unwrap();
+    // MolDynamics::from_sdf(&mol, Some(lig_specific)).unwrap();
+    
     let mols = vec![
         MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
@@ -356,7 +367,7 @@ fn main() {
     // A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
     // lists, for flexibility.
 
-    let mut md = setup_dynamics(&dev, &mol, &protein, &param_set, &mol_specific);
+    let mut md = setup_dynamics(&dev, &mol, &protein, &param_set, mol_specific);
 
     let n_steps = 100;
     let dt = 0.002; // picoseconds.

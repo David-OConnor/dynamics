@@ -95,19 +95,13 @@ mod water_settle;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
-use std::{
-    collections::HashSet,
-    fmt,
-    fmt::{Display, Formatter},
-    path::Path,
-    time::Instant,
-};
+use std::{collections::HashSet, fmt, fmt::{Display, Formatter}, io, path::Path, time::Instant};
 
 pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals};
 use ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, BondGeneric, md_params::ForceFieldParams, mmcif::MmCif, mol2::Mol2};
+use bio_files::{AtomGeneric, BondGeneric, md_params::ForceFieldParams, mmcif::MmCif, mol2::Mol2, Sdf};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
 use ewald::{PmeRecip, ewald_comp_force};
@@ -203,44 +197,92 @@ pub enum FfMolType {
 /// Packages information required to perform dynamics on a Molecule. This is used to initialize
 /// the simulation with atoms and related; one or more of these is passed at init.
 #[derive(Clone, Debug)]
-pub struct MolDynamics<'a> {
+// pub struct MolDynamics<'a> {
+pub struct MolDynamics {
     pub ff_mol_type: FfMolType,
     /// These must hold force field type and partial charge.
     pub atoms: Vec<AtomGeneric>,
     /// Separate from `atoms`; this may be more convenient than mutating the atoms
     /// as they may move! If None, we use the positions stored in the atoms.
-    pub atom_posits: Option<&'a [Vec3]>,
+    // pub atom_posits: Option<&'a [Vec3]>,
+    pub atom_posits: Option<Vec<Vec3>>,
     /// Not required if static.
     pub bonds: Vec<BondGeneric>,
     /// If None, will be generated automatically from atoms and bonds. Use this
     /// if you wish to cache.
-    pub adjacency_list: Option<&'a [Vec<usize>]>,
+    // pub adjacency_list: Option<&'a [Vec<usize>]>,
+    pub adjacency_list: Option<Vec<Vec<usize>>>,
     /// If true, the atoms in the molecule don't move, but exert LJ and Coulomb forces
     /// on other atoms in the system.
     pub static_: bool,
     /// If present, any values here override molecule-type general parameters.
-    pub mol_specific_params: Option<&'a ForceFieldParams>,
+    // pub mol_specific_params: Option<&'a ForceFieldParams>,
+    pub mol_specific_params: Option<ForceFieldParams>,
 }
 
-// impl MolDynamics<'_> {
-//     /// Load an Amber Geostd molecule from an online database.
-//     /// todo: Wonky due to use of refs.
-//     pub fn from_amber_geostd(ident: &str) -> io::Result<Self> {
-//         let data = bio_apis::amber_geostd::load_mol_files("CPB").map_err(|e| io::Error::new(io::ErrorKind::Other, "Error loading data"))?;
-//         let mol = Mol2::new(&data.mol2)?;
-//         let params = ForceFieldParams::from_frcmod(&data.frcmod.unwrap())?;
-//
-//         Ok(Self {
-//             ff_mol_type: FfMolType::SmallOrganic,
-//             atoms: &mol.atoms,
-//             atom_posits: None,
-//             bonds: &mol.bonds,
-//             adjacency_list: None,
-//             static_: false,
-//             mol_specific_params: Some(&params)
-//         })
-//     }
-// }
+impl MolDynamics {
+    // todo: from_mmcif?
+
+    /// Load a molecule from a Mol2 file. Includes optional molecule-specific pararmeters.
+    /// To work directly, this assumes that forcefield names, and partial charge are present
+    /// in the `Mol2` struct for all atoms.
+    ///
+    /// You may wish to modify the `atom_posits` field after to position this relative to
+    /// other molecules.
+    pub fn from_mol2(mol: &Mol2, mol_specific_params: Option<ForceFieldParams>) -> Self {
+        Self {
+            ff_mol_type: FfMolType::SmallOrganic,
+            atoms: mol.atoms.clone(),
+            atom_posits: None,
+            bonds: mol.bonds.clone(),
+            adjacency_list: None,
+            static_: false,
+            mol_specific_params,
+        }
+    }
+
+    /// Load a molecule from a SDF file. Includes optional molecule-specific pararmeters.
+    /// To work directly, this assumes that forcefield names, and partial charge are present
+    /// in the `Mol2` struct for all atoms. Note that these are not present in
+    /// SDF files that come from most online databases.
+    ///
+    /// You may wish to modify the `atom_posits` field after to position this relative to
+    /// other molecules.
+    pub fn from_sdf(mol: &Sdf, mol_specific_params: Option<ForceFieldParams>) -> Self {
+        Self {
+            ff_mol_type: FfMolType::SmallOrganic,
+            atoms: mol.atoms.clone(),
+            atom_posits: None,
+            bonds: mol.bonds.clone(),
+            adjacency_list: None,
+            static_: false,
+            mol_specific_params,
+        }
+    }
+
+    /// Load an Amber Geostd molecule from an online database, from its unique identifier. This
+    /// includes molecule-specific parameters.
+    ///
+    /// You may wish to modify the `atom_posits` field after to position this relative to
+    /// other molecules.
+    pub fn from_amber_geostd(ident: &str) -> io::Result<Self> {
+        let data = bio_apis::amber_geostd::load_mol_files(ident)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, "Error loading data"))?;
+
+        let mol = Mol2::new(&data.mol2)?;
+        let params = ForceFieldParams::from_frcmod(&data.frcmod.unwrap())?;
+
+        Ok(Self {
+            ff_mol_type: FfMolType::SmallOrganic,
+            atoms: mol.atoms,
+            atom_posits: None,
+            bonds: mol.bonds,
+            adjacency_list: None,
+            static_: false,
+            mol_specific_params: Some(params)
+        })
+    }
+}
 
 /// A trimmed-down atom for use with molecular dynamics. Contains parameters for single-atom,
 /// but we use ParametersIndex for multi-atom parameters.
@@ -416,6 +458,10 @@ pub struct MdConfig {
     pub hydrogen_constraint: HydrogenConstraint,
     pub snapshot_handlers: Vec<SnapshotHandler>,
     pub sim_box: SimBoxInit,
+    /// Prior to the first integrator step, we attempt to relax energy in the system.
+    /// Use no more than this many iterations to do so. Higher can produce better results,
+    /// but is slower.
+    pub max_init_relaxation_iters: usize,
 }
 
 impl Default for MdConfig {
@@ -434,6 +480,7 @@ impl Default for MdConfig {
                 ratio: 1,
             }],
             sim_box: Default::default(),
+            max_init_relaxation_iters: 1_000, // todo: A/R
         }
     }
 }
@@ -584,13 +631,13 @@ impl MdState {
                 // todo and don't affect general params.
                 params = merge_params(&params, &params_general);
 
-                if let Some(p) = mol.mol_specific_params {
+                if let Some(p) = &mol.mol_specific_params {
                     params = merge_params(&params, &p);
                 }
             }
 
             let mut p: Vec<Vec3F32> = Vec::new(); // to store the ref.
-            let atom_posits = match mol.atom_posits {
+            let atom_posits = match &mol.atom_posits {
                 Some(a) => {
                     p = a.iter().map(|p| (*p).into()).collect();
                     &p
@@ -613,7 +660,7 @@ impl MdState {
             }
 
             // Use the included adjacency list if available. If not, construct it.
-            let adjacency_list_ = match mol.adjacency_list {
+            let adjacency_list_ = match &mol.adjacency_list {
                 Some(a) => a,
                 None => &build_adjacency_list(&atoms, &mol.bonds)?,
             };
@@ -696,7 +743,8 @@ impl MdState {
         // Set up our LJ cache.
         result.lj_tables = LjTables::new(&result.atoms, &result.water);
 
-        result.minimize_energy(dev);
+        // todo: Add to config A/R,
+        result.minimize_energy(dev, cfg.max_init_relaxation_iters);
 
         Ok(result)
     }
@@ -731,22 +779,22 @@ impl MdState {
             println!("Bond stretching time: {:?} μs", elapsed.as_micros());
         }
 
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             start = Instant::now();
         }
         self.apply_angle_bending_forces();
 
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("Angle bending time: {:?} μs", elapsed.as_micros());
         }
 
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             start = Instant::now();
         }
 
         self.apply_dihedral_forces(false);
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("Dihedral: {:?} μs", elapsed.as_micros());
         }
@@ -756,18 +804,18 @@ impl MdState {
         }
 
         self.apply_dihedral_forces(true);
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("Improper time: {:?} μs", elapsed.as_micros());
         }
 
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             start = Instant::now();
         }
 
         // Note: Non-bonded takes the vast majority of time.
         self.apply_nonbonded_forces(dev);
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("Non-bonded time: {:?} μs", elapsed.as_micros());
         }
@@ -776,11 +824,10 @@ impl MdState {
     /// Relaxes the molecules. Use this at the start of the simulation to control kinetic energy that
     /// arrises from differences between atom positions, and bonded parameters.
     ///
-    /// todo: QC
-    fn minimize_energy(&mut self, dev: &ComputationDevice) {
+    /// todo: QC. This appears to work, but is slow.
+    fn minimize_energy(&mut self, dev: &ComputationDevice, max_iters: usize) {
         println!("Minimizing energy...");
         // Tunables
-        const MAX_ITERS: usize = 2000;
         const F_TOL: f32 = 1.0e-3; // stop when max |F| is below this (force units used in your accel pre-division)
         const STEP_INIT: f32 = 1.0e-4; // initial step along +F (Å per force-unit)
         const STEP_MAX: f32 = 0.2; // cap per-atom displacement per iteration (Å)
@@ -848,74 +895,63 @@ impl MdState {
         let mut alpha = STEP_INIT;
         let mut e_prev = self.potential_energy;
 
-        'outer: for _iter in 0..MAX_ITERS {
-            // Propose a step along +F (since F = -∇E)
+        // Per-atom last step for backtracking
+        let n_atoms = self.atoms.len();
+        let mut last_step: Vec<Vec3F32> = vec![Vec3F32::new_zero(); n_atoms];
+
+        'outer: for _iter in 0..max_iters {
             for (i, a) in self.atoms.iter_mut().enumerate() {
-                last_step[i] = Vec3::new_zero();
-                if a.static_ {
-                    continue;
+                last_step[i] = Vec3F32::new_zero();
+                if a.static_ { continue; }
+
+                let f = a.accel;
+                let fm = f.magnitude();
+
+                if !fm.is_finite() || fm == 0.0 {
+                    continue; // skip non-finite or zero force
                 }
 
-                let mut s = a.accel * alpha; // Å
-                let mag = s.magnitude();
-                if mag > STEP_MAX {
-                    s = s * (STEP_MAX / mag);
-                }
+                // Step magnitude = min(alpha*|F|, STEP_MAX), applied along finite unit(F)
+                let step_mag = (alpha * fm).min(STEP_MAX);
+                let s = f * (step_mag / fm);
 
-                if mag > 0.0 {
-                    a.posit += s;
-                    a.posit = self.cell.wrap(a.posit);
-                    last_step[i] = s.into();
+                a.posit += s;
+                a.posit = self.cell.wrap(a.posit);
+                last_step[i] = s;
 
-                    // keep NB displacement tracker current
-                    self.neighbors_nb.max_displacement_sq = self
-                        .neighbors_nb
-                        .max_displacement_sq
-                        .max(s.magnitude_squared());
-                }
+                self.neighbors_nb.max_displacement_sq =
+                    self.neighbors_nb.max_displacement_sq.max(s.magnitude_squared());
             }
 
-            // Project constrained bonds if requested
             if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                 self.shake_hydrogens();
             }
-
-            // Optional: rebuild neighbors if needed (uses your internal thresholding)
             self.build_neighbors_if_needed();
 
-            // Evaluate new energy
             compute_forces_and_energy(self);
             let e_new = self.potential_energy;
 
-            // Accept/reject with backtracking
             if e_new <= e_prev {
-                // Success: expand step modestly
                 e_prev = e_new;
                 alpha = (alpha * GROW).min(ALPHA_MAX);
 
-                // Check convergence
                 (max_f, rms_f) = force_stats(self);
-                if max_f <= F_TOL {
-                    break 'outer;
-                }
+                if max_f <= F_TOL { break 'outer; }
+
             } else {
-                // Reject: revert positions, shrink step, try once more at smaller alpha.
+                // REVERT (subtract, not assign)
                 for (i, a) in self.atoms.iter_mut().enumerate() {
-                    if last_step[i] != Vec3::new_zero() {
-                        a.posit = last_step[i].into();
+                    let s = last_step[i];
+                    if s.magnitude_squared() > 0.0 {
+                        a.posit -= s;
                         a.posit = self.cell.wrap(a.posit);
                     }
                 }
 
-                // Recompute forces at reverted geometry only if we keep looping
                 compute_forces_and_energy(self);
 
                 alpha *= SHRINK;
-                if alpha < ALPHA_MIN {
-                    break 'outer;
-                }
-
-                // Try another trial step at smaller alpha on the next loop iteration.
+                if alpha < ALPHA_MIN { break 'outer; }
                 continue;
             }
         }

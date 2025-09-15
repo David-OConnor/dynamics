@@ -146,7 +146,7 @@ impl AddAssign<Self> for ForcesOnWaterMol {
 }
 
 #[derive(Copy, Clone)]
-enum BodyRef {
+pub enum BodyRef {
     Dyn(usize),
     // Static(usize),
     Water { mol: usize, site: WaterSite },
@@ -166,14 +166,14 @@ impl BodyRef {
     }
 }
 
-struct NonBondedPair {
-    tgt: BodyRef,
-    src: BodyRef,
-    scale_14: bool,
-    lj_indices: LjTableIndices,
-    calc_lj: bool,
-    calc_coulomb: bool,
-    symmetric: bool,
+pub struct NonBondedPair {
+    pub tgt: BodyRef,
+    pub src: BodyRef,
+    pub scale_14: bool,
+    pub lj_indices: LjTableIndices,
+    pub calc_lj: bool,
+    pub calc_coulomb: bool,
+    pub symmetric: bool,
 }
 
 /// Add a force into the right accumulator (dyn or water). Static never accumulates.
@@ -280,6 +280,9 @@ fn calc_force(
             },
         )
 }
+
+// todo: Pass sigmas, eps' etc as one big list for all atoms,
+// todo or only for items in the neighbors list, rebuilt each time that changes?
 
 /// Instead of thread pools, uses the GPU.
 #[cfg(feature = "cuda")]
