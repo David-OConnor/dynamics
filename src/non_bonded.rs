@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::{collections::HashMap, ops::AddAssign};
 
 #[cfg(feature = "cuda")]
-use cudarc::driver::{CudaModule, CudaStream};
+use cudarc::driver::{CudaModule, CudaStream, PushKernelArg};
 use ewald::force_coulomb_short_range;
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
 
+use crate::gpu_interface::calc_force_cuda;
 #[cfg(feature = "cuda")]
-use crate::forces::force_nonbonded_gpu;
 use crate::{
     AtomDynamics, ComputationDevice, MdState,
     ambient::SimBox,
@@ -153,7 +153,11 @@ pub enum BodyRef {
 }
 
 impl BodyRef {
-    fn get<'a>(&self, dyns: &'a [AtomDynamics], waters: &'a [WaterMol]) -> &'a AtomDynamics {
+    pub(crate) fn get<'a>(
+        &self,
+        dyns: &'a [AtomDynamics],
+        waters: &'a [WaterMol],
+    ) -> &'a AtomDynamics {
         match *self {
             BodyRef::Dyn(i) => &dyns[i],
             BodyRef::Water { mol, site } => match site {
@@ -279,154 +283,6 @@ fn calc_force(
                 (f_on_dyn, f_on_water, virial_a + virial_b, e_a + e_b)
             },
         )
-}
-
-// todo: Pass sigmas, eps' etc as one big list for all atoms,
-// todo or only for items in the neighbors list, rebuilt each time that changes?
-
-/// Instead of thread pools, uses the GPU.
-#[cfg(feature = "cuda")]
-fn calc_force_cuda(
-    stream: &Arc<CudaStream>,
-    module: &Arc<CudaModule>,
-    pairs: &[NonBondedPair],
-    atoms_dyn: &[AtomDynamics],
-    water: &[WaterMol],
-    cell: &SimBox,
-    lj_tables: &LjTables,
-    cutoff_ewald: f32,
-    alpha_ewald: f32,
-) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
-    let n_dyn = atoms_dyn.len();
-    let n_water = water.len();
-
-    let n = pairs.len();
-
-    let mut posits_tgt: Vec<Vec3> = Vec::with_capacity(n);
-    let mut posits_src: Vec<Vec3> = Vec::with_capacity(n);
-
-    let mut sigmas = Vec::with_capacity(n);
-    let mut epss = Vec::with_capacity(n);
-
-    let mut qs_tgt = Vec::with_capacity(n);
-    let mut qs_src = Vec::with_capacity(n);
-
-    let mut scale_14s = Vec::with_capacity(n);
-
-    let mut tgt_is: Vec<u32> = Vec::with_capacity(n);
-    let mut src_is: Vec<u32> = Vec::with_capacity(n);
-
-    let mut calc_ljs = Vec::with_capacity(n);
-    let mut calc_coulombs = Vec::with_capacity(n);
-    let mut symmetric = Vec::with_capacity(n);
-
-    // Unpack BodyRef to fields. It doesn't map neatly to CUDA flattening primitives.
-
-    // These atom and water types are so the Kernel can assign to the correct output arrays.
-    // 0 means Dyn, 1 means Water.
-    let mut atom_types_tgt = vec![0; n];
-    // 0 for not-water or N/A. 1 = O, 2 = M, 3 = H0, 4 = H1.
-    // Pre-allocated to 0, which we use for dyn atom targets.
-    let mut water_types_tgt = vec![0; n];
-
-    let mut atom_types_src = vec![0; n];
-    let mut water_types_src = vec![0; n];
-
-    for (i, pair) in pairs.iter().enumerate() {
-        let atom_tgt = match pair.tgt {
-            BodyRef::Dyn(j) => {
-                tgt_is.push(j as u32);
-                &atoms_dyn[j]
-            }
-            BodyRef::Water { mol: j, site } => {
-                tgt_is.push(j as u32);
-
-                // Mark so the kernel will use the water output.
-                atom_types_tgt[i] = 1;
-                water_types_tgt[i] = site as u8;
-
-                match site {
-                    WaterSite::O => &water[j].o,
-                    WaterSite::M => &water[j].m,
-                    WaterSite::H0 => &water[j].h0,
-                    WaterSite::H1 => &water[j].h1,
-                }
-            }
-            _ => unreachable!(),
-        };
-
-        let atom_src = match pair.src {
-            BodyRef::Dyn(j) => {
-                src_is.push(j as u32);
-                &atoms_dyn[j]
-            }
-            BodyRef::Water { mol: j, site } => {
-                src_is.push(j as u32);
-
-                // Mark so the kernel will use the water output. (In case of dyn/water symmetric)
-                atom_types_src[i] = 1;
-                water_types_src[i] = site as u8;
-                match site {
-                    WaterSite::O => &water[j].o,
-                    WaterSite::M => &water[j].m,
-                    WaterSite::H0 => &water[j].h0,
-                    WaterSite::H1 => &water[j].h1,
-                }
-            }
-        };
-
-        posits_tgt.push(atom_tgt.posit);
-        posits_src.push(atom_src.posit);
-
-        let (σ, ε) = lj_tables.lookup(&pair.lj_indices);
-
-        sigmas.push(σ);
-        epss.push(ε);
-
-        qs_tgt.push(atom_tgt.partial_charge);
-        qs_src.push(atom_src.partial_charge);
-
-        scale_14s.push(pair.scale_14);
-
-        calc_ljs.push(pair.calc_lj);
-        calc_coulombs.push(pair.calc_coulomb);
-        symmetric.push(pair.symmetric);
-    }
-
-    // 1-4 scaling, and the symmetric case handled in the kernel.
-
-    let cell_extent: Vec3 = cell.extent.into();
-
-    // Note that we perform virial accumulation as f64, even on GPU.
-    let (f_on_dyn, f_on_water, virial, energy) = force_nonbonded_gpu(
-        stream,
-        module,
-        &tgt_is,
-        &src_is,
-        &posits_tgt,
-        &posits_src,
-        &sigmas,
-        &epss,
-        &qs_tgt,
-        &qs_src,
-        &atom_types_tgt,
-        &water_types_tgt,
-        &atom_types_src,
-        &water_types_src,
-        &scale_14s,
-        &calc_ljs,
-        &calc_coulombs,
-        &symmetric,
-        cutoff_ewald as f32,
-        alpha_ewald as f32,
-        cell_extent,
-        n_dyn,
-        n_water,
-    );
-
-    let f_on_dyn = f_on_dyn.into_iter().map(|f| f.into()).collect();
-
-    (f_on_dyn, f_on_water, virial, energy)
 }
 
 impl MdState {

@@ -94,14 +94,26 @@ mod water_opc;
 mod water_settle;
 
 #[cfg(feature = "cuda")]
+mod gpu_interface;
+
+#[cfg(feature = "cuda")]
 use std::sync::Arc;
-use std::{collections::HashSet, fmt, fmt::{Display, Formatter}, io, path::Path, time::Instant};
+use std::{
+    collections::HashSet,
+    fmt,
+    fmt::{Display, Formatter},
+    io,
+    path::Path,
+    time::Instant,
+};
 
 pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals};
 use ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, BondGeneric, md_params::ForceFieldParams, mmcif::MmCif, mol2::Mol2, Sdf};
+use bio_files::{
+    AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mmcif::MmCif, mol2::Mol2,
+};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaModule, CudaStream};
 use ewald::{PmeRecip, ewald_comp_force};
@@ -114,15 +126,13 @@ use neighbors::NeighborsNb;
 pub use params::{ProtFFTypeChargeMap, ProtFfMap};
 pub use prep::{HydrogenConstraint, merge_params};
 use rand::Rng;
-use rand_distr::StandardNormal;
 pub use util::{load_snapshots, save_snapshots};
 pub use water_opc::ForcesOnWaterMol;
 
 use crate::{
     ambient::BerendsenBarostat,
-    non_bonded::{
-        CHARGE_UNIT_SCALER, EWALD_ALPHA, LjTableIndices, LjTables, SCALE_COUL_14, SPME_N,
-    },
+    gpu_interface::{ForcesGpu, PerNeighborGpu},
+    non_bonded::{CHARGE_UNIT_SCALER, LjTables},
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::build_adjacency_list,
@@ -279,7 +289,7 @@ impl MolDynamics {
             bonds: mol.bonds,
             adjacency_list: None,
             static_: false,
-            mol_specific_params: Some(params)
+            mol_specific_params: Some(params),
         })
     }
 }
@@ -538,6 +548,12 @@ pub struct MdState {
     pub potential_energy: f64,
     /// Every so many snapshots, write these to file, then clear from memory.
     snapshot_queue_for_file: Vec<Snapshot>,
+    #[cfg(feature = "cuda")]
+    /// These store handles to data structures on the GPU. We pass them to the kernel each
+    /// step, but don't transfer. Init to None. Populated during the run.
+    forces_gpu: Option<ForcesGpu>,
+    #[cfg(feature = "cuda")]
+    per_neighbor_gpu: Option<PerNeighborGpu>,
 }
 
 impl fmt::Display for MdState {
@@ -902,7 +918,9 @@ impl MdState {
         'outer: for _iter in 0..max_iters {
             for (i, a) in self.atoms.iter_mut().enumerate() {
                 last_step[i] = Vec3F32::new_zero();
-                if a.static_ { continue; }
+                if a.static_ {
+                    continue;
+                }
 
                 let f = a.accel;
                 let fm = f.magnitude();
@@ -919,8 +937,10 @@ impl MdState {
                 a.posit = self.cell.wrap(a.posit);
                 last_step[i] = s;
 
-                self.neighbors_nb.max_displacement_sq =
-                    self.neighbors_nb.max_displacement_sq.max(s.magnitude_squared());
+                self.neighbors_nb.max_displacement_sq = self
+                    .neighbors_nb
+                    .max_displacement_sq
+                    .max(s.magnitude_squared());
             }
 
             if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -936,8 +956,9 @@ impl MdState {
                 alpha = (alpha * GROW).min(ALPHA_MAX);
 
                 (max_f, rms_f) = force_stats(self);
-                if max_f <= F_TOL { break 'outer; }
-
+                if max_f <= F_TOL {
+                    break 'outer;
+                }
             } else {
                 // REVERT (subtract, not assign)
                 for (i, a) in self.atoms.iter_mut().enumerate() {
@@ -951,7 +972,9 @@ impl MdState {
                 compute_forces_and_energy(self);
 
                 alpha *= SHRINK;
-                if alpha < ALPHA_MIN { break 'outer; }
+                if alpha < ALPHA_MIN {
+                    break 'outer;
+                }
                 continue;
             }
         }
