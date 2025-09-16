@@ -6,11 +6,15 @@
 
 use std::time::Instant;
 
-use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
+use lin_alg::f32::Vec3;
 use rayon::prelude::*;
 
-use crate::{AtomDynamics, MdState, ambient::SimBox, non_bonded::LONG_RANGE_CUTOFF, water_opc::WaterMol, ComputationDevice};
+#[cfg(feature = "cuda")]
 use crate::gpu_interface::PerNeighborGpu;
+use crate::{
+    AtomDynamics, ComputationDevice, MdState, ambient::SimBox, non_bonded::LONG_RANGE_CUTOFF,
+    water_opc::WaterMol,
+};
 
 // These are for non-bonded neighbor list construction.
 const SKIN: f32 = 2.0; // Å – rebuild list if an atom moved >½·SKIN. ~2Å.
@@ -32,23 +36,19 @@ pub struct NeighborsNb {
     // Neighbors acting on dynamic atoms:
     /// Symmetric dynamic-dynamic indices. Dynamic source and target.
     pub dy_dy: Vec<Vec<usize>>,
-    // /// Outer: Dynamic. Inner: static. Dynamic target, static source.
-    // pub dy_static: Vec<Vec<usize>>,
     /// Outer: Dynamic. Inner: water. Each is a source and target.
     pub dy_water: Vec<Vec<usize>>,
     /// Symmetric water-water indices. Dynamic source and target.
     pub water_water: Vec<Vec<usize>>,
-    // /// Outer: Water. Inner: static. Water target, static source.
-    // pub water_static: Vec<Vec<usize>>,
     /// Outer: Water. Inner: dynamic. Water target, dynamic source.
     /// todo: This is a direct reverse of dy_water, but may be worth keeping in for indexing order.
     pub water_dy: Vec<Vec<usize>>,
     //
     // Reference positions used when rebuilding. Only for movable atoms.
-    pub ref_pos_dyn: Vec<Vec3F32>,
+    pub ref_pos_dyn: Vec<Vec3>,
     // /// Doesn't change.
     // pub ref_pos_static: Vec<Vec3>,
-    pub ref_pos_water_o: Vec<Vec3F32>, // use O as proxy for the rigid water
+    pub ref_pos_water_o: Vec<Vec3>, // use O as proxy for the rigid water
     /// Used to determine when to rebuild neighbor lists. todo: Implement.
     pub max_displacement_sq: f32,
 }
@@ -86,13 +86,6 @@ impl MdState {
                 true,
             );
 
-            // self.neighbors_nb.dy_static = build_neighbors(
-            //     &self.neighbors_nb.ref_pos_dyn,
-            //     &self.neighbors_nb.ref_pos_static,
-            //     &self.cell,
-            //     false,
-            // );
-
             self.neighbors_nb.dy_water = build_neighbors(
                 &self.neighbors_nb.ref_pos_dyn,
                 &self.neighbors_nb.ref_pos_water_o,
@@ -105,13 +98,6 @@ impl MdState {
         }
 
         if wat_disp_sq > SKIN_SQ_DIV_4 {
-            // self.neighbors_nb.water_static = build_neighbors(
-            //     &self.neighbors_nb.ref_pos_water_o,
-            //     &self.neighbors_nb.ref_pos_static,
-            //     &self.cell,
-            //     false,
-            // );
-
             self.neighbors_nb.water_water = build_neighbors(
                 &self.neighbors_nb.ref_pos_water_o,
                 &self.neighbors_nb.ref_pos_water_o,
@@ -156,20 +142,21 @@ impl MdState {
                     PRINTED = true;
                 }
             }
+
+            self.setup_pairs();
+
+            #[cfg(feature = "cuda")]
+            if let ComputationDevice::Gpu((stream, _)) = dev {
+                self.per_neighbor_gpu = Some(PerNeighborGpu::new(
+                    stream,
+                    &self.nb_pairs,
+                    &self.atoms,
+                    &self.water,
+                    &self.lj_tables,
+                ));
+            }
         } else {
             // println!("No rebuild needed.");
-        }
-
-        #[cfg(feature = "cuda")]
-        if let ComputationDevice::Gpu((stream, module)) = dev {
-            self.per_neighbor_gpu = Some(PerNeighborGpu::new(
-                stream,
-                &self.neighbors_nb,
-                &self.atoms,
-                &self.water,
-                &self.lj_tables,
-                &self.pairs.len()
-            ));
         }
     }
 
@@ -194,8 +181,8 @@ impl MdState {
 
 /// [Re]build a neighbor list, used for non-bonded interactions. Run this periodically.
 pub fn build_neighbors(
-    tgt_posits: &[Vec3F32],
-    src_posits: &[Vec3F32],
+    tgt_posits: &[Vec3],
+    src_posits: &[Vec3],
     cell: &SimBox,
     symmetric: bool,
 ) -> Vec<Vec<usize>> {
@@ -252,8 +239,8 @@ pub fn build_neighbors(
 
 /// For use with our non-bonded neighbors construction.
 pub fn max_displacement_sq_since_build(
-    targets: &[Vec3F32],
-    neighbor_ref_posits: &[Vec3F32],
+    targets: &[Vec3],
+    neighbor_ref_posits: &[Vec3],
     cell: &SimBox,
 ) -> f32 {
     let mut result: f32 = 0.0;
@@ -266,11 +253,11 @@ pub fn max_displacement_sq_since_build(
 }
 
 /// Helper
-fn positions_of(atoms: &[AtomDynamics]) -> Vec<Vec3F32> {
+fn positions_of(atoms: &[AtomDynamics]) -> Vec<Vec3> {
     atoms.iter().map(|a| a.posit).collect()
 }
 
 /// Helper
-fn positions_of_water_o(waters: &[WaterMol]) -> Vec<Vec3F32> {
+fn positions_of_water_o(waters: &[WaterMol]) -> Vec<Vec3> {
     waters.iter().map(|w| w.o.posit).collect()
 }

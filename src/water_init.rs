@@ -38,7 +38,6 @@ pub fn make_water_mols(
     cell: &SimBox,
     t_target: f32,
     atoms_dy: &[AtomDynamics],
-    // atoms_static: &[AtomDynamics],
 ) -> Vec<WaterMol> {
     let vol = cell.volume();
 

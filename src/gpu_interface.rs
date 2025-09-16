@@ -8,7 +8,6 @@ use lin_alg::{
 
 use crate::{
     AtomDynamics, ForcesOnWaterMol,
-    ambient::SimBox,
     non_bonded::{BodyRef, LjTables, NonBondedPair},
     water_opc::{WaterMol, WaterSite},
 };
@@ -26,9 +25,6 @@ pub(crate) struct ForcesGpu {
     pub energy_gpu: CudaSlice<f64>,
     pub cutoff_ewald: f32,
     pub alpha_ewald: f32,
-    // todo: A/R.
-    // pub n_dyn: usize,
-    // pub n_water: usize,
 }
 
 impl ForcesGpu {
@@ -40,31 +36,40 @@ impl ForcesGpu {
         alpha_ewald: f32,
     ) -> Self {
         // Set up empty device arrays the kernel will fill as output.
-        let forces_on_dyn = {
-            let v = vec![Vec3::new_zero(); n_dyn];
-            vec3s_to_dev(stream, &v)
-        };
-        let forces_on_water_o = {
-            let v = vec![Vec3::new_zero(); n_water];
-            vec3s_to_dev(stream, &v)
-        };
-        let forces_on_water_m = {
-            let v = vec![Vec3::new_zero(); n_water];
-            vec3s_to_dev(stream, &v)
-        };
-        let forces_on_water_h0 = {
-            let v = vec![Vec3::new_zero(); n_water];
-            vec3s_to_dev(stream, &v)
-        };
-        let forces_on_water_h1 = {
-            let v = vec![Vec3::new_zero(); n_water];
-            vec3s_to_dev(stream, &v)
-        };
+        // let forces_on_dyn = {
+        //     let v = vec![Vec3::new_zero(); n_dyn];
+        //     vec3s_to_dev(stream, &v)
+        // };
+        // let forces_on_water_o = {
+        //     let v = vec![Vec3::new_zero(); n_water];
+        //     vec3s_to_dev(stream, &v)
+        // };
+        // let forces_on_water_m = {
+        //     let v = vec![Vec3::new_zero(); n_water];
+        //     vec3s_to_dev(stream, &v)
+        // };
+        // let forces_on_water_h0 = {
+        //     let v = vec![Vec3::new_zero(); n_water];
+        //     vec3s_to_dev(stream, &v)
+        // };
+        // let forces_on_water_h1 = {
+        //     let v = vec![Vec3::new_zero(); n_water];
+        //     vec3s_to_dev(stream, &v)
+        // };
 
-        let mut virial_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
-        let mut energy_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
+        // Each is a float3 on device, Vec3 on host.
+        let forces_on_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
+
+        let forces_on_water_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let forces_on_water_m = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let forces_on_water_h0 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let forces_on_water_h1 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+
+        let virial_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
+        let energy_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
 
         Self {
+            // todo: Make sure the kernel overwrites these each step. If not, zero them.
             forces_on_dyn,
             forces_on_water_o,
             forces_on_water_m,
@@ -74,8 +79,6 @@ impl ForcesGpu {
             energy_gpu,
             cutoff_ewald,
             alpha_ewald,
-            // n_dyn,
-            // n_water,
         }
     }
 }
@@ -100,7 +103,6 @@ pub(crate) struct PerNeighborGpu {
     pub calc_ljs: CudaSlice<u8>,
     pub calc_coulombs: CudaSlice<u8>,
     pub symmetric: CudaSlice<u8>,
-    pub n_pairs: usize,
 }
 
 impl PerNeighborGpu {
@@ -110,9 +112,8 @@ impl PerNeighborGpu {
         atoms_dyn: &[AtomDynamics],
         water: &[WaterMol],
         lj_tables: &LjTables,
-        n_pairs: usize,
     ) -> Self {
-        let n = n_pairs;
+        let n = pairs.len();
 
         // Start by setting up on the CPU.
         let mut sigmas = Vec::with_capacity(n);
@@ -143,7 +144,7 @@ impl PerNeighborGpu {
         let mut water_types_src = vec![0; n];
 
         for (i, pair) in pairs.iter().enumerate() {
-            let atom_tgt = match pair.tgt {
+            let q_tgt = match pair.tgt {
                 BodyRef::Dyn(j) => {
                     tgt_is.push(j as u32);
                     &atoms_dyn[j]
@@ -163,9 +164,9 @@ impl PerNeighborGpu {
                     }
                 }
                 _ => unreachable!(),
-            };
+            }.partial_charge;
 
-            let atom_src = match pair.src {
+            let q_src = match pair.src {
                 BodyRef::Dyn(j) => {
                     src_is.push(j as u32);
                     &atoms_dyn[j]
@@ -183,15 +184,15 @@ impl PerNeighborGpu {
                         WaterSite::H1 => &water[j].h1,
                     }
                 }
-            };
+            }.partial_charge;
 
             let (σ, ε) = lj_tables.lookup(&pair.lj_indices);
 
             sigmas.push(σ);
             epss.push(ε);
 
-            qs_tgt.push(atom_tgt.partial_charge);
-            qs_src.push(atom_src.partial_charge);
+            qs_tgt.push(q_tgt);
+            qs_src.push(q_src);
 
             scale_14s.push(pair.scale_14);
 
@@ -263,70 +264,9 @@ impl PerNeighborGpu {
             calc_ljs,
             calc_coulombs,
             symmetric,
-            n_pairs,
         }
     }
 }
-
-// fn calc_force_cuda(
-//     stream: &Arc<CudaStream>,
-//     module: &Arc<CudaModule>,
-//     // pairs: &[NonBondedPair],
-//     // atoms_dyn: &[AtomDynamics],
-//     // water: &[WaterMol],
-//     // cell: &SimBox,
-//     // lj_tables: &LjTables,
-//     // cutoff_ewald: f32,
-//     // alpha_ewald: f32,
-// ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
-//     let n_dyn = atoms_dyn.len();
-//     let n_water = water.len();
-//
-//     let n = pairs.len();
-//
-//     let mut posits_tgt: Vec<Vec3> = Vec::with_capacity(n);
-//     let mut posits_src: Vec<Vec3> = Vec::with_capacity(n);
-//
-//     for (i, pair) in pairs.iter().enumerate() {
-//         posits_tgt.push(atom_tgt.posit);
-//         posits_src.push(atom_src.posit);
-//     }
-//
-//     // 1-4 scaling, and the symmetric case handled in the kernel.
-//
-//     let cell_extent: Vec3 = cell.extent.into();
-//
-//     // Note that we perform virial accumulation as f64, even on GPU.
-//     let (f_on_dyn, f_on_water, virial, energy) = force_nonbonded_gpu(
-//         stream,
-//         module,
-//         &tgt_is,
-//         &src_is,
-//         &posits_tgt,
-//         &posits_src,
-//         &sigmas,
-//         &epss,
-//         &qs_tgt,
-//         &qs_src,
-//         &atom_types_tgt,
-//         &water_types_tgt,
-//         &atom_types_src,
-//         &water_types_src,
-//         &scale_14s,
-//         &calc_ljs,
-//         &calc_coulombs,
-//         &symmetric,
-//         cutoff_ewald as f32,
-//         alpha_ewald as f32,
-//         cell_extent,
-//         n_dyn,
-//         n_water,
-//     );
-//
-//     let f_on_dyn = f_on_dyn.into_iter().map(|f| f.into()).collect();
-//
-//     (f_on_dyn, f_on_water, virial, energy)
-// }
 
 /// Handles both LJ, and Coulomb (SPME short range) force. Run this every step.
 /// Inputs are structured differently here from our other one; uses pre-paired inputs and outputs, and
@@ -357,7 +297,7 @@ pub fn force_nonbonded_gpu(
     let mut posits_tgt: Vec<Vec3> = Vec::with_capacity(n);
     let mut posits_src: Vec<Vec3> = Vec::with_capacity(n);
 
-    for (i, pair) in pairs.iter().enumerate() {
+    for pair in pairs {
         let atom_tgt = match pair.tgt {
             BodyRef::Dyn(j) => &atoms_dyn[j],
             BodyRef::Water { mol: j, site } => match site {
@@ -398,6 +338,8 @@ pub fn force_nonbonded_gpu(
     let cfg = LaunchConfig::for_num_elems(n as u32);
     let mut launch_args = stream.launch_builder(&kernel);
 
+    let n_u32 = n as u32;
+
     // todo: How do we store and pass references to thsee? A struct of CudaSlices?
     launch_args.arg(&mut forces.forces_on_dyn);
     launch_args.arg(&mut forces.forces_on_water_o);
@@ -429,7 +371,7 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&cell_extent);
     launch_args.arg(&forces.cutoff_ewald);
     launch_args.arg(&forces.alpha_ewald);
-    launch_args.arg(&n);
+    launch_args.arg(&n_u32);
 
     unsafe { launch_args.launch(cfg) }.unwrap();
 

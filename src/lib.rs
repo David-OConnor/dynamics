@@ -129,17 +129,17 @@ use rand::Rng;
 pub use util::{load_snapshots, save_snapshots};
 pub use water_opc::ForcesOnWaterMol;
 
+#[cfg(feature = "cuda")]
+use crate::gpu_interface::{ForcesGpu, PerNeighborGpu};
 use crate::{
     ambient::BerendsenBarostat,
-    gpu_interface::{ForcesGpu, PerNeighborGpu},
-    non_bonded::{CHARGE_UNIT_SCALER, LjTables},
+    non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::build_adjacency_list,
     water_init::make_water_mols,
     water_opc::WaterMol,
 };
-use crate::non_bonded::{NonBondedPair, EWALD_ALPHA, LONG_RANGE_CUTOFF};
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
@@ -529,6 +529,8 @@ pub struct MdState {
     pub snapshots: Vec<Snapshot>,
     pub cell: SimBox,
     pub neighbors_nb: NeighborsNb,
+    /// Rebuilt whenever nonbonded neighbors is.
+    nb_pairs: Vec<NonBondedPair>,
     // max_disp_sq: f64,           // track atom displacements²
     /// K
     barostat: BerendsenBarostat,
@@ -760,9 +762,6 @@ impl MdState {
         // Set up our LJ cache.
         result.lj_tables = LjTables::new(&result.atoms, &result.water);
 
-        // todo: Add to config A/R,
-        result.minimize_energy(dev, cfg.max_init_relaxation_iters);
-
         // Allocate force buffers on the GPU, and store a handle. Used for the entire run.
         // Initialize the per-neighbor data as well; we will do this again every time
         // we compute neighbors.
@@ -778,13 +777,15 @@ impl MdState {
 
             result.per_neighbor_gpu = Some(PerNeighborGpu::new(
                 stream,
-                &result.neighbors_nb,
+                &result.nb_pairs,
                 &result.atoms,
                 &result.water,
                 &result.lj_tables,
-                &result.pairs.len()
             ));
         }
+
+        // todo: Add to config A/R,
+        result.minimize_energy(dev, cfg.max_init_relaxation_iters);
 
         Ok(result)
     }

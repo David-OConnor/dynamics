@@ -1,17 +1,13 @@
 //! For VDW and Coulomb forces
 
-#[cfg(feature = "cuda")]
-use std::sync::Arc;
-use std::{collections::HashMap, ops::AddAssign};
+use std::ops::AddAssign;
 
-#[cfg(feature = "cuda")]
-use cudarc::driver::{CudaModule, CudaStream, PushKernelArg};
 use ewald::force_coulomb_short_range;
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
 
-use crate::gpu_interface::force_nonbonded_gpu;
 #[cfg(feature = "cuda")]
+use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
     AtomDynamics, ComputationDevice, MdState,
     ambient::SimBox,
@@ -199,7 +195,7 @@ fn add_to_sink(
     }
 }
 
-/// Applies non-bonded force in parallel (thread-pool) over a set of atoms, with indices assigned
+/// Applies non-bonded force in parallel (CPU thread-pool) over a set of atoms, with indices assigned
 /// upstream.
 ///
 /// Return the virial pair component we accumulate. For use with the temp/barostat. (kcal/mol)
@@ -288,26 +284,29 @@ fn calc_force(
 impl MdState {
     /// Run the appropriate force-computation function to get force on dynamic atoms, force
     /// on water atoms, and virial sum for the barostat. Uses GPU if available.
-    fn apply_force(&mut self, dev: &ComputationDevice, pairs: &[NonBondedPair]) {
+    ///
+    /// Applies Coulomb and Van der Waals (Lennard-Jones) forces on dynamic atoms, in place.
+    /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
+    /// applies forces from dynamic, static, and water sources.
+    pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
         let (f_on_dyn, f_on_water, virial, energy) = match dev {
             ComputationDevice::Cpu => calc_force(
-                &pairs,
+                &self.nb_pairs,
                 &self.atoms,
                 &self.water,
                 &self.cell,
                 &self.lj_tables,
             ),
             #[cfg(feature = "cuda")]
-            // ComputationDevice::Gpu((stream, module)) => calc_force_cuda(
             ComputationDevice::Gpu((stream, module)) => force_nonbonded_gpu(
                 stream,
                 module,
-                &pairs,
+                &self.nb_pairs,
                 &self.atoms,
                 &self.water,
                 self.cell.extent,
                 self.forces_gpu.as_mut().unwrap(),
-               self.per_neighbor_gpu.as_ref().unwrap(),
+                self.per_neighbor_gpu.as_ref().unwrap(),
             ),
         };
 
@@ -334,10 +333,8 @@ impl MdState {
         self.potential_energy += energy;
     }
 
-    /// Applies Coulomb and Van der Waals (Lennard-Jones) forces on dynamic atoms, in place.
-    /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
-    /// applies forces from dynamic, static, and water sources.
-    pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
+    /// [Re] initialize non-bonded interaction pairs between atoms. Do this whenever rebuilding neighbors.
+    pub(crate) fn setup_pairs(&mut self) {
         let n_dyn = self.atoms.len();
         let n_water_mols = self.water.len();
 
@@ -451,7 +448,7 @@ impl MdState {
         pairs.append(&mut pairs_dyn_water);
         pairs.append(&mut pairs_water_water);
 
-        self.apply_force(dev, &pairs);
+        self.nb_pairs = pairs;
     }
 }
 

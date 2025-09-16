@@ -1,15 +1,4 @@
 use lin_alg::f32::Vec3;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use lin_alg::{
-    f32::{Vec3x8, f32x8},
-    f64::f64x4,
-};
-
-use crate::{
-    AtomDynamics,
-    non_bonded::{BodyRef, LjTables, NonBondedPair},
-    water_opc::{ForcesOnWaterMol, WaterMol, WaterSite},
-};
 
 /// See notes on `V_lj()`. We set up the dist params we do to share computation
 /// with Coulomb.

@@ -45,7 +45,7 @@ void nonbonded_force_kernel(
     float3 cell_extent,
     float cutoff_ewald,
     float alpha_ewald,
-    size_t N
+    uint32_t N
 ) {
     size_t index = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
