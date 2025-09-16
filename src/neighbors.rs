@@ -9,9 +9,8 @@ use std::time::Instant;
 use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
 use rayon::prelude::*;
 
-use crate::{
-    AtomDynamics, MdState, ambient::SimBox, non_bonded::LONG_RANGE_CUTOFF, water_opc::WaterMol,
-};
+use crate::{AtomDynamics, MdState, ambient::SimBox, non_bonded::LONG_RANGE_CUTOFF, water_opc::WaterMol, ComputationDevice};
+use crate::gpu_interface::PerNeighborGpu;
 
 // These are for non-bonded neighbor list construction.
 const SKIN: f32 = 2.0; // Å – rebuild list if an atom moved >½·SKIN. ~2Å.
@@ -57,7 +56,7 @@ pub struct NeighborsNb {
 impl MdState {
     /// Call during each step; determines if we need to rebuild neighbors, and does so A/R.
     /// todo: Run on GPU?
-    pub fn build_neighbors_if_needed(&mut self) {
+    pub fn build_neighbors_if_needed(&mut self, dev: &ComputationDevice) {
         let start = Instant::now();
 
         // Current positions
@@ -159,6 +158,18 @@ impl MdState {
             }
         } else {
             // println!("No rebuild needed.");
+        }
+
+        #[cfg(feature = "cuda")]
+        if let ComputationDevice::Gpu((stream, module)) = dev {
+            self.per_neighbor_gpu = Some(PerNeighborGpu::new(
+                stream,
+                &self.neighbors_nb,
+                &self.atoms,
+                &self.water,
+                &self.lj_tables,
+                &self.pairs.len()
+            ));
         }
     }
 

@@ -224,7 +224,7 @@ impl MdState {
         self.step_count += 1;
 
         // todo: Ratio for this too?
-        self.build_neighbors_if_needed();
+        self.build_neighbors_if_needed(dev);
 
         // We keeping the cell centered on the dynamics atoms. Note that we don't change the dimensions,
         // as these are under management by the barostat.

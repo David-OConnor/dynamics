@@ -10,7 +10,7 @@ use ewald::force_coulomb_short_range;
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
 
-use crate::gpu_interface::calc_force_cuda;
+use crate::gpu_interface::force_nonbonded_gpu;
 #[cfg(feature = "cuda")]
 use crate::{
     AtomDynamics, ComputationDevice, MdState,
@@ -298,16 +298,16 @@ impl MdState {
                 &self.lj_tables,
             ),
             #[cfg(feature = "cuda")]
-            ComputationDevice::Gpu((stream, module)) => calc_force_cuda(
+            // ComputationDevice::Gpu((stream, module)) => calc_force_cuda(
+            ComputationDevice::Gpu((stream, module)) => force_nonbonded_gpu(
                 stream,
                 module,
                 &pairs,
                 &self.atoms,
                 &self.water,
-                &self.cell,
-                &self.lj_tables,
-                LONG_RANGE_CUTOFF,
-                EWALD_ALPHA,
+                self.cell.extent,
+                self.forces_gpu.as_mut().unwrap(),
+               self.per_neighbor_gpu.as_ref().unwrap(),
             ),
         };
 

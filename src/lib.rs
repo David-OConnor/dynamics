@@ -139,6 +139,7 @@ use crate::{
     water_init::make_water_mols,
     water_opc::WaterMol,
 };
+use crate::non_bonded::{NonBondedPair, EWALD_ALPHA, LONG_RANGE_CUTOFF};
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
@@ -762,6 +763,29 @@ impl MdState {
         // todo: Add to config A/R,
         result.minimize_energy(dev, cfg.max_init_relaxation_iters);
 
+        // Allocate force buffers on the GPU, and store a handle. Used for the entire run.
+        // Initialize the per-neighbor data as well; we will do this again every time
+        // we compute neighbors.
+        #[cfg(feature = "cuda")]
+        if let ComputationDevice::Gpu((stream, module)) = dev {
+            result.forces_gpu = Some(ForcesGpu::new(
+                stream,
+                result.atoms.len(),
+                result.water.len(),
+                LONG_RANGE_CUTOFF,
+                EWALD_ALPHA,
+            ));
+
+            result.per_neighbor_gpu = Some(PerNeighborGpu::new(
+                stream,
+                &result.neighbors_nb,
+                &result.atoms,
+                &result.water,
+                &result.lj_tables,
+                &result.pairs.len()
+            ));
+        }
+
         Ok(result)
     }
 
@@ -946,7 +970,7 @@ impl MdState {
             if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                 self.shake_hydrogens();
             }
-            self.build_neighbors_if_needed();
+            self.build_neighbors_if_needed(dev);
 
             compute_forces_and_energy(self);
             let e_new = self.potential_energy;

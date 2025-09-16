@@ -110,44 +110,9 @@ impl PerNeighborGpu {
         atoms_dyn: &[AtomDynamics],
         water: &[WaterMol],
         lj_tables: &LjTables,
-        // module: &Arc<CudaModule>,
-        // tgt_is: &[u32],
-        // src_is: &[u32],
-        // sigmas: &[f32],
-        // epss: &[f32],
-        // qs_tgt: &[f32],
-        // qs_src: &[f32],
-        // // We use these to determine which target array to accumulate
-        // // force on.
-        // atom_types_tgt: &[u8],  // 0 = dyn, 1 = water
-        // water_types_tgt: &[u8], // See WaterSite repr
-        // atom_types_src: &[u8],
-        // water_types_src: &[u8],
-        // scale_14: &[bool],
-        // calc_ljs: &[bool],
-        // calc_coulombs: &[bool],
-        // symmetric: &[bool],
-        // n_pairs: usize,
+        n_pairs: usize,
     ) -> Self {
-        // let n = tgt_is.len();
-        //
-        // assert_eq!(tgt_is.len(), n);
-        // assert_eq!(src_is.len(), n);
-        //
-        // assert_eq!(sigmas.len(), n);
-        // assert_eq!(epss.len(), n);
-        // assert_eq!(qs_tgt.len(), n);
-        // assert_eq!(qs_src.len(), n);
-        //
-        // assert_eq!(atom_types_tgt.len(), n);
-        // assert_eq!(water_types_tgt.len(), n);
-        // assert_eq!(atom_types_src.len(), n);
-        // assert_eq!(water_types_src.len(), n);
-        //
-        // assert_eq!(scale_14.len(), n);
-        // assert_eq!(calc_ljs.len(), n);
-        // assert_eq!(calc_coulombs.len(), n);
-        // assert_eq!(symmetric.len(), n);
+        let n = n_pairs;
 
         // Start by setting up on the CPU.
         let mut sigmas = Vec::with_capacity(n);
@@ -237,25 +202,45 @@ impl PerNeighborGpu {
 
         // Transfer to GPU.
 
+        {
+            assert_eq!(tgt_is.len(), n);
+            assert_eq!(src_is.len(), n);
+
+            assert_eq!(sigmas.len(), n);
+            assert_eq!(epss.len(), n);
+            assert_eq!(qs_tgt.len(), n);
+            assert_eq!(qs_src.len(), n);
+
+            assert_eq!(atom_types_tgt.len(), n);
+            assert_eq!(water_types_tgt.len(), n);
+            assert_eq!(atom_types_src.len(), n);
+            assert_eq!(water_types_src.len(), n);
+
+            assert_eq!(scale_14s.len(), n);
+            assert_eq!(calc_ljs.len(), n);
+            assert_eq!(calc_coulombs.len(), n);
+            assert_eq!(symmetric.len(), n);
+        }
+
         // May be safer for the GPU to pass u8 instead of bool??
-        let scale_14: Vec<_> = scale_14.iter().map(|v| *v as u8).collect();
+        let scale_14: Vec<_> = scale_14s.iter().map(|v| *v as u8).collect();
         let calc_ljs: Vec<_> = calc_ljs.iter().map(|v| *v as u8).collect();
         let calc_coulombs: Vec<_> = calc_coulombs.iter().map(|v| *v as u8).collect();
         let symmetric: Vec<_> = symmetric.iter().map(|v| *v as u8).collect();
 
-        let tgt_is = stream.memcpy_stod(tgt_is).unwrap();
-        let src_is = stream.memcpy_stod(src_is).unwrap();
+        let tgt_is = stream.memcpy_stod(&tgt_is).unwrap();
+        let src_is = stream.memcpy_stod(&src_is).unwrap();
 
-        let sigmas = stream.memcpy_stod(sigmas).unwrap();
-        let epss = stream.memcpy_stod(epss).unwrap();
+        let sigmas = stream.memcpy_stod(&sigmas).unwrap();
+        let epss = stream.memcpy_stod(&epss).unwrap();
 
-        let qs_tgt = stream.memcpy_stod(qs_tgt).unwrap();
-        let qs_src = stream.memcpy_stod(qs_src).unwrap();
+        let qs_tgt = stream.memcpy_stod(&qs_tgt).unwrap();
+        let qs_src = stream.memcpy_stod(&qs_src).unwrap();
 
-        let atom_types_tgt = stream.memcpy_stod(atom_types_tgt).unwrap();
-        let water_types_tgt = stream.memcpy_stod(water_types_tgt).unwrap();
-        let atom_types_src = stream.memcpy_stod(atom_types_src).unwrap();
-        let water_types_src = stream.memcpy_stod(water_types_src).unwrap();
+        let atom_types_tgt = stream.memcpy_stod(&atom_types_tgt).unwrap();
+        let water_types_tgt = stream.memcpy_stod(&water_types_tgt).unwrap();
+        let atom_types_src = stream.memcpy_stod(&atom_types_src).unwrap();
+        let water_types_src = stream.memcpy_stod(&water_types_src).unwrap();
 
         // For Amber-style 1-4 covalent bond scaling; not general LJ.
         let scale_14 = stream.memcpy_stod(&scale_14).unwrap();
@@ -358,7 +343,7 @@ pub fn force_nonbonded_gpu(
     cell_extent: Vec3,
     forces: &mut ForcesGpu,
     per_neighbor: &PerNeighborGpu,
-) -> (Vec<Vec3>, Vec<ForcesOnWaterMol>, f64, f64) {
+) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
     // let n = posits_tgt.len();
 
     // assert_eq!(posits_src.len(), n);
@@ -425,8 +410,8 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&per_neighbor.tgt_is);
     launch_args.arg(&per_neighbor.src_is);
 
-    launch_args.arg(&posits_tgt);
-    launch_args.arg(&posits_src);
+    launch_args.arg(&posits_tgt_gpu);
+    launch_args.arg(&posits_src_gpu);
 
     launch_args.arg(&per_neighbor.sigmas);
     launch_args.arg(&per_neighbor.epss);
@@ -459,7 +444,7 @@ pub fn force_nonbonded_gpu(
     let forces_on_water_h1 = vec3s_from_dev(stream, &forces.forces_on_water_h1);
 
     let mut forces_on_water = Vec::new();
-    for i in 0..n_water {
+    for i in 0..water.len() {
         let f_o = forces_on_water_o[i].into();
         let f_m = forces_on_water_m[i].into();
         let f_h0 = forces_on_water_h0[i].into();
@@ -475,6 +460,8 @@ pub fn force_nonbonded_gpu(
 
     let virial = stream.memcpy_dtov(&forces.virial_gpu).unwrap()[0];
     let energy = stream.memcpy_dtov(&forces.energy_gpu).unwrap()[0];
+
+    let forces_on_dyn = forces_on_dyn.into_iter().map(|f| f.into()).collect();
 
     (forces_on_dyn, forces_on_water, virial, energy)
 }
