@@ -380,8 +380,6 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&forces.alpha_ewald);
     launch_args.arg(&n_u32);
 
-
-
     unsafe { launch_args.launch(cfg) }.unwrap();
 
     // todo: Consider dtoh; passing to an existing vec instead of re-allocating?

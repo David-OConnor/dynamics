@@ -1,8 +1,9 @@
 #![allow(non_snake_case)]
 
 //! See the [https://github.com/David-OConnor/dynamics/blob/main/README.md](Readme) for a general overview.
+//! The textual information here is informal, and aimed at code maintenance; not library use.
 //!
-//! This module contains a traditional molecular dynamics approach
+//! This module contains a traditional molecular dynamics approach.
 //!
 //! [Good article](https://www.owlposting.com/p/a-primer-on-molecular-dynamics)
 //! [A summary paper](https://arxiv.org/pdf/1401.1181)
@@ -471,6 +472,10 @@ pub struct MdConfig {
     /// Use no more than this many iterations to do so. Higher can produce better results,
     /// but is slower.
     pub max_init_relaxation_iters: usize,
+    /// Distance threshold, in Å, used to determine when we rebuild neighbor lists.
+    /// 2-4Å are common values. Higher values rebuild less often, and have more computationally-intense
+    /// rebuilds. Rebuild the list if an atom moved > skin/2.
+    pub neighbor_skin: f32,
 }
 
 impl Default for MdConfig {
@@ -481,15 +486,13 @@ impl Default for MdConfig {
             temp_target: 310.,
             pressure_target: 1.,
             hydrogen_constraint: Default::default(),
-            // snapshot_ratio_memory: 1,
-            // snapshot_ratio_file: 2,
-            // snapshot_path: None,
             snapshot_handlers: vec![SnapshotHandler {
                 save_type: SaveType::Memory,
                 ratio: 1,
             }],
             sim_box: Default::default(),
-            max_init_relaxation_iters: 1_000, // todo: A/R
+            max_init_relaxation_iters: 600, // todo: A/R
+            neighbor_skin: 4.0,
         }
     }
 }

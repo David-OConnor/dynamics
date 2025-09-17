@@ -1,9 +1,13 @@
 use std::str::FromStr;
 
+use bio_files::create_bonds;
 use dynamics_rs;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
 
-use crate::from_bio_files::{AtomGeneric, ChainGeneric, ResidueGeneric, MmCif};
+use crate::{
+    Dihedral,
+    from_bio_files::{AtomGeneric, BondGeneric, ChainGeneric, MmCif, ResidueGeneric},
+};
 
 #[pyclass]
 #[derive(Clone)]
@@ -93,27 +97,15 @@ pub fn prepare_peptide(
 
     let mut bonds_inner: Vec<_> = bonds
         .iter()
-        .map(|bnd| {
-            let mut b = bnd.borrow_mut(py);
-            std::mem::take(&mut b.inner)
-        })
+        .map(|bnd| bnd.borrow(py).inner.clone())
         .collect();
 
     let mut residues_inner: Vec<_> = residues
         .iter()
-        .map(|r| {
-            let mut b = r.borrow_mut(py);
-            std::mem::take(&mut b.inner)
-        })
+        .map(|r| r.borrow(py).inner.clone())
         .collect();
 
-    let mut chains_inner: Vec<_> = chains
-        .iter()
-        .map(|c| {
-            let mut b = c.borrow_mut(py);
-            std::mem::take(&mut b.inner)
-        })
-        .collect();
+    let mut chains_inner: Vec<_> = chains.iter().map(|c| c.borrow(py).inner.clone()).collect();
 
     // Run the pure-Rust routine
     let dihedrals = dynamics_rs::params::prepare_peptide(
@@ -124,7 +116,7 @@ pub fn prepare_peptide(
         &ff_map.inner,
         ph,
     )
-        .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
+    .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
 
     // Write results back into the *same* Python objects
     for (obj, new_inner) in atoms.iter().zip(atoms_inner.into_iter()) {
@@ -138,28 +130,34 @@ pub fn prepare_peptide(
     }
 
     // Bonds may have been created/removed; return fresh wrappers instead of trying to resize the passed list.
-    let bonds_out: Vec<BondGeneric> = bonds_inner.into_iter().map(|inner| BondGeneric { inner }).collect();
+    let bonds_out: Vec<BondGeneric> = bonds_inner
+        .into_iter()
+        .map(|inner| BondGeneric { inner })
+        .collect();
 
-    Ok((bonds_out, dihedrals))
+    let dihedrals_out: Vec<Dihedral> = dihedrals
+        .into_iter()
+        .map(|inner| Dihedral { inner })
+        .collect();
+
+    Ok((bonds_out, dihedrals_out))
 }
-
 
 #[pyfunction]
 pub fn prepare_peptide_mmcif(
-    py: Python<'_>,
-    mol: Bound<'_, PyCell<Mmcif>>,
+    _py: Python<'_>,                       // keep if you want; rename to _py to silence warnings
+    mol: pyo3::Bound<'_, MmCif>,          // <- Bound to your class, not PyCell
     ff_map: ProtFFTypeChargeMap,
     ph: f32,
 ) -> PyResult<(Vec<BondGeneric>, Vec<Dihedral>)> {
-    let mut mol_b = mol.borrow_mut(py);
+    let mut mol_b = mol.borrow_mut();
 
-    let (bonds, dihedrals) = dynamics_rs::params::prepare_peptide_mmcif(
-        &mut mol_b.inner,
-        &ff_map.inner,
-        ph,
-    )
-        .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
+    let (bonds, dihedrals) =
+        dynamics_rs::params::prepare_peptide_mmcif(&mut mol_b.inner, &ff_map.inner, ph)
+            .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
 
     let bonds_out = bonds.into_iter().map(|inner| BondGeneric { inner }).collect();
-    Ok((bonds_out, dihedrals))
+    let dihedrals_out = dihedrals.into_iter().map(|inner| Dihedral { inner }).collect();
+
+    Ok((bonds_out, dihedrals_out))
 }

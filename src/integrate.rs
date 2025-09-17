@@ -47,10 +47,8 @@ impl Display for Integrator {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Integrator::VerletVelocity => write!(f, "Verlet Vel"),
-            // Integrator::Langevin { gamma } => write!(f, "Langevin. γ: {gamma}"),
-            // Integrator::LangevinMiddle { gamma } => write!(f, "Langevin Mid. γ: {gamma}"),
-            Integrator::Langevin { gamma } => write!(f, "Langevin"),
-            Integrator::LangevinMiddle { gamma } => write!(f, "Langevin Mid"),
+            Integrator::Langevin { gamma: _ } => write!(f, "Langevin"),
+            Integrator::LangevinMiddle { gamma: _ } => write!(f, "Langevin Mid"),
         }
     }
 }
@@ -80,6 +78,14 @@ impl MdState {
             w.h0.posit = self.cell.wrap(w.h0.posit);
             w.h1.posit = self.cell.wrap(w.h1.posit);
             w.m.posit = self.cell.wrap(w.m.posit);
+
+            // track displacement like you do for atoms
+            let upd = |v: Vec3| (v * dt).magnitude_squared();
+            let dmax = upd(w.o.vel)
+                .max(upd(w.h0.vel))
+                .max(upd(w.h1.vel))
+                .max(upd(w.m.vel));
+            self.neighbors_nb.max_displacement_sq = self.neighbors_nb.max_displacement_sq.max(dmax);
         }
     }
 
@@ -98,25 +104,41 @@ impl MdState {
                     a.vel += a.accel * dt_half;
                 }
 
-                self.water_vv_first_half_and_drift(dt, dt_half);
+                for w in &mut self.water {
+                    w.o.vel += w.o.accel * dt_half;
+                    w.h0.vel += w.h0.accel * dt_half;
+                    w.h1.vel += w.h1.accel * dt_half;
+                }
 
                 self.drift_atoms(dt_half);
+                self.water_drift(dt_half);
 
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.shake_hydrogens();
                 }
 
-                self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
+                self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
+
+                // (Optional but recommended) Velocity-constraint pass if your hydrogens/water need RATTLE after OU
+                // You can defer to the final RATTLE if you prefer, but best practice is to keep velocities on-constraint.
+                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+                    self.rattle_hydrogens(0);
+                }
 
                 self.drift_atoms(dt_half);
                 self.water_drift(dt_half);
+
+                // Enforce position constraints again after second half-drift
+                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+                    self.shake_hydrogens();
+                }
 
                 self.reset_accels();
                 self.apply_all_forces(dev);
 
                 let start = Instant::now();
                 self.handle_spme_recip(dev);
-                if self.step_count == 0 {
+                if self.step_count == 1 {
                     let elapsed = start.elapsed();
                     println!("SPME recip time: {:?} μs", elapsed.as_micros());
                 }
@@ -125,12 +147,19 @@ impl MdState {
                     a.accel *= ACCEL_CONVERSION as f32 / a.mass;
                     a.vel += a.accel * dt_half;
                 }
+                for w in &mut self.water {
+                    // masses are per-site for accel conversion; M site may be massless -> its accel should be zero already
+                    w.o.accel *= ACCEL_CONVERSION as f32 / w.o.mass;
+                    w.h0.accel *= ACCEL_CONVERSION as f32 / w.h0.mass;
+                    w.h1.accel *= ACCEL_CONVERSION as f32 / w.h1.mass;
 
-                // self.water_vv_second_half(&mut self.forces_on_water, dt_half);
-                self.water_vv_second_half(dt_half);
+                    w.o.vel += w.o.accel * dt_half;
+                    w.h0.vel += w.h0.accel * dt_half;
+                    w.h1.vel += w.h1.accel * dt_half;
+                }
 
+                // Final velocity constraint (RATTLE) after the last kick
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    // todo: Sort this index out!
                     self.rattle_hydrogens(0);
                 }
             }
@@ -284,7 +313,6 @@ impl MdState {
     }
 
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
-        return; // todo temp!!
         const K_COUL: f32 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
 
         let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();

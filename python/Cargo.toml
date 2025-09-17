@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 dynamics_rs = { package = "dynamics", path = ".." }
 
-bio_files = "0.2.11"
+bio_files = "0.2.16"
 pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py310"] }
 lin_alg = "1.3.6"
 

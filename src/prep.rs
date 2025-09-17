@@ -521,6 +521,7 @@ impl MdState {
             &self.neighbors_nb.ref_pos_dyn,
             &self.cell,
             true,
+            self.cfg.neighbor_skin,
         );
 
         self.neighbors_nb.dy_water = build_neighbors(
@@ -528,6 +529,7 @@ impl MdState {
             &self.neighbors_nb.ref_pos_water_o,
             &self.cell,
             false,
+            self.cfg.neighbor_skin,
         );
         self.rebuild_dy_water_inv();
 
@@ -536,6 +538,7 @@ impl MdState {
             &self.neighbors_nb.ref_pos_water_o,
             &self.cell,
             true,
+            self.cfg.neighbor_skin,
         );
     }
 

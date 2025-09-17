@@ -2,7 +2,7 @@
 //! use the rust bio_files lib directly here, but we must re-export the Python bindings; otherwise
 //! the calling code will have compatibility problems. e.g. "AtomGeneric != AtomGeneric".
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, io, path::PathBuf};
 
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyType};
 
@@ -388,7 +388,7 @@ impl Sdf {
 
 #[pyclass(module = "bio_files")]
 pub struct MmCif {
-    inner: bio_files::MmCif,
+    pub inner: bio_files::MmCif,
 }
 
 //     pub secondary_structure: Vec<BackboneSS>,
@@ -506,7 +506,6 @@ impl MmCif {
     }
 }
 
-
 #[pyfunction]
 pub fn save_prmtop(
     atoms: Vec<PyRef<AtomGeneric>>,
@@ -515,14 +514,21 @@ pub fn save_prmtop(
 ) -> io::Result<()> {
     // Requires that the inner types implement Clone.
     let atoms: Vec<_> = atoms.into_iter().map(|a| a.inner.clone()).collect();
-    bio_files_rs::prmtop::save_prmtop(&atoms, &params.inner, &path)
+    Ok(bio_files::prmtop::save_prmtop(
+        &atoms,
+        &params.inner,
+        &path,
+    )?)
 }
 
 #[pyfunction]
 pub fn load_prmtop(path: PathBuf) -> io::Result<(Vec<AtomGeneric>, ForceFieldParams)> {
-    let (atoms, params) = bio_files_rs::prmtop::load_prmtop(&path)?;
+    let (atoms, params) = bio_files::prmtop::load_prmtop(&path)?;
     Ok((
-        atoms.into_iter().map(|a| AtomGeneric { inner: a }).collect(),
+        atoms
+            .into_iter()
+            .map(|a| AtomGeneric { inner: a })
+            .collect(),
         ForceFieldParams { inner: params },
     ))
 }

@@ -1,3 +1,4 @@
+use pyo3::exceptions::PyIOError;
 use std::{path::PathBuf, str::FromStr};
 
 use dynamics_rs;
@@ -10,7 +11,7 @@ mod prep;
 
 use crate::{
     from_bio_files::*,
-    params::{FfParamSet, prepare_peptide},
+    params::{FfParamSet, prepare_peptide, prepare_peptide_mmcif},
     prep::{HydrogenConstraint, merge_params},
 };
 
@@ -40,6 +41,11 @@ macro_rules! make_enum {
             }
         }
     };
+}
+
+#[pyclass]
+pub struct Dihedral {
+    pub inner: dynamics_rs::Dihedral,
 }
 
 #[pyclass]
@@ -234,7 +240,7 @@ impl MolDynamics {
 
         Self {
             inner: dynamics_rs::MolDynamics {
-                ff_mol_type,
+                ff_mol_type: ff_mol_type.into(),
                 atoms,
                 atom_posits,
                 bonds,
@@ -253,8 +259,7 @@ impl MolDynamics {
         mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
     ) -> PyResult<Self> {
         let mol_specific_params = mol_specific_params.map(|p| p.borrow(py).inner.clone());
-        let inner =
-            dynamics_rs::MolDynamics::from_mol2(&mol.borrow(py).inner, mol_specific_params);
+        let inner = dynamics_rs::MolDynamics::from_mol2(&mol.borrow(py).inner, mol_specific_params);
         Ok(Self { inner })
     }
 
@@ -266,16 +271,12 @@ impl MolDynamics {
         mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
     ) -> PyResult<Self> {
         let mol_specific_params = mol_specific_params.map(|p| p.borrow(py).inner.clone());
-        let inner =
-            dynamics_rs::MolDynamics::from_sdf(&mol.borrow(py).inner, mol_specific_params);
+        let inner = dynamics_rs::MolDynamics::from_sdf(&mol.borrow(py).inner, mol_specific_params);
         Ok(Self { inner })
     }
 
     #[classmethod]
-    fn from_amber_geostd(
-        _cls: &Bound<'_, PyType>,
-        ident: &str,
-    ) -> PyResult<Self> {
+    fn from_amber_geostd(_cls: &Bound<'_, PyType>, ident: &str) -> PyResult<Self> {
         match dynamics_rs::MolDynamics::from_amber_geostd(ident) {
             Ok(inner) => Ok(Self { inner }),
             Err(e) => Err(PyIOError::new_err(e.to_string())),
@@ -375,6 +376,14 @@ impl MdConfig {
     fn snapshot_handlers_set(&mut self, v: Vec<PyRef<SnapshotHandler>>) {
         self.inner.snapshot_handlers = v.into_iter().map(|v| v.inner.clone()).collect();
     }
+    #[getter]
+    fn neighbor_skin(&self) -> f32 {
+        self.inner.neighbor_skin
+    }
+    #[setter(neighbor_skin)]
+    fn neighbor_skin_set(&mut self, v: f32) {
+        self.inner.neighbor_skin = v;
+    }
 
     fn __repr__(&self) -> String {
         format!("{:?}", self.inner)
@@ -386,8 +395,11 @@ struct MdState {
     inner: dynamics_rs::MdState,
 }
 
-#[cfg(feature = "cuda")]
 fn get_dev() -> dynamics_rs::ComputationDevice {
+    #[cfg(not(feature = "cuda"))]
+    return dynamics_rs::ComputationDevice::Cpu;
+
+    #[cfg(feature = "cuda")]
     if cudarc::driver::result::init().is_ok() {
         let ctx = CudaContext::new(0).unwrap();
 
@@ -395,17 +407,17 @@ fn get_dev() -> dynamics_rs::ComputationDevice {
         let module = ctx.load_module(Ptx::from_src(dynamics_rs::PTX));
 
         match module {
-            Ok(m) => ComputationDevice::Gpu((stream, m)),
+            Ok(m) => dynamics_rs::ComputationDevice::Gpu((stream, m)),
             Err(e) => {
                 eprintln!(
                     "Error loading CUDA module: {}; not using CUDA. Error: {e}",
                     dynamics_rs::PTX
                 );
-                ComputationDevice::Cpu
+                dynamics_rs::ComputationDevice::Cpu
             }
         }
     } else {
-        ComputationDevice::Cpu
+        dynamics_rs::ComputationDevice::Cpu
     }
 }
 
@@ -415,9 +427,11 @@ impl MdState {
     fn new(
         py: Python<'_>,
         cfg: &MdConfig,
-        mols: Vec<Py<MolDynamics>>, // <-- Py-wrapped so PyO3 can extract
+        mols: Vec<Py<MolDynamics>>,
         param_set: &FfParamSet,
     ) -> PyResult<Self> {
+        use std::mem::take;
+
         let n_mols = mols.len();
 
         // Per-molecule ownership
@@ -425,17 +439,17 @@ impl MdState {
         let mut posit_bufs: Vec<Option<Vec<Vec3F64>>> = Vec::with_capacity(n_mols);
         let mut bonds_bufs: Vec<Vec<bio_files::BondGeneric>> = Vec::with_capacity(n_mols);
         let mut adj_bufs: Vec<Option<Vec<Vec<usize>>>> = Vec::with_capacity(n_mols);
-        let mut msp_bufs: Vec<Option<from_bio_files::ForceFieldParams>> =
+        let mut msp_bufs: Vec<Option<bio_files::md_params::ForceFieldParams>> =
             Vec::with_capacity(n_mols);
 
         for mol in &mols {
             let v = mol.borrow(py);
 
-            atoms_bufs.push(v.atoms.iter().map(|a| a.inner.clone()).collect());
-            posit_bufs.push(v.atom_posits.clone());
-            bonds_bufs.push(v.bonds.iter().map(|b| b.inner.clone()).collect());
-            adj_bufs.push(v.adjacency_list.clone());
-            msp_bufs.push(v.mol_specific_params.clone());
+            atoms_bufs.push(v.inner.atoms.iter().map(|a| a.clone()).collect());
+            posit_bufs.push(v.inner.atom_posits.clone());
+            bonds_bufs.push(v.inner.bonds.iter().map(|b| b.clone()).collect());
+            adj_bufs.push(v.inner.adjacency_list.clone());
+            msp_bufs.push(v.inner.mol_specific_params.clone());
         }
 
         let mut mols_native = Vec::with_capacity(n_mols);
@@ -443,20 +457,21 @@ impl MdState {
         for (i, mol) in mols.iter().enumerate() {
             let v = mol.borrow(py);
 
-            let atoms_slice = atoms_bufs[i].as_slice();
-            let bonds_slice = bonds_bufs[i].as_slice();
-            let atom_posits_slice: Option<&[Vec3F64]> = posit_bufs[i].as_deref();
-            let adjacency_slice: Option<&[Vec<usize>]> = adj_bufs[i].as_deref();
-            let mol_specific_params = msp_bufs[i].as_ref().map(|p| &p.inner);
+            // Move owned buffers out (no extra allocation/copy)
+            let atoms = take(&mut atoms_bufs[i]);
+            let bonds = take(&mut bonds_bufs[i]);
+            let atom_posits = take(&mut posit_bufs[i]); // Option<Vec<Vec3F64>>
+            let adjacency_list = take(&mut adj_bufs[i]); // Option<Vec<Vec<usize>>>
+            let mol_specific_params = take(&mut msp_bufs[i]).map(|p| p.clone());
 
             mols_native.push(dynamics_rs::MolDynamics {
-                ff_mol_type: v.ff_mol_type.to_native(),
-                atoms: atoms_slice,
-                atom_posits: atom_posits_slice,
-                bonds: bonds_slice,
-                adjacency_list: adjacency_slice,
-                static_: v.static_,
-                mol_specific_params,
+                ff_mol_type: v.inner.ff_mol_type.into(),
+                atoms,          // Vec<bio_files::AtomGeneric>
+                atom_posits,    // Option<Vec<Vec3F64>>
+                bonds,          // Vec<bio_files::BondGeneric>
+                adjacency_list, // Option<Vec<Vec<usize>>>
+                static_: v.inner.static_,
+                mol_specific_params, // Option<dynamics_rs::...::ForceFieldParams>
             });
         }
 
@@ -515,6 +530,7 @@ fn mol_dynamics(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<FfParamSet>()?;
     m.add_class::<Snapshot>()?;
     m.add_class::<SnapshotHandler>()?;
+    m.add_class::<Dihedral>()?;
 
     m.add_class::<from_bio_files::AtomGeneric>()?;
     m.add_class::<from_bio_files::BondGeneric>()?;
