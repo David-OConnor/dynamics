@@ -34,11 +34,7 @@ const MASS_WATER: f32 = 18.015_28;
 const N_A: f32 = 6.022_140_76e23;
 
 /// We pass atoms in so this doesn't generate water molecules that overlap with them.
-pub fn make_water_mols(
-    cell: &SimBox,
-    t_target: f32,
-    atoms_dy: &[AtomDynamics],
-) -> Vec<WaterMol> {
+pub fn make_water_mols(cell: &SimBox, t_target: f32, atoms_dy: &[AtomDynamics]) -> Vec<WaterMol> {
     let vol = cell.volume();
 
     let n_float = WATER_DENSITY * vol * (N_A / (MASS_WATER * 1.0e24));

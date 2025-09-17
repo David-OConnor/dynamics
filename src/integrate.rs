@@ -284,6 +284,7 @@ impl MdState {
     }
 
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
+        return; // todo temp!!
         const K_COUL: f32 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
 
         let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();

@@ -301,11 +301,12 @@ impl MdState {
             ComputationDevice::Gpu((stream, module)) => force_nonbonded_gpu(
                 stream,
                 module,
+                self.gpu_kernel.as_ref().unwrap(),
                 &self.nb_pairs,
                 &self.atoms,
                 &self.water,
                 self.cell.extent,
-                self.forces_gpu.as_mut().unwrap(),
+                self.forces_posits_gpu.as_mut().unwrap(),
                 self.per_neighbor_gpu.as_ref().unwrap(),
             ),
         };
@@ -334,6 +335,7 @@ impl MdState {
     }
 
     /// [Re] initialize non-bonded interaction pairs between atoms. Do this whenever rebuilding neighbors.
+    /// Build the neighbors set prior to running this.
     pub(crate) fn setup_pairs(&mut self) {
         let n_dyn = self.atoms.len();
         let n_water_mols = self.water.len();

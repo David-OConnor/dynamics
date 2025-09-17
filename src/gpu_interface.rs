@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use cudarc::driver::{CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+use cudarc::driver::{
+    CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+};
 use lin_alg::{
     f32::{Vec3, vec3s_from_dev, vec3s_to_dev},
     f64::Vec3 as Vec3F64,
@@ -15,19 +17,29 @@ use crate::{
 /// Device buffers that persist across all steps. Mutated on the GPU.
 /// We initialize these once at the start. These are all flattened.
 /// We pass thisto the kernel each step, but don't transfer.
-pub(crate) struct ForcesGpu {
+///
+/// Note: Forces and energies must be zeroed each step.
+pub(crate) struct ForcesPositsGpu {
     pub forces_on_dyn: CudaSlice<f32>,
     pub forces_on_water_o: CudaSlice<f32>,
     pub forces_on_water_m: CudaSlice<f32>,
     pub forces_on_water_h0: CudaSlice<f32>,
     pub forces_on_water_h1: CudaSlice<f32>,
+
     pub virial_gpu: CudaSlice<f64>,
     pub energy_gpu: CudaSlice<f64>,
+
     pub cutoff_ewald: f32,
     pub alpha_ewald: f32,
+
+    pub pos_dyn: CudaSlice<f32>,
+    pub pos_w_o: CudaSlice<f32>,
+    pub pos_w_m: CudaSlice<f32>,
+    pub pos_w_h0: CudaSlice<f32>,
+    pub pos_w_h1: CudaSlice<f32>,
 }
 
-impl ForcesGpu {
+impl ForcesPositsGpu {
     pub(crate) fn new(
         stream: &Arc<CudaStream>,
         n_dyn: usize,
@@ -36,30 +48,7 @@ impl ForcesGpu {
         alpha_ewald: f32,
     ) -> Self {
         // Set up empty device arrays the kernel will fill as output.
-        // let forces_on_dyn = {
-        //     let v = vec![Vec3::new_zero(); n_dyn];
-        //     vec3s_to_dev(stream, &v)
-        // };
-        // let forces_on_water_o = {
-        //     let v = vec![Vec3::new_zero(); n_water];
-        //     vec3s_to_dev(stream, &v)
-        // };
-        // let forces_on_water_m = {
-        //     let v = vec![Vec3::new_zero(); n_water];
-        //     vec3s_to_dev(stream, &v)
-        // };
-        // let forces_on_water_h0 = {
-        //     let v = vec![Vec3::new_zero(); n_water];
-        //     vec3s_to_dev(stream, &v)
-        // };
-        // let forces_on_water_h1 = {
-        //     let v = vec![Vec3::new_zero(); n_water];
-        //     vec3s_to_dev(stream, &v)
-        // };
-
-        // Each is a float3 on device, Vec3 on host.
         let forces_on_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
-
         let forces_on_water_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
         let forces_on_water_m = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
         let forces_on_water_h0 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
@@ -68,8 +57,13 @@ impl ForcesGpu {
         let virial_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
         let energy_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
 
+        let pos_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
+        let pos_w_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let pos_w_m = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let pos_w_h0 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let pos_w_h1 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+
         Self {
-            // todo: Make sure the kernel overwrites these each step. If not, zero them.
             forces_on_dyn,
             forces_on_water_o,
             forces_on_water_m,
@@ -79,15 +73,21 @@ impl ForcesGpu {
             energy_gpu,
             cutoff_ewald,
             alpha_ewald,
+
+            pos_dyn,
+            pos_w_o,
+            pos_w_m,
+            pos_w_h0,
+            pos_w_h1,
         }
     }
 }
 
-/// Device buffers that persist until the neighbor list is rebuilt (pair metadata).
+/// Handles to device buffers that persist until the neighbor list is rebuilt (pair metadata).
 /// Copy items from host to GPU ("device") that change when we rebuild the neighbors, but don't
 /// change otherwise. Build this whenever we rebuild the neighbors list.
 ///
-/// We pass thisto the kernel each step, but don't transfer.
+/// We pass this to the kernel each step, but don't transfer.
 pub(crate) struct PerNeighborGpu {
     pub tgt_is: CudaSlice<u32>,
     pub src_is: CudaSlice<u32>,
@@ -164,7 +164,8 @@ impl PerNeighborGpu {
                     }
                 }
                 _ => unreachable!(),
-            }.partial_charge;
+            }
+            .partial_charge;
 
             let q_src = match pair.src {
                 BodyRef::Dyn(j) => {
@@ -184,7 +185,8 @@ impl PerNeighborGpu {
                         WaterSite::H1 => &water[j].h1,
                     }
                 }
-            }.partial_charge;
+            }
+            .partial_charge;
 
             let (σ, ε) = lj_tables.lookup(&pair.lj_indices);
 
@@ -268,6 +270,42 @@ impl PerNeighborGpu {
     }
 }
 
+/// Run this each step, at the start of each GPU step.
+fn upload_positions(
+    stream: &Arc<CudaStream>,
+    forces: &mut ForcesPositsGpu,
+    atoms_dyn: &[AtomDynamics],
+    water: &[WaterMol],
+) {
+    // pack to flat f32 arrays (x,y,z per atom)
+    let mut h_pos_dyn = Vec::with_capacity(atoms_dyn.len() * 3);
+    for a in atoms_dyn {
+        let [x, y, z] = a.posit.to_arr();
+        h_pos_dyn.extend_from_slice(&[x, y, z]);
+    }
+
+    let mut h_pos_o = Vec::with_capacity(water.len() * 3);
+    let mut h_pos_m = Vec::with_capacity(water.len() * 3);
+    let mut h_pos_h0 = Vec::with_capacity(water.len() * 3);
+    let mut h_pos_h1 = Vec::with_capacity(water.len() * 3);
+
+    for w in water {
+        h_pos_o.extend_from_slice(&w.o.posit.to_arr());
+        h_pos_m.extend_from_slice(&w.m.posit.to_arr());
+        h_pos_h0.extend_from_slice(&w.h0.posit.to_arr());
+        h_pos_h1.extend_from_slice(&w.h1.posit.to_arr());
+    }
+
+    // `htod` here, as opposted to `stod`, copies into an existing array, instead of allocating
+    // a new one.
+    // Copy into existing device buffers (avoid reallocating)
+    stream.memcpy_htod(&h_pos_dyn, &mut forces.pos_dyn).unwrap();
+    stream.memcpy_htod(&h_pos_o, &mut forces.pos_w_o).unwrap();
+    stream.memcpy_htod(&h_pos_m, &mut forces.pos_w_m).unwrap();
+    stream.memcpy_htod(&h_pos_h0, &mut forces.pos_w_h0).unwrap();
+    stream.memcpy_htod(&h_pos_h1, &mut forces.pos_w_h1).unwrap();
+}
+
 /// Handles both LJ, and Coulomb (SPME short range) force. Run this every step.
 /// Inputs are structured differently here from our other one; uses pre-paired inputs and outputs, and
 /// a common index. Exclusions (e.g. Amber-style 1-2 adn 1-3) are handled upstream.
@@ -276,85 +314,54 @@ impl PerNeighborGpu {
 pub fn force_nonbonded_gpu(
     stream: &Arc<CudaStream>,
     module: &Arc<CudaModule>,
+    kernel: &CudaFunction,
     pairs: &[NonBondedPair],
     atoms_dyn: &[AtomDynamics],
     water: &[WaterMol],
     // todo: Only copy cell_extent when it changes, e.g. due to the barostat.
     cell_extent: Vec3,
-    forces: &mut ForcesGpu,
+    forces: &mut ForcesPositsGpu,
     per_neighbor: &PerNeighborGpu,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
-    // let n = posits_tgt.len();
-
-    // assert_eq!(posits_src.len(), n);
-
-    // let n_dyn = atoms_dyn.len();
-    // let n_water = water.len();
+    upload_positions(stream, forces, atoms_dyn, water);
 
     let n = pairs.len();
 
-    // todo: Eventually, keep positions on the GPU too.
-    let mut posits_tgt: Vec<Vec3> = Vec::with_capacity(n);
-    let mut posits_src: Vec<Vec3> = Vec::with_capacity(n);
-
-    for pair in pairs {
-        let atom_tgt = match pair.tgt {
-            BodyRef::Dyn(j) => &atoms_dyn[j],
-            BodyRef::Water { mol: j, site } => match site {
-                WaterSite::O => &water[j].o,
-                WaterSite::M => &water[j].m,
-                WaterSite::H0 => &water[j].h0,
-                WaterSite::H1 => &water[j].h1,
-            },
-            _ => unreachable!(),
-        };
-
-        let atom_src = match pair.src {
-            BodyRef::Dyn(j) => &atoms_dyn[j],
-            BodyRef::Water { mol: j, site } => match site {
-                WaterSite::O => &water[j].o,
-                WaterSite::M => &water[j].m,
-                WaterSite::H0 => &water[j].h0,
-                WaterSite::H1 => &water[j].h1,
-            },
-        };
-
-        posits_tgt.push(atom_tgt.posit);
-        posits_src.push(atom_src.posit);
-    }
+    zero_forces_and_accums(stream, module, forces, atoms_dyn.len(), water.len());
 
     // 1-4 scaling, and the symmetric case handled in the kernel.
-
-    // let cell_extent: Vec3 = cell.extent.into();
-
     // Store immutable input arrays to the device.
-
-    let posits_src_gpu = vec3s_to_dev(stream, &posits_src);
-    let posits_tgt_gpu = vec3s_to_dev(stream, &posits_tgt);
-
-    // todo: Likely load these functions (kernels) at init and pass as a param.
-    // todo: Seems to take only 4 μs (per time step), so should be fine here.
-    let kernel = module.load_function("nonbonded_force_kernel").unwrap();
-    let cfg = LaunchConfig::for_num_elems(n as u32);
-    let mut launch_args = stream.launch_builder(&kernel);
 
     let n_u32 = n as u32;
 
+    if n == 0 {
+        eprintln!("N is 0; oh no!");
+        return Default::default();
+    }
+
+    let cfg = LaunchConfig::for_num_elems(n_u32);
+    let mut launch_args = stream.launch_builder(kernel);
+
     // todo: How do we store and pass references to thsee? A struct of CudaSlices?
+    // These forces and positions are per-atom; much smaller than the per-pair arrays.
     launch_args.arg(&mut forces.forces_on_dyn);
     launch_args.arg(&mut forces.forces_on_water_o);
     launch_args.arg(&mut forces.forces_on_water_m);
     launch_args.arg(&mut forces.forces_on_water_h0);
     launch_args.arg(&mut forces.forces_on_water_h1);
+    //
     launch_args.arg(&mut forces.virial_gpu);
     launch_args.arg(&mut forces.energy_gpu);
     //
+    launch_args.arg(&forces.pos_dyn);
+    launch_args.arg(&forces.pos_w_o);
+    launch_args.arg(&forces.pos_w_m);
+    launch_args.arg(&forces.pos_w_h0);
+    launch_args.arg(&forces.pos_w_h1);
+    //
     launch_args.arg(&per_neighbor.tgt_is);
     launch_args.arg(&per_neighbor.src_is);
-
-    launch_args.arg(&posits_tgt_gpu);
-    launch_args.arg(&posits_src_gpu);
-
+    // These params below are per-pair.
     launch_args.arg(&per_neighbor.sigmas);
     launch_args.arg(&per_neighbor.epss);
     launch_args.arg(&per_neighbor.qs_tgt);
@@ -373,9 +380,9 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&forces.alpha_ewald);
     launch_args.arg(&n_u32);
 
-    unsafe { launch_args.launch(cfg) }.unwrap();
 
-    // todo: As above, how do we get a stream of these from the device, when we've pre-cached?
+
+    unsafe { launch_args.launch(cfg) }.unwrap();
 
     // todo: Consider dtoh; passing to an existing vec instead of re-allocating?
     let forces_on_dyn = vec3s_from_dev(stream, &forces.forces_on_dyn);
@@ -406,4 +413,64 @@ pub fn force_nonbonded_gpu(
     let forces_on_dyn = forces_on_dyn.into_iter().map(|f| f.into()).collect();
 
     (forces_on_dyn, forces_on_water, virial, energy)
+}
+
+/// Zero forces and accumulators on the device. Run this each step.
+fn zero_forces_and_accums(
+    stream: &Arc<CudaStream>,
+    module: &Arc<CudaModule>,
+    forces: &mut ForcesPositsGpu,
+    n_dyn: usize,
+    n_water: usize,
+) {
+    // todo: Store these kernesl as you do the main one.
+    let zero_f32 = module.load_function("zero_f32").unwrap();
+    let zero_f64 = module.load_function("zero_f64").unwrap();
+
+    // dyn: 3 floats per atom
+    let dyn_len_u32 = (n_dyn * 3) as u32;
+    let cfg_dyn = LaunchConfig::for_num_elems(dyn_len_u32);
+    let mut l0 = stream.launch_builder(&zero_f32);
+
+    l0.arg(&mut forces.forces_on_dyn);
+    l0.arg(&dyn_len_u32);
+    unsafe { l0.launch(cfg_dyn) }.unwrap();
+
+    // water arrays: 3 floats per molecule for each site-buffer
+    let wat_len_u32 = (n_water * 3) as u32;
+    let cfg_w = LaunchConfig::for_num_elems(wat_len_u32);
+
+    let mut l1 = stream.launch_builder(&zero_f32);
+    l1.arg(&mut forces.forces_on_water_o);
+    l1.arg(&wat_len_u32);
+    unsafe { l1.launch(cfg_w) }.unwrap();
+
+    let mut l2 = stream.launch_builder(&zero_f32);
+    l2.arg(&mut forces.forces_on_water_m);
+    l2.arg(&wat_len_u32);
+    unsafe { l2.launch(cfg_w) }.unwrap();
+
+    let mut l3 = stream.launch_builder(&zero_f32);
+    l3.arg(&mut forces.forces_on_water_h0);
+    l3.arg(&wat_len_u32);
+    unsafe { l3.launch(cfg_w) }.unwrap();
+
+    let mut l4 = stream.launch_builder(&zero_f32);
+    l4.arg(&mut forces.forces_on_water_h1);
+    l4.arg(&wat_len_u32);
+    unsafe { l4.launch(cfg_w) }.unwrap();
+
+    // scalars
+    let one: u32 = 1;
+    let cfg1 = LaunchConfig::for_num_elems(1);
+
+    let mut l5 = stream.launch_builder(&zero_f64);
+    l5.arg(&mut forces.virial_gpu);
+    l5.arg(&one);
+    unsafe { l5.launch(cfg1) }.unwrap();
+
+    let mut l6 = stream.launch_builder(&zero_f64);
+    l6.arg(&mut forces.energy_gpu);
+    l6.arg(&one);
+    unsafe { l6.launch(cfg1) }.unwrap();
 }

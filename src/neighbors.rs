@@ -135,15 +135,16 @@ impl MdState {
 
         static mut PRINTED: bool = false;
         if rebuilt_dyn || rebuilt_wat {
-            let elapsed = start.elapsed();
+            // let elapsed = start.elapsed();
             if !unsafe { PRINTED } {
-                println!("Neighbor build time: {:?} μs", elapsed.as_micros());
+                // println!("Neighbor build time: {:?} μs", elapsed.as_micros());
                 unsafe {
                     PRINTED = true;
                 }
             }
 
             self.setup_pairs();
+            self.neighbor_rebuild_count += 1;
 
             #[cfg(feature = "cuda")]
             if let ComputationDevice::Gpu((stream, _)) = dev {
@@ -158,6 +159,9 @@ impl MdState {
         } else {
             // println!("No rebuild needed.");
         }
+
+        let elapsed = start.elapsed().as_micros();
+        self.neighbor_rebuild_us += elapsed as u64;
     }
 
     /// This inverts our neighbor set between water and dynamic atoms.

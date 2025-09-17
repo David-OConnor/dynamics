@@ -112,21 +112,6 @@ pub(crate) struct HydrogenRigidConstraint {
     pub inv_mass: Option<f64>,
 }
 
-// /// See notes on `HydrogenConstraint` for more information.
-// #[derive(Clone, Debug)]
-// pub(crate) enum HydrogenConstraintInner {
-//     /// The constraints here are atom indices of each bond to H, and r_0 as defined in the Amber
-//     /// param data. (We don't need k_b, as the bond is fixed len). The final value is a cached r_0^2
-//     Constrained(Vec<HydrogenRigidConstraint>),
-//     Flexible,
-// }
-
-// impl Default for HydrogenConstraintInner {
-//     fn default() -> Self {
-//         Self::Constrained(Vec::new())
-//     }
-// }
-
 /// We use this variant in the configuration API. Deferrs to `HydrogenConstraintInner` for holding
 /// constraints.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -170,49 +155,7 @@ impl ForceFieldParamsIndexed {
     ) -> Result<Self, ParamError> {
         let mut result = Self::default();
 
-        // Combine the two force field sets. When a value is present in both, refer the lig-specific
-        // one.
-        // let params = merge_params(params_general, params_specific);
-
         for (i, atom) in atoms.iter().enumerate() {
-            // let ff_type = match &atom.force_field_type {
-            //     Some(ff_t) => ff_t,
-            //     None => {
-            //         eprintln!("Atom missing FF type: {atom}");
-            //         match atom.element {
-            //             Element::Carbon => {
-            //                 eprintln!(
-            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic C"
-            //                 );
-            //                 "C"
-            //             }
-            //             Element::Nitrogen => {
-            //                 eprintln!(
-            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic N"
-            //                 );
-            //                 "N"
-            //             }
-            //             Element::Oxygen => {
-            //                 eprintln!(
-            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic O"
-            //                 );
-            //                 "O"
-            //             }
-            //             Element::Hydrogen => {
-            //                 eprintln!(
-            //                     "Indexing: Atom missing FF type: {atom}; Falling back to generic H"
-            //                 );
-            //                 "H"
-            //             }
-            //             _ => {
-            //                 return Err(ParamError::new(&format!(
-            //                     "MD failure: Atom missing FF type: {atom}"
-            //                 )));
-            //             }
-            //         }
-            //     }
-            // };
-
             let ff_type = &atom.force_field_type;
 
             // Mass
@@ -336,26 +279,6 @@ impl ForceFieldParamsIndexed {
                     continue; // Only add each bond once.
                 }
 
-                // todo: Be careful! Your SNs don't work when flattened.
-                // let (atom_0_sn, atom_1_sn) = (bond.atom_0_sn, bond.atom_1_sn);
-
-                // let i0 = match index_map.get(&atom_0_sn) {
-                //     Some(i) => *i,
-                //     None => {
-                //         return Err(ParamError::new(&format!(
-                //             "Missing atom {atom_0_sn} as specified in a bond"
-                //         )));
-                //     }
-                // };
-                // let i1 = match index_map.get(&atom_1_sn) {
-                //     Some(i) => *i,
-                //     None => {
-                //         return Err(ParamError::new(&format!(
-                //             "Missing atom {atom_1_sn} as specified in a bond"
-                //         )));
-                //     }
-                // };
-
                 let type_0 = &atoms[i0].force_field_type;
                 let type_1 = &atoms[i1].force_field_type;
 
@@ -383,9 +306,6 @@ impl ForceFieldParamsIndexed {
                     );
                     continue;
                 };
-
-                // let atom_0 = i0.min(i1);
-                // let atom_1 = i0.max(i1);
 
                 // If using fixed hydrogens, don't add these to our bond stretching params;
                 // add to a separate hydrogen rigid param variable.
@@ -603,13 +523,6 @@ impl MdState {
             true,
         );
 
-        // self.neighbors_nb.dy_static = build_neighbors(
-        //     &self.neighbors_nb.ref_pos_dyn,
-        //     &self.neighbors_nb.ref_pos_static,
-        //     &self.cell,
-        //     false,
-        // );
-
         self.neighbors_nb.dy_water = build_neighbors(
             &self.neighbors_nb.ref_pos_dyn,
             &self.neighbors_nb.ref_pos_water_o,
@@ -617,13 +530,6 @@ impl MdState {
             false,
         );
         self.rebuild_dy_water_inv();
-
-        // self.neighbors_nb.water_static = build_neighbors(
-        //     &self.neighbors_nb.ref_pos_water_o,
-        //     &self.neighbors_nb.ref_pos_static,
-        //     &self.cell,
-        //     false,
-        // );
 
         self.neighbors_nb.water_water = build_neighbors(
             &self.neighbors_nb.ref_pos_water_o,

@@ -19,13 +19,20 @@ void nonbonded_force_kernel(
     float3* out_water_m,
     float3* out_water_h0,
     float3* out_water_h1,
+    //
     double* out_virial,  // Virial pair sum, used for the barostat.
     double* out_energy,
+    // Atom posits (not pair-wise)
+    // Note: These are float*, not float3*, due to the way our helpers are set up.
+    const float* pos_dyn,
+    const float* pos_water_o,
+    const float* pos_water_m,
+    const float* pos_water_h0,
+    const float* pos_water_h1,
     // Pair-wise inputs
     const uint32_t* tgt_is,
     const uint32_t* src_is,
-    const float3* posits_tgt,
-    const float3* posits_src,
+    //
     const float* sigmas,
     const float* epss,
     const float* qs_tgt,
@@ -50,16 +57,28 @@ void nonbonded_force_kernel(
     size_t index = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
 
+    // Per-thread energy accumulators.
+    double e_acc = 0.0;
+    double w_acc = 0.0;
+
     // todo: When you apply this to water, you must use the unit cell
     // todo to take a min image of the diff, vice using it directly.
 
     for (size_t i = index; i < N; i += stride) {
-        const float3 posit_tgt = posits_tgt[i];
-        const float3 posit_src = posits_src[i];
+        const uint32_t it = tgt_is[i];
+        const uint32_t is = src_is[i];
+
+        const float3 posit_tgt = load_pos(
+            atom_types_tgt[i], water_types_tgt[i], it,
+            pos_dyn, pos_water_o, pos_water_m, pos_water_h0, pos_water_h1
+        );
+        const float3 posit_src = load_pos(
+            atom_types_src[i], water_types_src[i], is,
+            pos_dyn, pos_water_o, pos_water_m, pos_water_h0, pos_water_h1
+        );
 
         const float sigma = sigmas[i];
         const float eps = epss[i];
-
         const uint8_t scale_14 = scale_14s[i];
 
         float3 diff = posit_tgt - posit_src;
@@ -68,7 +87,6 @@ void nonbonded_force_kernel(
         // We set up r and its variants like this to share between the Coulomb and LJ
         // functions.
         const float r_sq = diff.x * diff.x + diff.y * diff.y + diff.z * diff.z;
-
         // Protect against r ~ 0 (also skip exact self if arrays alias)
         if (r_sq < 1e-16f) {
             continue;
@@ -78,7 +96,6 @@ void nonbonded_force_kernel(
         // errors.
         const float inv_r = rsqrtf(r_sq);
         const float r = r_sq * inv_r;
-
         const float3 dir = diff * inv_r;
 
         ForceEnergy f_lj;
@@ -119,17 +136,19 @@ void nonbonded_force_kernel(
         const float3 f = f_lj.force + f_coulomb.force;
         const double e_pair = (double)f_lj.energy + (double)f_coulomb.energy;
 
-        // Virial per pair · F
-        double virial_pair = ((double)diff.x * (double)f.x + (double)diff.y * (double)f.y + (double)diff.z * (double)f.z);
-        atomicAdd(out_virial, virial_pair);
+        const double virial_pair =
+            (double)diff.x * (double)f.x +
+            (double)diff.y * (double)f.y +
+            (double)diff.z * (double)f.z;
+        w_acc += virial_pair;
+        if (atom_types_tgt[i] == 0) { e_acc += e_pair; }
+
 
         const uint32_t out_i = tgt_is[i];
 
         if (atom_types_tgt[i] == 0) {
             atomicAddFloat3(&out_dyn[out_i], f);
-            // We don't currently track energy on water atoms. Keep this in sync
-            // with application assumptions, and how you handle it on the CPU.
-            atomicAdd(out_energy, e_pair);
+//             atomicAdd(out_energy, e_pair);
         } else {
             if (water_types_tgt[i] == 1) {
                 atomicAddFloat3(&out_water_o[out_i], f);
@@ -160,5 +179,12 @@ void nonbonded_force_kernel(
                 }
             }
         }
+    }
+
+    double e_blk = block_sum(e_acc);
+    double w_blk = block_sum(w_acc);
+    if (threadIdx.x == 0) {
+        atomicAdd(out_energy, e_blk);
+        atomicAdd(out_virial, w_blk);
     }
 }

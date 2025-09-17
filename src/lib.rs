@@ -111,16 +111,14 @@ pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals}
 use ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{
-    AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mmcif::MmCif, mol2::Mol2,
-};
+use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
-use cudarc::driver::{CudaModule, CudaStream};
-use ewald::{PmeRecip, ewald_comp_force};
+use cudarc::driver::{CudaFunction, CudaModule, CudaStream};
+use ewald::PmeRecip;
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use lin_alg::f64::{Vec3x4, f64x4};
-use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
+use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use params::{ProtFFTypeChargeMap, ProtFfMap};
@@ -130,7 +128,7 @@ pub use util::{load_snapshots, save_snapshots};
 pub use water_opc::ForcesOnWaterMol;
 
 #[cfg(feature = "cuda")]
-use crate::gpu_interface::{ForcesGpu, PerNeighborGpu};
+use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 use crate::{
     ambient::BerendsenBarostat,
     non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
@@ -216,7 +214,7 @@ pub struct MolDynamics {
     /// Separate from `atoms`; this may be more convenient than mutating the atoms
     /// as they may move! If None, we use the positions stored in the atoms.
     // pub atom_posits: Option<&'a [Vec3]>,
-    pub atom_posits: Option<Vec<Vec3>>,
+    pub atom_posits: Option<Vec<Vec3F64>>,
     /// Not required if static.
     pub bonds: Vec<BondGeneric>,
     /// If None, will be generated automatically from atoms and bonds. Use this
@@ -307,11 +305,11 @@ pub struct AtomDynamics {
     pub force_field_type: String,
     pub element: Element,
     // pub name: String,
-    pub posit: Vec3F32,
+    pub posit: Vec3,
     /// Å / ps
-    pub vel: Vec3F32,
+    pub vel: Vec3,
     /// Å / ps²
-    pub accel: Vec3F32,
+    pub accel: Vec3,
     /// Daltons
     /// todo: Move these 4 out of this to save memory; use from the params struct directly.
     pub mass: f32,
@@ -347,7 +345,7 @@ impl Display for AtomDynamics {
 impl AtomDynamics {
     pub fn new(
         atom: &AtomGeneric,
-        atom_posits: &[Vec3F32],
+        atom_posits: &[Vec3],
         i: usize,
         static_: bool,
     ) -> Result<Self, ParamError> {
@@ -409,9 +407,9 @@ pub(crate) struct AtomDynamicsx4 {
 // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 // impl AtomDynamicsx4 {
 //     pub fn from_array(bodies: [AtomDynamics; 4]) -> Self {
-//         let mut posits = [Vec3F32::new_zero(); 4];
-//         let mut vels = [Vec3F32::new_zero(); 4];
-//         let mut accels = [Vec3F32::new_zero(); 4];
+//         let mut posits = [Vec3::new_zero(); 4];
+//         let mut vels = [Vec3::new_zero(); 4];
+//         let mut accels = [Vec3::new_zero(); 4];
 //         let mut masses = [0.0; 4];
 //         // Replace `Element::H` (for example) with some valid default for your `Element` type:
 //         let mut elements = [Element::Hydrogen; 4];
@@ -443,7 +441,7 @@ pub enum SimBoxInit {
     /// Distance in Å from the edge to the molecule, at init.
     Pad(f32),
     /// Coordinate boundaries, at opposite corners
-    Fixed((Vec3F32, Vec3F32)),
+    Fixed((Vec3, Vec3)),
 }
 
 impl Default for SimBoxInit {
@@ -544,7 +542,7 @@ pub struct MdState {
     water: Vec<WaterMol>,
     lj_tables: LjTables,
     // todo: Hmm... Is this DRY with forces_on_water? Investigate.
-    pub water_pme_sites_forces: Vec<[Vec3; 3]>, // todo: A/R
+    pub water_pme_sites_forces: Vec<[Vec3F64; 3]>, // todo: A/R
     pme_recip: Option<PmeRecip>,
     /// kcal/mol
     pub kinetic_energy: f64,
@@ -552,15 +550,19 @@ pub struct MdState {
     /// Every so many snapshots, write these to file, then clear from memory.
     snapshot_queue_for_file: Vec<Snapshot>,
     #[cfg(feature = "cuda")]
+    gpu_kernel: Option<CudaFunction>, // Option only due to not impling Deafult.
+    #[cfg(feature = "cuda")]
     /// These store handles to data structures on the GPU. We pass them to the kernel each
     /// step, but don't transfer. Init to None. Populated during the run.
-    forces_gpu: Option<ForcesGpu>,
+    forces_posits_gpu: Option<ForcesPositsGpu>,
     #[cfg(feature = "cuda")]
     per_neighbor_gpu: Option<PerNeighborGpu>,
+    pub neighbor_rebuild_count: usize,
+    pub neighbor_rebuild_us: u64,
 }
 
-impl fmt::Display for MdState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for MdState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "MdState. # Snapshots: {}. # steps: {}  Current time: {}. # of dynamic atoms: {}. # Water mols: {}",
@@ -585,6 +587,13 @@ impl MdState {
         // These Vecs all share indices, and all include all molecules.
         let mut atoms_md = Vec::new();
         let mut adjacency_list = Vec::new();
+
+        // todo: Allow a water-only sim, buut need to rework how your simbox sizes for that.
+        if mols.is_empty() {
+            return Err(ParamError::new(
+                "No molecules to simulate. Please provide at least one molecule.",
+            ));
+        }
 
         // let mut atoms_md_static: Vec<AtomDynamics> = Vec::new();
 
@@ -655,7 +664,7 @@ impl MdState {
                 }
             }
 
-            let mut p: Vec<Vec3F32> = Vec::new(); // to store the ref.
+            let mut p: Vec<Vec3> = Vec::new(); // to store the ref.
             let atom_posits = match &mol.atom_posits {
                 Some(a) => {
                     p = a.iter().map(|p| (*p).into()).collect();
@@ -746,16 +755,13 @@ impl MdState {
 
         result.barostat.pressure_target = cfg.pressure_target as f64;
 
-        result.water = make_water_mols(
-            &result.cell,
-            cfg.temp_target,
-            &result.atoms,
-            // &result.atoms_static,
-        );
-        result.water_pme_sites_forces = vec![[Vec3::new_zero(); 3]; result.water.len()];
+        result.water = make_water_mols(&result.cell, cfg.temp_target, &result.atoms);
+        result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
 
         result.setup_nonbonded_exclusion_scale_flags();
         result.init_neighbors();
+        result.setup_pairs();
+
         // Initializes the FFT planner[s], among other things.
         result.regen_pme();
 
@@ -767,7 +773,9 @@ impl MdState {
         // we compute neighbors.
         #[cfg(feature = "cuda")]
         if let ComputationDevice::Gpu((stream, module)) = dev {
-            result.forces_gpu = Some(ForcesGpu::new(
+            result.gpu_kernel = Some(module.load_function("nonbonded_force_kernel").unwrap());
+
+            result.forces_posits_gpu = Some(ForcesPositsGpu::new(
                 stream,
                 result.atoms.len(),
                 result.water.len(),
@@ -784,6 +792,8 @@ impl MdState {
             ));
         }
 
+        println!("Init pair count: {:?}", result.nb_pairs.len());
+
         // todo: Add to config A/R,
         result.minimize_energy(dev, cfg.max_init_relaxation_iters);
 
@@ -796,13 +806,13 @@ impl MdState {
     /// forces. Also reset forces on water.
     fn reset_accels(&mut self) {
         for a in &mut self.atoms {
-            a.accel = Vec3F32::new_zero();
+            a.accel = Vec3::new_zero();
         }
         for mol in &mut self.water {
-            mol.o.accel = Vec3F32::new_zero();
-            mol.m.accel = Vec3F32::new_zero();
-            mol.h0.accel = Vec3F32::new_zero();
-            mol.h1.accel = Vec3F32::new_zero();
+            mol.o.accel = Vec3::new_zero();
+            mol.m.accel = Vec3::new_zero();
+            mol.h0.accel = Vec3::new_zero();
+            mol.h1.accel = Vec3::new_zero();
         }
 
         self.barostat.virial_pair_kcal = 0.0;
@@ -879,18 +889,18 @@ impl MdState {
 
         // Zero velocities; we’re minimizing, not integrating.
         for a in &mut self.atoms {
-            a.vel = Vec3F32::new_zero();
-            a.accel = Vec3F32::new_zero();
+            a.vel = Vec3::new_zero();
+            a.accel = Vec3::new_zero();
         }
         for w in &mut self.water {
-            w.o.vel = Vec3F32::new_zero();
-            w.h0.vel = Vec3F32::new_zero();
-            w.h1.vel = Vec3F32::new_zero();
-            w.m.vel = Vec3F32::new_zero();
-            w.o.accel = Vec3F32::new_zero();
-            w.h0.accel = Vec3F32::new_zero();
-            w.h1.accel = Vec3F32::new_zero();
-            w.m.accel = Vec3F32::new_zero();
+            w.o.vel = Vec3::new_zero();
+            w.h0.vel = Vec3::new_zero();
+            w.h1.vel = Vec3::new_zero();
+            w.m.vel = Vec3::new_zero();
+            w.o.accel = Vec3::new_zero();
+            w.h0.accel = Vec3::new_zero();
+            w.h1.accel = Vec3::new_zero();
+            w.m.accel = Vec3::new_zero();
         }
 
         // Force/E at current geometry
@@ -931,18 +941,18 @@ impl MdState {
 
         // Per-atom last step for backtracking
         let n_atoms = self.atoms.len();
-        let mut last_step: Vec<Vec3> = vec![Vec3::new_zero(); n_atoms];
+        let mut last_step: Vec<Vec3F64> = vec![Vec3F64::new_zero(); n_atoms];
 
         let mut alpha = STEP_INIT;
         let mut e_prev = self.potential_energy;
 
         // Per-atom last step for backtracking
         let n_atoms = self.atoms.len();
-        let mut last_step: Vec<Vec3F32> = vec![Vec3F32::new_zero(); n_atoms];
+        let mut last_step: Vec<Vec3> = vec![Vec3::new_zero(); n_atoms];
 
         'outer: for _iter in 0..max_iters {
             for (i, a) in self.atoms.iter_mut().enumerate() {
-                last_step[i] = Vec3F32::new_zero();
+                last_step[i] = Vec3::new_zero();
                 if a.static_ {
                     continue;
                 }
@@ -1006,13 +1016,13 @@ impl MdState {
 
         // Final cleanups: zero velocities, recenter, and refresh PME grid if you do this routinely elsewhere.
         for a in &mut self.atoms {
-            a.vel = Vec3F32::new_zero();
+            a.vel = Vec3::new_zero();
         }
         for w in &mut self.water {
-            w.o.vel = Vec3F32::new_zero();
-            w.h0.vel = Vec3F32::new_zero();
-            w.h1.vel = Vec3F32::new_zero();
-            w.m.vel = Vec3F32::new_zero();
+            w.o.vel = Vec3::new_zero();
+            w.h0.vel = Vec3::new_zero();
+            w.h1.vel = Vec3::new_zero();
+            w.m.vel = Vec3::new_zero();
         }
 
         // Keep consistent with your normal cadence.

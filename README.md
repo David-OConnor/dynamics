@@ -494,11 +494,10 @@ This includes operating systems, software distribution, and user experience. We 
 than OpenMM; it can be used on any
 Operating system, and any Python version >= 3.10, installable using `pip` or `cargo`.
 
-This library is intended to *just work*. OpenMM itself is easy to install with Pip, but the additional libraries
-it requires to load force fields are higher-friction. Additionally, it's easy to run into errors when
-using it with proteins from RCSB PDB, and small molecules broadly. Getting a functional OpenMM configuration
+This library is intended to *just work*. OpenMM does not natively work with molecules from online databases like RCSB PDB,
+PubChem, and Drugbank. It doesn't work with Amber GeoStd Mol2 files. OpenMM itself is easy to install with Pip, but the additional libraries
+it requires to load molecules and force fields are higher-friction. Getting a functional OpenMM configuration
 for a given system involves work which we hope to eschew.
-
 
 
 ## Compiling from source
