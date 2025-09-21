@@ -14,8 +14,10 @@ use lin_alg::f32::Vec3;
 use crate::{
     ACCEL_CONVERSION, CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState,
     PMEIndex,
+    ambient::instantaneous_pressure_bar,
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
+    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
 };
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
@@ -89,11 +91,18 @@ impl MdState {
         }
     }
 
-    /// One **Velocity-Verlet** step (leap-frog style) of length `dt` is in picoseconds (10^-12),
+    /// One step of length `dt` is in picoseconds (10^-12),
     /// with typical values of 0.001, or 0.002ps (1 or 2fs).
-    /// This method orchestrates the dynamics at each time step.
+    /// This method orchestrates the dynamics at each time step. Uses a Verlet Velocity base,
+    /// with different thermostat approaches depending on configuration.
     pub fn step(&mut self, dev: &ComputationDevice, dt: f32) {
         let dt_half = 0.5 * dt;
+
+        // todo: YOu can remove this once we crush the root cause.
+        if self.nb_pairs.len() == 0 {
+            eprintln!("UHoh. Pairs count is 0. THis likely means the system blew up.");
+            return;
+        }
 
         match self.cfg.integrator {
             Integrator::LangevinMiddle { gamma } => {
@@ -122,7 +131,7 @@ impl MdState {
                 // (Optional but recommended) Velocity-constraint pass if your hydrogens/water need RATTLE after OU
                 // You can defer to the final RATTLE if you prefer, but best practice is to keep velocities on-constraint.
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens(0);
+                    self.rattle_hydrogens();
                 }
 
                 self.drift_atoms(dt_half);
@@ -133,8 +142,24 @@ impl MdState {
                     self.shake_hydrogens();
                 }
 
-                self.reset_accels();
+                self.reset_accel_e();
+                let p_inst_bar = instantaneous_pressure_bar(
+                    &self.atoms,
+                    &self.water,
+                    &self.cell,
+                    self.barostat.virial_pair_kcal,
+                );
                 self.apply_all_forces(dev);
+
+                // todo temp rm
+                // self.barostat.apply_isotropic(
+                //     dt as f64,
+                //     p_inst_bar,
+                //     &mut self.cell,
+                //     &mut self.atoms,
+                //     &mut self.water,
+                // );
+                // self.regen_pme();
 
                 let start = Instant::now();
                 self.handle_spme_recip(dev);
@@ -143,15 +168,15 @@ impl MdState {
                     println!("SPME recip time: {:?} μs", elapsed.as_micros());
                 }
 
-                for a in &mut self.atoms {
-                    a.accel *= ACCEL_CONVERSION as f32 / a.mass;
+                for (i, a) in self.atoms.iter_mut().enumerate() {
+                    a.accel *= self.mass_accel_factor[i];
                     a.vel += a.accel * dt_half;
                 }
                 for w in &mut self.water {
                     // masses are per-site for accel conversion; M site may be massless -> its accel should be zero already
-                    w.o.accel *= ACCEL_CONVERSION as f32 / w.o.mass;
-                    w.h0.accel *= ACCEL_CONVERSION as f32 / w.h0.mass;
-                    w.h1.accel *= ACCEL_CONVERSION as f32 / w.h1.mass;
+                    w.o.accel *= ACCEL_CONV_WATER_O;
+                    w.h0.accel *= ACCEL_CONV_WATER_H;
+                    w.h1.accel *= ACCEL_CONV_WATER_H;
 
                     w.o.vel += w.o.accel * dt_half;
                     w.h0.vel += w.h0.accel * dt_half;
@@ -160,7 +185,7 @@ impl MdState {
 
                 // Final velocity constraint (RATTLE) after the last kick
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens(0);
+                    self.rattle_hydrogens();
                 }
             }
             _ => {
@@ -199,13 +224,31 @@ impl MdState {
                     self.shake_hydrogens();
                 }
 
-                self.reset_accels();
+                self.reset_accel_e();
+                let p_inst_bar = instantaneous_pressure_bar(
+                    &self.atoms,
+                    &self.water,
+                    &self.cell,
+                    self.barostat.virial_pair_kcal,
+                );
+
                 self.apply_all_forces(dev);
+
+                // todo temp fm
+                // self.barostat.apply_isotropic(
+                //     dt as f64,
+                //     p_inst_bar,
+                //     &mut self.cell,
+                //     &mut self.atoms,
+                //     &mut self.water,
+                // );
+                // self.regen_pme();
 
                 let start = Instant::now();
                 // todo: YOu need to update potential energy from LR PME as well.
+
                 self.handle_spme_recip(dev);
-                if self.step_count == 0 {
+                if self.step_count == 1 {
                     let elapsed = start.elapsed();
                     println!("SPME recip time: {:?} μs", elapsed.as_micros());
                 }
@@ -234,16 +277,12 @@ impl MdState {
                 }
 
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    // todo: Sort this index out!
-                    self.rattle_hydrogens(0);
+                    self.rattle_hydrogens();
                 }
             }
         }
 
         let dt_f64 = dt as f64;
-
-        // I believe we must run barostat prior to thermostat, in our current configuration.
-        self.apply_barostat_berendsen(dt_f64);
 
         if let Integrator::VerletVelocity = self.cfg.integrator {
             self.apply_thermostat_csvr(dt_f64, self.cfg.temp_target as f64);
@@ -318,17 +357,13 @@ impl MdState {
         let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();
 
         let (mut f_recip, e_recip) = match &mut self.pme_recip {
-            Some(pme_recip) => {
-                match dev {
-                    ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
-                    #[cfg(feature = "cuda")]
-                    ComputationDevice::Gpu((stream, module)) => {
-                        // self.pme_recip.forces_gpu(stream, module, &pos_all, &q_all)
-                        // todo: GPU isn't improving this, but it should be
-                        pme_recip.forces(&pos_all, &q_all)
-                    }
+            Some(pme_recip) => match dev {
+                ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
+                #[cfg(feature = "cuda")]
+                ComputationDevice::Gpu((stream, module)) => {
+                    pme_recip.forces_gpu(stream, module, &pos_all, &q_all)
                 }
-            }
+            },
             None => {
                 panic!("No PME recip available; not computing SPME recip.");
             }

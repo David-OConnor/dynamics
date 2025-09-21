@@ -5,6 +5,12 @@ use dynamics_rs;
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use pyo3::{Py, exceptions::PyValueError, prelude::*, types::PyType};
 
+#[cfg(feature = "cuda")]
+use cudarc::{
+    driver::{CudaContext},
+    nvrtc::Ptx,
+};
+
 mod from_bio_files;
 mod params;
 mod prep;

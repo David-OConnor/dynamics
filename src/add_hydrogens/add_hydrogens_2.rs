@@ -288,6 +288,7 @@ fn add_h_sc_het(
 
                         for (i, tetra_bond) in [TETRA_B, TETRA_C, TETRA_D].into_iter().enumerate() {
                             let at = h_type_in_res_sidechain(i, parent_tir, aa, digit_map)?;
+                            let Some(at) = at else { continue };
                             hydrogens.push(AtomGeneric {
                                 posit: atom.posit + rotator.rotate_vec(tetra_bond) * LEN_C_H,
                                 type_in_res: Some(at),
@@ -337,6 +338,8 @@ fn add_h_sc_het(
                             let bond_1 = atoms_bonded[1].1.posit - atom.posit;
 
                             let at = h_type_in_res_sidechain(0, parent_tir, aa, digit_map)?;
+                            let Some(at) = at else { continue };
+
                             // Add a single H in planar config.
                             hydrogens.push(AtomGeneric {
                                 posit: planar_posit(atom.posit, bond_0, bond_1, LEN_C_H),
@@ -358,6 +361,8 @@ fn add_h_sc_het(
 
                         for (i, posit) in [h_0, h_1].into_iter().enumerate() {
                             let at = h_type_in_res_sidechain(i, parent_tir, aa, digit_map)?;
+                            let Some(at) = at else { continue };
+
                             hydrogens.push(AtomGeneric {
                                 posit,
                                 type_in_res: Some(at),
@@ -397,6 +402,7 @@ fn add_h_sc_het(
                         // Add 1 H.
                         // todo: If planar geometry, don't add a H!
                         let at = h_type_in_res_sidechain(0, parent_tir, aa, digit_map)?;
+                        let Some(at) = at else { continue };
 
                         hydrogens.push(AtomGeneric {
                             posit: atom.posit
@@ -448,6 +454,7 @@ fn add_h_sc_het(
 
                         for (i, planar_bond) in [PLANAR3_B, PLANAR3_C].into_iter().enumerate() {
                             let at = h_type_in_res_sidechain(i, parent_tir, aa, digit_map)?;
+                            let Some(at) = at else { continue };
                             hydrogens.push(AtomGeneric {
                                 posit: atom.posit + rotator.rotate_vec(planar_bond) * LEN_N_H,
                                 type_in_res: Some(at),
@@ -462,6 +469,7 @@ fn add_h_sc_het(
                         let bond_1 = atoms_bonded[1].1.posit - atom.posit;
 
                         let at = h_type_in_res_sidechain(0, parent_tir, aa, digit_map)?;
+                        let Some(at) = at else { continue };
                         hydrogens.push(AtomGeneric {
                             posit: planar_posit(atom.posit, bond_0, bond_1, LEN_N_H),
                             type_in_res: Some(at),
@@ -505,6 +513,7 @@ fn add_h_sc_het(
                         let rotator = rotator_b * rotator_a;
 
                         let at = h_type_in_res_sidechain(0, parent_tir, aa, digit_map)?;
+                        let Some(at) = at else { continue };
                         hydrogens.push(AtomGeneric {
                             posit: atom.posit + rotator.rotate_vec(TETRA_B) * LEN_O_H,
                             type_in_res: Some(at),

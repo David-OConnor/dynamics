@@ -12,7 +12,8 @@ use rand::{Rng, distr::Uniform};
 use rand_distr::Distribution;
 
 use crate::{
-    ACCEL_CONVERSION_INV, ACCEL_CONVERSION_INV_F32, AtomDynamics, KB, ambient::SimBox,
+    ACCEL_CONVERSION_INV_F32, AtomDynamics,
+    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
     water_opc::WaterMol,
 };
 
@@ -97,7 +98,9 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, _cell: &SimBox) {
     use rand_distr::Normal;
 
     let mut rng = rand::rng();
-    let kT = KB * t_target; // in your internal units (kcal/mol if that’s what KE uses)
+    // let kT =  KB_A2_PS2_PER_K_PER_AMU * t_target;
+    let kT = KB_A2_PS2_PER_K_PER_AMU * t_target;
+
     for m in mols.iter_mut() {
         // COM & relative positions
         let (r_com, m_tot) = {
@@ -182,8 +185,9 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, _cell: &SimBox) {
 
     // Optional: compute KE (translation+rotation == sum ½ m v^2 now) and rescale to T_target
     let (ke_raw, dof) = kinetic_energy_and_dof(mols); // dof = 6*N - 3
-    let lambda =
-        (t_target / (2.0 * (ke_raw * ACCEL_CONVERSION_INV_F32) / (dof as f32 * KB))).sqrt();
+    let lambda = (t_target
+        / (2.0 * (ke_raw * ACCEL_CONVERSION_INV_F32) / (dof as f32 * GAS_CONST_R)))
+        .sqrt();
     for a in atoms_mut(mols) {
         if a.mass > 0.0 {
             a.vel *= lambda;

@@ -89,8 +89,6 @@ impl MdState {
                 let diff = aj.posit - ai.posit;
                 let dist_sq = diff.magnitude_squared();
 
-                // println!("Diff: {:.3}", dist_sq);
-
                 // λ = (r² − r₀²) / (2·inv_m · r_ij·r_ij)
                 let lambda = (dist_sq - r0_sq) / (2.0 * inv_mass * dist_sq.max(EPS_SHAKE_RATTLE));
                 let corr = diff * lambda; // vector correction
@@ -109,7 +107,7 @@ impl MdState {
     }
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub fn rattle_hydrogens(&mut self, mol_i: usize) {
+    pub fn rattle_hydrogens(&mut self) {
         // RATTLE on velocities so that d/dt(|r|²)=0  ⇒  v_ij · r_ij = 0
         for (indices, (_r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
             // println!("RATTLE: {:?}", (i, j, _r0));

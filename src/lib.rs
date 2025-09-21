@@ -145,18 +145,12 @@ use crate::{
 #[cfg(feature = "cuda")]
 pub const PTX: &str = include_str!("../dynamics.ptx");
 
-/// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all bonded
-/// accelerations by this. TODO: we are currently multiplying *all* accelerations by this.
+/// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all
+/// accelerations by this. (Bonded, and nonbonded)
 const ACCEL_CONVERSION: f64 = 418.4;
 const ACCEL_CONVERSION_F32: f32 = 418.4;
 const ACCEL_CONVERSION_INV: f64 = 1. / ACCEL_CONVERSION;
 const ACCEL_CONVERSION_INV_F32: f32 = 1. / ACCEL_CONVERSION_F32;
-
-// For assigning velocities from temperature, and other thermostat/barostat use.
-const KB: f32 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
-
-// Boltzmann constant in (amu · Å^2 / ps^2) K⁻¹
-const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 
 // SHAKE tolerances for fixed hydrogens. These SHAKE constraints are for fixed hydrogens.
 // The tolerance controls how close we get
@@ -207,26 +201,22 @@ pub enum FfMolType {
 /// Packages information required to perform dynamics on a Molecule. This is used to initialize
 /// the simulation with atoms and related; one or more of these is passed at init.
 #[derive(Clone, Debug)]
-// pub struct MolDynamics<'a> {
 pub struct MolDynamics {
     pub ff_mol_type: FfMolType,
     /// These must hold force field type and partial charge.
     pub atoms: Vec<AtomGeneric>,
     /// Separate from `atoms`; this may be more convenient than mutating the atoms
     /// as they may move! If None, we use the positions stored in the atoms.
-    // pub atom_posits: Option<&'a [Vec3]>,
     pub atom_posits: Option<Vec<Vec3F64>>,
     /// Not required if static.
     pub bonds: Vec<BondGeneric>,
     /// If None, will be generated automatically from atoms and bonds. Use this
     /// if you wish to cache.
-    // pub adjacency_list: Option<&'a [Vec<usize>]>,
     pub adjacency_list: Option<Vec<Vec<usize>>>,
     /// If true, the atoms in the molecule don't move, but exert LJ and Coulomb forces
     /// on other atoms in the system.
     pub static_: bool,
     /// If present, any values here override molecule-type general parameters.
-    // pub mol_specific_params: Option<&'a ForceFieldParams>,
     pub mol_specific_params: Option<ForceFieldParams>,
 }
 
@@ -491,7 +481,7 @@ impl Default for MdConfig {
                 ratio: 1,
             }],
             sim_box: Default::default(),
-            max_init_relaxation_iters: 600, // todo: A/R
+            max_init_relaxation_iters: 300, // todo: A/R
             neighbor_skin: 4.0,
         }
     }
@@ -562,6 +552,8 @@ pub struct MdState {
     per_neighbor_gpu: Option<PerNeighborGpu>,
     pub neighbor_rebuild_count: usize,
     pub neighbor_rebuild_us: u64,
+    /// A cache of accel_factor / mass, per atom. Built once, at init.
+    mass_accel_factor: Vec<f32>,
 }
 
 impl Display for MdState {
@@ -680,14 +672,7 @@ impl MdState {
             };
 
             for (i, atom) in atoms.iter().enumerate() {
-                // atom.serial_number += last_mol_sn;
-                atoms_md.push(AtomDynamics::new(
-                    &atom,
-                    atom_posits,
-                    // &params,
-                    i,
-                    mol.static_,
-                )?);
+                atoms_md.push(AtomDynamics::new(&atom, atom_posits, i, mol.static_)?);
             }
 
             // Use the included adjacency list if available. If not, construct it.
@@ -705,54 +690,42 @@ impl MdState {
                 adjacency_list.push(updated);
             }
 
-            // for constraint in h_constraints_ {
-            //
-            // }
-
-            // atoms_md.extend(atoms_md);
-
-            // if mol.static_ {
-            //     // atoms_md_static.extend(atoms_md);
-            // } else {
-            //     // Set up Indexed params. Merges general with atom-specific if available.
-            //     // Not required for static atoms. (Only applies to bonded forces.)
-            //     // ff_params = params;
-            //     adjacency_list = adjacency_list_.to_vec();
-            // }
-
-            // h_constraints.push(h_constraints_);
-
             total_atom_count += atoms.len();
+        }
+
+        if atoms_md.is_empty() {
+            return Err(ParamError::new(
+                "No atoms to simulate; please provide at least one.",
+            ));
         }
 
         let force_field_params = ForceFieldParamsIndexed::new(
             &params,
             // mol.mol_specific_params,
             &atoms_md,
-            // mol.bonds,
             &adjacency_list,
-            // &mut h_constraints,
             cfg.hydrogen_constraint,
         )?;
+
+        let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());
 
         // Assign mass, LJ params, etc.
         for (i, atom) in atoms_md.iter_mut().enumerate() {
             atom.assign_data_from_params(&force_field_params, i);
+            mass_accel_factor.push(ACCEL_CONVERSION_F32 / atom.mass);
         }
 
-        // let cell = SimBox::new_padded(&atoms_dy);
         let cell = SimBox::new(&atoms_md, &cfg.sim_box);
 
         let mut result = Self {
             cfg: cfg.clone(),
             atoms: atoms_md,
             adjacency_list: adjacency_list.to_vec(),
-            // h_constraints,
-            // atoms_static: atoms_md_static,
             cell,
             pairs_excluded_12_13: HashSet::new(),
             pairs_14_scaled: HashSet::new(),
             force_field_params,
+            mass_accel_factor,
             ..Default::default()
         };
 
@@ -798,7 +771,7 @@ impl MdState {
         println!("Init pair count: {:?}", result.nb_pairs.len());
 
         // todo: Add to config A/R,
-        result.minimize_energy(dev, cfg.max_init_relaxation_iters);
+        // result.minimize_energy(dev, cfg.max_init_relaxation_iters);
 
         Ok(result)
     }
@@ -807,7 +780,7 @@ impl MdState {
     /// shaking the fixed hydrogens.
     /// We must reset the virial pair prior to accumulating it, which we do when calculating non-bonded
     /// forces. Also reset forces on water.
-    fn reset_accels(&mut self) {
+    fn reset_accel_e(&mut self) {
         for a in &mut self.atoms {
             a.accel = Vec3::new_zero();
         }
@@ -853,7 +826,7 @@ impl MdState {
             println!("Dihedral: {:?} μs", elapsed.as_micros());
         }
 
-        if self.step_count == 0 {
+        if self.step_count == 1 {
             start = Instant::now();
         }
 
@@ -908,7 +881,7 @@ impl MdState {
 
         // Force/E at current geometry
         let mut compute_forces_and_energy = |this: &mut MdState| {
-            this.reset_accels();
+            this.reset_accel_e();
             this.potential_energy = 0.0;
             this.apply_all_forces(dev);
             this.handle_spme_recip(dev);

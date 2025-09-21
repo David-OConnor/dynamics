@@ -1,7 +1,9 @@
+use std::f32::consts::{PI, TAU};
+
 use bio_files::md_params::{AngleBendingParams, BondStretchingParams, DihedralParams};
 use lin_alg::f32::{Vec3, calc_dihedral_angle_v2};
 
-const EPS: f32 = 1e-10;
+const EPS: f32 = 1e-8;
 
 /// Returns the force on the atom at position 0. Negate this for the force on posit 1.
 /// Also returns potential energy.
@@ -52,21 +54,12 @@ pub fn f_angle_bending(
     let inv_ab = 1.0 / (b_vec_01_len * b_vec_21_len);
 
     let cos_θ = (bond_vec_01.dot(bond_vec_21) * inv_ab).clamp(-1.0, 1.0);
-    let sin_θ_sq = 1.0 - cos_θ * cos_θ;
-
-    if sin_θ_sq < EPS {
-        // θ = 0 or τ; gradient ill-defined
-        return ((Vec3::new_zero(), Vec3::new_zero(), Vec3::new_zero()), 0.);
-    }
-
-    // Measured angle, and its deviation from the parameter angle.
     let θ = cos_θ.acos();
     let Δθ = params.theta_0 - θ;
-    // Note: We include the factor of 2x k when setting up indexed parameters.
-    let dV_dθ = params.k * Δθ; // dV/dθ
+    let dV_dθ = params.k * Δθ;
 
-    let c = bond_vec_01.cross(bond_vec_21); // n  ∝  r_ij × r_kj
-    let c_len2 = c.magnitude_squared(); // |n|^2
+    let c = bond_vec_01.cross(bond_vec_21);
+    let c_len2 = c.magnitude_squared().max(EPS); // was: c_len2 without guard + early return
 
     let geom_i = (c.cross(bond_vec_01) * b_vec_21_len) / c_len2;
     let geom_k = (bond_vec_21.cross(c) * b_vec_01_len) / c_len2;
@@ -99,22 +92,9 @@ pub fn f_dihedral(
     let n1 = b1.cross(b2);
     let n2 = b3.cross(b2);
 
-    let n1_sq = n1.magnitude_squared();
-    let n2_sq = n2.magnitude_squared();
-    let b2_len = b2.magnitude();
-
-    // Bail out if the four atoms are (nearly) colinear
-    if n1_sq < EPS || n2_sq < EPS || b2_len < EPS {
-        return (
-            (
-                Vec3::new_zero(),
-                Vec3::new_zero(),
-                Vec3::new_zero(),
-                Vec3::new_zero(),
-            ),
-            0.,
-        );
-    }
+    let n1_sq = n1.magnitude_squared().max(EPS);
+    let n2_sq = n2.magnitude_squared().max(EPS);
+    let b2_len = b2.magnitude().max(EPS);
 
     let dihe_measured = calc_dihedral_angle_v2(&(posit_0, posit_1, posit_2, posit_3));
 
@@ -123,8 +103,14 @@ pub fn f_dihedral(
     let k = params.barrier_height;
     let per = params.periodicity as f32;
 
+    #[inline]
+    fn wrap_to_pi(x: f32) -> f32 {
+        (x + PI).rem_euclid(TAU) - PI
+    }
+
     let (dV_dφ, dφ) = if improper {
-        let dφ = dihe_measured - params.phase;
+        let mut dφ = dihe_measured - params.phase;
+        dφ = wrap_to_pi(dφ);
         (2.0 * k * dφ, dφ)
     } else {
         let dφ = per * dihe_measured - params.phase;
@@ -134,9 +120,7 @@ pub fn f_dihedral(
     // ∂φ/∂r   (see e.g. DOI 10.1016/S0021-9991(97)00040-8)
     let dφ_dr1 = -n1 * (b2_len / n1_sq);
     let dφ_dr4 = n2 * (b2_len / n2_sq);
-
-    let dφ_dr2 = -n1 * (b1.dot(b2) / (b2_len * n1_sq)) + n2 * (b3.dot(b2) / (b2_len * n2_sq));
-
+    let dφ_dr2 = n1 * (b1.dot(b2) / (b2_len * n1_sq)) - n2 * (b3.dot(b2) / (b2_len * n2_sq));
     let dφ_dr3 = -dφ_dr1 - dφ_dr2 - dφ_dr4; // Newton’s third law
 
     // F_i = −dV/dφ · ∂φ/∂r_i
@@ -148,7 +132,8 @@ pub fn f_dihedral(
     let energy = if improper {
         0.5 * dV_dφ * dφ // okay here, since V = k Δφ²
     } else {
-        0.5 * k * (1.0 + (per * dihe_measured - params.phase).cos())
+        // 0.5 * k * (1.0 + (per * dihe_measured - params.phase).cos())
+        k * (1.0 + (per * dihe_measured - params.phase).cos())
     };
 
     ((f_0, f_1, f_2, f_3), energy)

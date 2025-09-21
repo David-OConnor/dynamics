@@ -20,6 +20,12 @@ as well.
 
 **Note: We currently only support saving and loading snapshots/trajectories in a custom format.**
 
+We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer,
+with nvidia drivers 580 or newer.
+
+**Note: The Python version is currently CPU only**. We would like to fix this, but are having trouble
+linking Cuda.
+
 
 ## Use of this library
 This is intended for integration into a Rust or Python program, another Rust or Python library, or in small scripts that 
@@ -32,7 +38,7 @@ flexibility that facilitates integration into bigger systems.
 
 
 ## Goals
-- Runs traditional MD algorithms accurately
+- Runs Newtonian MD algorithms accurately
 - Easy to install, learn, and use
 - Fast
 - Easy integration into workflows, scripting, and applications
@@ -193,7 +199,6 @@ Example use (Python):
 ```python
 from mol_dynamics import *
 
-
 def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParams) -> MdState:
     """
     Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
@@ -201,7 +206,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
     """
 
     # Or, consider using these terse helpers instead for small organic molecules.
-    # MolDynamics.from_amber_geostd("CPB")
+    # MolDynamics.from_amber_geostd("CPB")  # Can use with a PubChem CID as well.
     # MolDynamics.from_mol2(mol, lig_specific)
     # MolDynamics.from_sdf(mol, lig_specific)
 
@@ -306,7 +311,7 @@ fn setup_dynamics(
 ) -> MdState {
     
     // Or, consider using these terse helpers instead for small organic molecules.
-    // MolDynamics::from_amber_geostd("CPB").unwrap();
+    // MolDynamics::from_amber_geostd("CPB").unwrap();  // Can use with a PubChem CID as well.
     // MolDynamics::from_mol2(&mol, Some(lig_specific)).unwrap();
     // MolDynamics::from_sdf(&mol, Some(lig_specific)).unwrap();
     
@@ -463,7 +468,9 @@ cfg.temp_target = 310.
 
 ## Using with GPU
 
-We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA) integration.
+We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA) integration. In the python binding, it should be transparent.
+We've exposed a slightly lower level API in rust, where you use setup a Stream and modules with Cudarc in your
+application, and pass them to the library.
 
 Rust setup example with Cudarc. Pass this to the `step` function.
 ```rust

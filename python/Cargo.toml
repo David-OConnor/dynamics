@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 dynamics_rs = { package = "dynamics", path = ".." }
 
-bio_files = "0.2.16"
+bio_files = "0.3.0"
 pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py310"] }
 lin_alg = "1.3.6"
 
@@ -24,4 +24,7 @@ cudarc = { version = "0.17.2", default-features = false, features = ["std", "dri
 cuda_setup = { version = "0.1.7", optional = true }
 
 [features]
+# todo: Get this working.
+#default = ["cuda"]
+
 cuda = ["cudarc", "dynamics_rs/cuda"]

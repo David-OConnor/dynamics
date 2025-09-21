@@ -334,11 +334,6 @@ pub fn force_nonbonded_gpu(
 
     let n_u32 = n as u32;
 
-    if n == 0 {
-        eprintln!("N is 0; oh no!");
-        return Default::default();
-    }
-
     let cfg = LaunchConfig::for_num_elems(n_u32);
     let mut launch_args = stream.launch_builder(kernel);
 

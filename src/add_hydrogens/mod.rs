@@ -211,12 +211,15 @@ fn make_h_digit_map(ff_map: &ProtFfMap, ph: f32) -> DigitMap {
 /// e.g. the "D" in "HD1". (WHere "H" means Hydrogen, and "1" means the first hydrogen attached to this parent.
 ///
 /// This can also be used for hetero atoms, or for that matter, ligands.
+///
+/// Returns None if the H should be absent due to protonation state. (?)
 pub(crate) fn h_type_in_res_sidechain(
     h_num_this_parent: usize,
     parent_tir: &AtomTypeInRes,
     aa: Option<AminoAcid>, // None for hetero/ligand.
     h_digit_map: &DigitMap,
-) -> Result<AtomTypeInRes, ParamError> {
+    // ) -> Result<AtomTypeInRes, ParamError> {
+) -> Result<Option<AtomTypeInRes>, ParamError> {
     let Some(aa) = aa else {
         // Hetero. We can determine the naming scheme directly from the parent.
         let val = match parent_tir {
@@ -242,7 +245,7 @@ pub(crate) fn h_type_in_res_sidechain(
             }
         };
 
-        return Ok(AtomTypeInRes::Hetero(val));
+        return Ok(Some(AtomTypeInRes::Hetero(val)));
     };
 
     // todo: Assign the number based on parent type as well??
@@ -280,7 +283,7 @@ pub(crate) fn h_type_in_res_sidechain(
                 AtomTypeInRes::CG2 => {
                     // HG21, 22, 23
                     let digit = h_num_this_parent + 21;
-                    return Ok(AtomTypeInRes::H(format!("HG{digit}")));
+                    return Ok(Some(AtomTypeInRes::H(format!("HG{digit}"))));
                 }
                 _ => (),
             }
@@ -288,32 +291,32 @@ pub(crate) fn h_type_in_res_sidechain(
         AminoAcid::Arg => match parent_tir {
             AtomTypeInRes::NH2 => {
                 let digit = h_num_this_parent + 21;
-                return Ok(AtomTypeInRes::H(format!("HH{digit}")));
+                return Ok(Some(AtomTypeInRes::H(format!("HH{digit}"))));
             }
             _ => (),
         },
         AminoAcid::Phe => match parent_tir {
             AtomTypeInRes::CD2 => {
                 let digit = h_num_this_parent + 2;
-                return Ok(AtomTypeInRes::H(format!("HD{digit}")));
+                return Ok(Some(AtomTypeInRes::H(format!("HD{digit}"))));
             }
             AtomTypeInRes::CE2 => {
                 let digit = h_num_this_parent + 2;
-                return Ok(AtomTypeInRes::H(format!("HE{digit}")));
+                return Ok(Some(AtomTypeInRes::H(format!("HE{digit}"))));
             }
             _ => (),
         },
         AminoAcid::Leu => match parent_tir {
             AtomTypeInRes::CD2 => {
                 let digit = h_num_this_parent + 21;
-                return Ok(AtomTypeInRes::H(format!("HD{digit}")));
+                return Ok(Some(AtomTypeInRes::H(format!("HD{digit}"))));
             }
             _ => (),
         },
         AminoAcid::Ile => match parent_tir {
             AtomTypeInRes::CG2 => {
                 let digit = h_num_this_parent + 21;
-                return Ok(AtomTypeInRes::H(format!("HG{digit}")));
+                return Ok(Some(AtomTypeInRes::H(format!("HG{digit}"))));
             }
             _ => (),
         },
@@ -328,9 +331,10 @@ pub(crate) fn h_type_in_res_sidechain(
     };
 
     let Some(digits) = digits_this_aa.get(&depth) else {
-        return Err(ParamError::new(&format!(
-            "Missing H digits: Depth: {depth} not in {digits_this_aa:?} - {parent_tir:?} , {aa}",
-        )));
+        // return Err(ParamError::new(&format!(
+        //     "Missing H digits: Depth: {depth} not in {digits_this_aa:?} - {parent_tir:?} , {aa}",
+        // )));
+        return Ok(None);
     };
 
     let digit = match digits.get(h_num_this_parent) {
@@ -369,7 +373,7 @@ pub(crate) fn h_type_in_res_sidechain(
         )));
     }
 
-    Ok(result)
+    Ok(Some(result))
 }
 
 /// Adds hydrogens to a molecule, and populdates residue dihedral angles.

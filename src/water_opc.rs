@@ -53,22 +53,25 @@ const O_H_R: f32 = 0.872_433_13;
 const H_O_H_θ: f32 = 1.808_161_105_066; // (103.6 degrees in frcmod.opc)
 const H_O_H_θ_HALF: f32 = 0.5 * H_O_H_θ;
 
-// For converting from R_star to eps.
-const SIGMA_FACTOR: f32 = 1.122_462_048_309_373; // 2^(1/6)
+// For converting from R_star to eps. See notes in bio_files's `LjParams`.
+const SIGMA_FACTOR: f32 = 2. / 1.122_462_048_309_373;
 
 // Van der Waals / JL params. Only O carries this.
 const O_RSTAR: f32 = 1.777_167_268;
-pub const O_SIGMA: f32 = 2.0 * O_RSTAR / SIGMA_FACTOR;
+pub const O_SIGMA: f32 = O_RSTAR * SIGMA_FACTOR;
 pub const O_EPS: f32 = 0.212_800_813_0;
 
 // Partial charges. See the OPC paper, Table 2. None on O.
 const Q_H: f32 = 0.6791 * CHARGE_UNIT_SCALER;
 const Q_EP: f32 = -2. * Q_H;
 
+pub(crate) const ACCEL_CONV_WATER_O: f32 = ACCEL_CONVERSION_F32 / O_MASS;
+pub(crate) const ACCEL_CONV_WATER_H: f32 = ACCEL_CONVERSION_F32 / H_MASS;
+
 // We use this encoding when passing to CUDA. We reserve 0 for non-water atoms.
 #[derive(Copy, Clone, PartialEq)]
 #[repr(u8)]
-pub enum WaterSite {
+pub(crate) enum WaterSite {
     O = 1,
     M = 2,
     H0 = 3,

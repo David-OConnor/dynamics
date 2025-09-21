@@ -13,11 +13,21 @@ use rand::{Rng, prelude::ThreadRng};
 use rand_distr::StandardNormal;
 
 use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, KB, KB_A2_PS2_PER_K_PER_AMU, MdState,
-    SimBoxInit,
-    water_opc::{H_MASS, O_MASS},
+    ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
+    water_opc::{H_MASS, O_MASS, WaterMol},
 };
 
+// Per-molecule Boltzmann, in kcal/mol/K.
+// For assigning velocities from temperature, and other thermostat/barostat use.
+pub const GAS_CONST_R: f32 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
+
+// Boltzmann constant in (amu · Å²/ps²) K⁻¹
+// We use this for the Langevin and Anderson thermostat, where we need per-particle Gaussian noise or variance.
+pub const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
+
+// amu · Å²/ps²  We use this when accumulating kinetic energy, and need kcal/mol.
+// This, in practice, is for pressure computations.
+const AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT: f64 = 0.00239005736;
 const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 
 /// This bounds the area where atoms are wrapped. For now at least, it is only
@@ -191,6 +201,56 @@ impl BerendsenBarostat {
         // λ = exp(ΔlnV/3) — strictly positive and well-behaved
         (dlnv / 3.0).exp()
     }
+
+    pub(crate) fn apply_isotropic(
+        &self,
+        dt_ps: f64,
+        p_inst_bar: f64,
+        simbox: &mut SimBox,
+        atoms_dyn: &mut [AtomDynamics],
+        waters: &mut [WaterMol],
+    ) {
+        let lam = self.scale_factor(p_inst_bar, dt_ps); // λ for **lengths** (not volume)
+
+        if !(lam.is_finite() && lam > 0.0) || (lam - 1.0).abs() < 1e-12 {
+            return; // no-op
+        }
+
+        // 1) Scale the box about its center
+        simbox.scale_isotropic(lam as f32);
+
+        // 2) Scale all coordinates about the same center (affine dilation)
+        let c = simbox.center();
+        let lc = lam as f32;
+
+        #[inline(always)]
+        fn scale_pos(p: &mut lin_alg::f32::Vec3, c: lin_alg::f32::Vec3, s: f32) {
+            *p = c + (*p - c) * s;
+        }
+
+        for a in atoms_dyn.iter_mut() {
+            scale_pos(&mut a.posit, c, lc);
+        }
+        for w in waters.iter_mut() {
+            scale_pos(&mut w.o.posit, c, lc);
+            scale_pos(&mut w.h0.posit, c, lc);
+            scale_pos(&mut w.h1.posit, c, lc);
+            // If you store relative geometry for rigid bodies, keep it consistent (here we keep absolute).
+        }
+
+        // 3) (Optional but recommended) Affine velocity scaling due to box dilation rate.
+        // For simple Berendsen, many codes rescale velocities by λ as well; the thermostat will re-set T.
+        // If you prefer, omit this and let the thermostat handle KE. Either way is acceptable for Berendsen.
+        let lv = lc; // or comment out this block to leave velocities unchanged
+        for a in atoms_dyn.iter_mut() {
+            a.vel *= lv;
+        }
+        for w in waters.iter_mut() {
+            w.o.vel *= lv;
+            w.h0.vel *= lv;
+            w.h1.vel *= lv;
+        }
+    }
 }
 
 impl MdState {
@@ -243,7 +303,8 @@ impl MdState {
         n
     }
 
-    /// CSVR/Bussi thermostat: A canonical velocity-rescale algorithm.
+    /// Canonical Sampling through Velocities Rescaling thermostat. Also known as Bussi.
+    /// A canonical velocity-rescale algorithm.
     /// Cheap with gentle coupling, but doesn't imitate solvent drag.
     pub(crate) fn apply_thermostat_csvr(&mut self, dt: f64, t_target_k: f64) {
         // todo: QC f32 vs f64 here.
@@ -251,7 +312,7 @@ impl MdState {
 
         let dof = self.dof_for_thermo().max(2) as f64;
         let ke = self.kinetic_energy_kcal();
-        let ke_bar = 0.5 * dof * KB as f64 * t_target_k;
+        let ke_bar = 0.5 * dof * GAS_CONST_R as f64 * t_target_k;
 
         let c = (-dt / self.barostat.tau_temp).exp();
         // Draw the two random variates used in the exact CSVR update:
@@ -277,60 +338,47 @@ impl MdState {
             w.h1.vel *= lam;
         }
     }
-
-    /// Instantaneous pressure in **bar** (pair virial only).
-    /// P = (2K + W) / (3V)
-    pub(crate) fn instantaneous_pressure_bar(&self) -> f64 {
-        let vol_a3 = self.cell.volume() as f64; // Å^3
-        if !(vol_a3 > 0.0) {
-            return f64::NAN;
-        }
-        let k_kcal = self.kinetic_energy_kcal(); // kcal/mol
-        let w_kcal = self.barostat.virial_pair_kcal; // kcal/mol (pairs included this step)
-        let p_kcal_per_a3 = (2.0 * k_kcal + w_kcal) / (3.0 * vol_a3);
-        p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
-    }
-
-    /// Call each step (or every nstpcouple steps) after thermostat
-    pub(crate) fn apply_barostat_berendsen(&mut self, dt: f64) {
-        let p_inst_bar = self.instantaneous_pressure_bar();
-        if !p_inst_bar.is_finite() {
-            return; // don't touch the box if pressure is bad
-        }
-
-        let lambda = self.barostat.scale_factor(p_inst_bar, dt) as f32;
-
-        // Scale the cell
-        let c = self.cell.center();
-        self.cell.scale_isotropic(lambda);
-
-        // Scale flexible atom coordinates about c; scale velocities
-        for a in &mut self.atoms {
-            a.posit = c + (a.posit - c) * lambda;
-            a.vel *= lambda;
-        }
-
-        // Translate rigid waters by COM only; scale COM velocity
-        for w in &mut self.water {
-            let m_tot = w.o.mass + w.h0.mass + w.h1.mass;
-            let com =
-                (w.o.posit * w.o.mass + w.h0.posit * w.h0.mass + w.h1.posit * w.h1.mass) / m_tot;
-            let com_v = (w.o.vel * w.o.mass + w.h0.vel * w.h0.mass + w.h1.vel * w.h1.mass) / m_tot;
-
-            let com_new = c + (com - c) * lambda;
-            let d = com_new - com;
-
-            w.o.posit += d;
-            w.h0.posit += d;
-            w.h1.posit += d;
-            w.m.posit += d;
-
-            let dv = com_v * lambda - com_v;
-            w.o.vel += dv;
-            w.h0.vel += dv;
-            w.h1.vel += dv;
-        }
-    }
+    //
+    // /// Call each step (or every nstpcouple steps) after thermostat
+    // pub(crate) fn apply_barostat_berendsen(&mut self, dt: f64) {
+    //     let p_inst_bar = instantaneous_pressure_bar(&self.atoms, &self.water, &self.cell, self.barostat.virial_pair_kcal);
+    //     if !p_inst_bar.is_finite() {
+    //         return; // don't touch the box if pressure is bad
+    //     }
+    //
+    //     let lambda = self.barostat.scale_factor(p_inst_bar, dt) as f32;
+    //
+    //     // Scale the cell
+    //     let c = self.cell.center();
+    //     self.cell.scale_isotropic(lambda);
+    //
+    //     // Scale flexible atom coordinates about c; scale velocities
+    //     for a in &mut self.atoms {
+    //         a.posit = c + (a.posit - c) * lambda;
+    //         a.vel *= lambda;
+    //     }
+    //
+    //     // Translate rigid waters by COM only; scale COM velocity
+    //     for w in &mut self.water {
+    //         let m_tot = w.o.mass + w.h0.mass + w.h1.mass;
+    //         let com =
+    //             (w.o.posit * w.o.mass + w.h0.posit * w.h0.mass + w.h1.posit * w.h1.mass) / m_tot;
+    //         let com_v = (w.o.vel * w.o.mass + w.h0.vel * w.h0.mass + w.h1.vel * w.h1.mass) / m_tot;
+    //
+    //         let com_new = c + (com - c) * lambda;
+    //         let d = com_new - com;
+    //
+    //         w.o.posit += d;
+    //         w.h0.posit += d;
+    //         w.h1.posit += d;
+    //         w.m.posit += d;
+    //
+    //         let dv = com_v * lambda - com_v;
+    //         w.o.vel += dv;
+    //         w.h0.vel += dv;
+    //         w.h1.vel += dv;
+    //     }
+    // }
 
     /// A thermostat that integrates the stochastic Langevin equation. Good temperature control
     /// and ergodicity, but the firction parameter damps real dynamics as it grows. This applies an OU update.
@@ -514,4 +562,56 @@ impl MdState {
             w.m.vel = v_com + omega.cross(r_m);
         }
     }
+}
+
+/// Instantaneous pressure in **bar** (pair virial only).
+/// P = (2K + W) / (3V)
+pub(crate) fn instantaneous_pressure_bar(
+    atoms_dyn: &[AtomDynamics],
+    waters: &[WaterMol],
+    simbox: &SimBox,
+    virial_pair_kcal: f64, // Σ r_ij · f_ij over all (short-range) pairs, in kcal/mol
+) -> f64 {
+    // Kinetic energy (kcal/mol) from instantaneous velocities.
+    // Mass in amu, vel in Å/ps:  K = Σ 1/2 m v^2 * (amu·Å^2/ps^2 → kcal/mol) via KB_A2_PS2_PER_K_PER_AMU* T
+    // Easiest/robust: compute K directly in (amu·Å^2/ps^2), then convert:
+    // 1 (amu·Å^2/ps^2) = KB_A2_PS2_PER_K_PER_AMU [kcal/(mol·K)] * 1 K
+    // But we don't have T per dof here; instead convert unit explicitly:
+    // Conversion: 1 (amu·Å^2/ps^2) = 1.0 *  (kcal/mol) / (KB_A2_PS2_PER_K_PER_AMU)  ?  No.
+    // Simpler and unambiguous: accumulate K in kcal/mol directly:
+    // To avoid any confusion, compute K directly as sum 1/2 m v^2 in **(amu·Å^2/ps^2)** then convert via:
+    // 1 (amu·Å^2/ps^2) = 1.0 * (kcal/mol) / ( (1.0/ (KB_A2_PS2_PER_K_PER_AMU)) * K_per_kelvin )  <-- messy.
+    // Instead: compute K in **kcal/mol** using your existing kinetic-energy routine if you have one.
+    // If not, here is a clean explicit converter:
+
+    fn ke_atoms_kcal(atoms: impl Iterator<Item = (f32, Vec3)>) -> f64 {
+        let mut sum = 0.0;
+        for (m, v) in atoms {
+            let v2 = (v.x as f64) * (v.x as f64)
+                + (v.y as f64) * (v.y as f64)
+                + (v.z as f64) * (v.z as f64);
+            sum += 0.5 * (m as f64) * v2;
+        }
+        sum * AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT
+    }
+
+    // Gather all atoms (dynamics + waters) for KE:
+    let ke_kcal = {
+        let a_iter = atoms_dyn.iter().map(|a| (a.mass, a.vel));
+        let w_iter = waters.iter().flat_map(|m| {
+            [
+                (m.o.mass, m.o.vel),
+                (m.h0.mass, m.h0.vel),
+                (m.h1.mass, m.h1.vel),
+            ]
+        });
+        ke_atoms_kcal(a_iter.chain(w_iter))
+    };
+
+    // P = (2K + W) / (3V)  in kcal/mol/Å^3
+    let v_a3 = simbox.volume() as f64;
+    let p_kcal_per_a3 = (2.0 * ke_kcal + virial_pair_kcal) / (3.0 * v_a3);
+
+    // Convert to bar
+    p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
 }

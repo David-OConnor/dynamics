@@ -182,6 +182,7 @@ impl MdState {
     }
 }
 
+/// [Re]build a neighbor list, used for non-bonded interactions. Run this periodically.
 pub fn build_neighbors(
     tgt_posits: &[Vec3],
     src_posits: &[Vec3],
@@ -189,193 +190,66 @@ pub fn build_neighbors(
     symmetric: bool,
     skin: f32,
 ) -> Vec<Vec<usize>> {
-    let rc = LONG_RANGE_CUTOFF + skin;
-    let rc2 = rc * rc;
+    let skin_sq = (LONG_RANGE_CUTOFF + skin) * (LONG_RANGE_CUTOFF + skin);
 
-    // Replace these with your box lengths / orthorhombic extents:
-    let [lx, ly, lz] = cell.extent.to_arr();
-    let nx = f32::floor(lx / rc).max(1.0) as i32;
-    let ny = f32::floor(ly / rc).max(1.0) as i32;
-    let nz = f32::floor(lz / rc).max(1.0) as i32;
-    let ncell = (nx * ny * nz) as usize;
-
-    #[inline]
-    fn wrap(i: i32, n: i32) -> i32 {
-        (i % n + n) % n
-    }
-
-    #[inline]
-    fn linear(cx: i32, cy: i32, cz: i32, nx: i32, ny: i32) -> usize {
-        (cx + nx * (cy + ny * cz)) as usize
-    }
-
-    // assume cell.frac(p) returns fractional coords; adapt to your API
-    fn wrap01(x: f32) -> f32 {
-        x - x.floor()
-    } // works for negatives too
-
-    fn cell_index_cart(
-        p: Vec3,
-        lx: f32,
-        ly: f32,
-        lz: f32,
-        nx: i32,
-        ny: i32,
-        nz: i32,
-    ) -> (i32, i32, i32) {
-        let fx = wrap01(p.x / lx);
-        let fy = wrap01(p.y / ly);
-        let fz = wrap01(p.z / lz);
-
-        let cx = (fx * nx as f32) as i32;
-        let cy = (fy * ny as f32) as i32;
-        let cz = (fz * nz as f32) as i32;
-
-        (cx.min(nx - 1), cy.min(ny - 1), cz.min(nz - 1))
-    }
-
-    // Build linked list for src
-    let mut head = vec![usize::MAX; ncell];
-    let mut next = vec![usize::MAX; src_posits.len()];
-
-    for (i, &p) in src_posits.iter().enumerate() {
-        let (cx, cy, cz) = cell_index(p, lx, ly, lz, rc, nx, ny, nz);
-        let c = linear(cx, cy, cz, nx, ny);
-        next[i] = head[c];
-        head[c] = i;
-    }
-
-    // Candidate search
-    let out: Vec<Vec<usize>> = (0..tgt_posits.len())
-        .into_par_iter()
-        .map(|it| {
-            let pt = tgt_posits[it];
-            let (cx, cy, cz) = cell_index(pt, lx, ly, lz, rc, nx, ny, nz);
-            let mut neigh = Vec::new();
-
-            for dz in -1..=1 {
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        let c = linear(
-                            wrap(cx + dx, nx),
-                            wrap(cy + dy, ny),
-                            wrap(cz + dz, nz),
-                            nx,
-                            ny,
-                        );
-                        let mut j = head[c];
-                        while j != usize::MAX {
-                            if !symmetric || j != it {
-                                let d = cell.min_image(pt - src_posits[j]);
-                                if d.magnitude_squared() < rc2 {
-                                    neigh.push(j);
-                                }
-                            }
-                            j = next[j];
-                        }
-                    }
-                }
-            }
-            neigh
-        })
-        .collect();
+    let tgt_len = tgt_posits.len();
+    let src_len = src_posits.len();
 
     if symmetric {
-        // Mirror to make adjacency symmetric (same degree prealloc trick applies if needed)
-        let n = out.len();
-        let mut full = vec![Vec::<usize>::new(); n];
-        let mut deg = vec![0usize; n];
+        assert_eq!(src_len, tgt_len, "symmetric=true requires identical sets");
+        let n = tgt_len;
+
+        let half: Vec<Vec<usize>> = (0..n)
+            .into_par_iter()
+            .with_min_len(1024)
+            .map(|i| {
+                let mut out = Vec::new();
+                let pi = tgt_posits[i];
+                for j in (i + 1)..n {
+                    let d = cell.min_image(pi - src_posits[j]);
+                    if d.magnitude_squared() < skin_sq {
+                        out.push(j);
+                    }
+                }
+                out
+            })
+            .collect();
+
+        // Compute exact degrees for each node
+        let mut deg = vec![0; n];
         for i in 0..n {
-            deg[i] += out[i].len();
-            for &j in &out[i] {
+            deg[i] += half[i].len();
+            for &j in &half[i] {
                 deg[j] += 1;
             }
         }
+
+        let mut full: Vec<Vec<usize>> = (0..n).map(|i| Vec::with_capacity(deg[i])).collect();
+
         for i in 0..n {
-            full[i] = Vec::with_capacity(deg[i]);
-        }
-        for i in 0..n {
-            for &j in &out[i] {
+            for &j in &half[i] {
                 full[i].push(j);
                 full[j].push(i);
             }
         }
         full
     } else {
-        out
+        (0..tgt_len)
+            .into_par_iter()
+            .map(|i_tgt| {
+                let mut out = Vec::new();
+                let pt = tgt_posits[i_tgt];
+                for i_src in 0..src_len {
+                    let d = cell.min_image(pt - src_posits[i_src]);
+                    if d.magnitude_squared() < skin_sq {
+                        out.push(i_src);
+                    }
+                }
+                out
+            })
+            .collect()
     }
 }
-//
-// /// [Re]build a neighbor list, used for non-bonded interactions. Run this periodically.
-// pub fn build_neighbors(
-//     tgt_posits: &[Vec3],
-//     src_posits: &[Vec3],
-//     cell: &SimBox,
-//     symmetric: bool,
-//     skin: f32,
-// ) -> Vec<Vec<usize>> {
-//     let skin_sq = (LONG_RANGE_CUTOFF + skin) * (LONG_RANGE_CUTOFF + skin);
-//
-//     let tgt_len = tgt_posits.len();
-//     let src_len = src_posits.len();
-//
-//     if symmetric {
-//         assert_eq!(src_len, tgt_len, "symmetric=true requires identical sets");
-//         let n = tgt_len;
-//
-//         let half: Vec<Vec<usize>> = (0..n)
-//             .into_par_iter()
-//             .with_min_len(1024)
-//             .map(|i| {
-//                 let mut out = Vec::new();
-//                 let pi = tgt_posits[i];
-//                 for j in (i + 1)..n {
-//                     let d = cell.min_image(pi - src_posits[j]);
-//                     if d.magnitude_squared() < skin_sq {
-//                         out.push(j);
-//                     }
-//                 }
-//                 out
-//             })
-//             .collect();
-//
-//         // Compute exact degrees for each node
-//         let mut deg = vec![0; n];
-//         for i in 0..n {
-//             deg[i] += half[i].len();
-//             for &j in &half[i] {
-//                 deg[j] += 1;
-//             }
-//         }
-//
-//         let mut full: Vec<Vec<usize>> = (0..n)
-//             .map(|i| Vec::with_capacity(deg[i]))
-//             .collect();
-//
-//         for i in 0..n {
-//             for &j in &half[i] {
-//                 full[i].push(j);
-//                 full[j].push(i);
-//             }
-//         }
-//         full
-//     } else {
-//         (0..tgt_len)
-//             .into_par_iter()
-//             .map(|i_tgt| {
-//                 let mut out = Vec::new();
-//                 let pt = tgt_posits[i_tgt];
-//                 for i_src in 0..src_len {
-//                     let d = cell.min_image(pt - src_posits[i_src]);
-//                     if d.magnitude_squared() < skin_sq {
-//                         out.push(i_src);
-//                     }
-//                 }
-//                 out
-//             })
-//             .collect()
-//     }
-// }
 
 // pub fn max_displacement_sq_since_build(
 //     targets: &[Vec3],
@@ -416,4 +290,28 @@ fn max_disp_wat(cell: &SimBox, waters: &[WaterMol], ref_pos: &[Vec3]) -> f32 {
         max_d2 = max_d2.max(d.magnitude_squared());
     }
     max_d2
+}
+
+#[inline]
+fn wrap01(x: f32) -> f32 {
+    x - x.floor()
+} // works for negatives too
+
+#[inline]
+fn cell_index_cart(
+    p: Vec3,
+    lx: f32,
+    ly: f32,
+    lz: f32,
+    nx: i32,
+    ny: i32,
+    nz: i32,
+) -> (i32, i32, i32) {
+    let fx = wrap01(p.x / lx);
+    let fy = wrap01(p.y / ly);
+    let fz = wrap01(p.z / lz);
+    let cx = (fx * nx as f32) as i32;
+    let cy = (fy * ny as f32) as i32;
+    let cz = (fz * nz as f32) as i32;
+    (cx.min(nx - 1), cy.min(ny - 1), cz.min(nz - 1))
 }

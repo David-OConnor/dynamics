@@ -324,9 +324,11 @@ pub fn populate_peptide_ff_and_q(
 
                 // i.e. if still not found after our specific workarounds above.
                 if !found {
-                    return Err(ParamError::new(&format!(
-                        "Error assigning FF type and q based on atom type in res: {atom}",
-                    )));
+                    eprintln!("Problem populating FF or Q: {}", atom);
+                    continue;
+                    // return Err(ParamError::new(&format!(
+                    //     "Error assigning FF type and q based on atom type in res: {atom}",
+                    // )));
                 }
             }
         }
