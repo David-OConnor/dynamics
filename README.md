@@ -407,6 +407,7 @@ Example of loading your own parameter files:
         peptide_ff_q_c="aminoct12.lib",
         peptide_ff_q_n=None,
         small_organic="gaff2.dat",
+        lipids="lipid21.dat",
     )
     
     param_set = FfParamSet(param_paths)
@@ -420,6 +421,7 @@ Example of loading your own parameter files:
         peptide_ff_q_c: Some(&Path::new("aminoct12.lib")),
         peptide_ff_q_n: Some(&Path::new("aminont12.lib")),
         small_organic: Some(&Path::new("gaff2.dat")),
+        lipids: Some(&Path::new("lipid21.dat")),
         ..default()
     };
     

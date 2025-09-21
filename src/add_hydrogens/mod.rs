@@ -387,7 +387,7 @@ pub fn populate_hydrogens_dihedrals(
     residues: &mut Vec<ResidueGeneric>,
     chains: &mut [ChainGeneric],
     ff_map: &ProtFFTypeChargeMap,
-    ph: f32, // todo: Implement.
+    ph: f32,
 ) -> Result<Vec<Dihedral>, ParamError> {
     println!("Populating hydrogens and measuring dihedrals...");
     // todo: Move this fn to this module? Split this and its diehdral component, or not?

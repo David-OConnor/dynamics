@@ -770,6 +770,9 @@ impl MdState {
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
 
+        result.neighbors_nb.half_skin_sq = (result.cfg.neighbor_skin * 0.5).powi(2);
+        result.snapshot_ref_positions();
+
         // todo: Add to config A/R,
         // result.minimize_energy(dev, cfg.max_init_relaxation_iters);
 
@@ -1003,6 +1006,7 @@ impl MdState {
 
         // Keep consistent with your normal cadence.
         self.cell.recenter(&self.atoms);
+        self.snapshot_ref_positions();
         self.regen_pme();
 
         println!("Complete");

@@ -338,50 +338,9 @@ impl MdState {
             w.h1.vel *= lam;
         }
     }
-    //
-    // /// Call each step (or every nstpcouple steps) after thermostat
-    // pub(crate) fn apply_barostat_berendsen(&mut self, dt: f64) {
-    //     let p_inst_bar = instantaneous_pressure_bar(&self.atoms, &self.water, &self.cell, self.barostat.virial_pair_kcal);
-    //     if !p_inst_bar.is_finite() {
-    //         return; // don't touch the box if pressure is bad
-    //     }
-    //
-    //     let lambda = self.barostat.scale_factor(p_inst_bar, dt) as f32;
-    //
-    //     // Scale the cell
-    //     let c = self.cell.center();
-    //     self.cell.scale_isotropic(lambda);
-    //
-    //     // Scale flexible atom coordinates about c; scale velocities
-    //     for a in &mut self.atoms {
-    //         a.posit = c + (a.posit - c) * lambda;
-    //         a.vel *= lambda;
-    //     }
-    //
-    //     // Translate rigid waters by COM only; scale COM velocity
-    //     for w in &mut self.water {
-    //         let m_tot = w.o.mass + w.h0.mass + w.h1.mass;
-    //         let com =
-    //             (w.o.posit * w.o.mass + w.h0.posit * w.h0.mass + w.h1.posit * w.h1.mass) / m_tot;
-    //         let com_v = (w.o.vel * w.o.mass + w.h0.vel * w.h0.mass + w.h1.vel * w.h1.mass) / m_tot;
-    //
-    //         let com_new = c + (com - c) * lambda;
-    //         let d = com_new - com;
-    //
-    //         w.o.posit += d;
-    //         w.h0.posit += d;
-    //         w.h1.posit += d;
-    //         w.m.posit += d;
-    //
-    //         let dv = com_v * lambda - com_v;
-    //         w.o.vel += dv;
-    //         w.h0.vel += dv;
-    //         w.h1.vel += dv;
-    //     }
-    // }
 
     /// A thermostat that integrates the stochastic Langevin equation. Good temperature control
-    /// and ergodicity, but the firction parameter damps real dynamics as it grows. This applies an OU update.
+    /// and ergodicity, but the friction parameter damps real dynamics as it grows. This applies an OU update.
     /// todo: Should this be based on f64?
     pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma_ps: f32, temp_k: f32) {
         let c = (-gamma_ps * dt).exp();
@@ -391,7 +350,6 @@ impl MdState {
             // per-component σ for velocity noise
             let sigma = (KB_A2_PS2_PER_K_PER_AMU * temp_k * s2 / a.mass).sqrt();
 
-            // todo: Can we reuse this RNG from barostat here?
             let nx: f32 = self.barostat.rng.sample(StandardNormal);
             let ny: f32 = self.barostat.rng.sample(StandardNormal);
             let nz: f32 = self.barostat.rng.sample(StandardNormal);
@@ -539,6 +497,7 @@ impl MdState {
             let zx: f32 = self.barostat.rng.sample(StandardNormal);
             let zy: f32 = self.barostat.rng.sample(StandardNormal);
             let zz: f32 = self.barostat.rng.sample(StandardNormal);
+
             // x = I^{-1/2} z by solving L^T x = z
             let x = solve_upper(
                 l11,

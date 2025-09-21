@@ -30,6 +30,8 @@ const AMINO_CT12: &str = include_str!("../param_data/aminoct12.lib"); // Charge;
 
 // Ligands/small organic molecules: *General Amber Force Fields*.
 const GAFF2: &str = include_str!("../param_data/gaff2.dat");
+// Lipids
+const LIPID_21: &str = include_str!("../param_data/lipid21.dat");
 
 // DNA (OL24) and RNA (OL3)
 const OL24_LIB: &str = include_str!("../param_data/ff-nucleic-OL24.lib");
@@ -154,6 +156,10 @@ impl FfParamSet {
         let internal = parse_amino_charges(AMINO_19)?;
         let n_terminus = parse_amino_charges(AMINO_NT12)?;
         let c_terminus = parse_amino_charges(AMINO_CT12)?;
+
+        // todo: Sort out the ingest error, then come back to this
+        // let lipid = ForceFieldParams::from_dat(LIPID_21)?;
+        // result.lipids = Some(lipid);
 
         result.peptide_ff_q_map = Some(ProtFFTypeChargeMap {
             internal,

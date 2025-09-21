@@ -58,19 +58,20 @@ impl Display for Integrator {
 impl MdState {
     /// For Langevin middle.
     fn drift_atoms(&mut self, dt: f32) {
-        for a in &mut self.atoms {
+        for (i, a) in self.atoms.iter_mut().enumerate() {
             a.posit += a.vel * dt;
             a.posit = self.cell.wrap(a.posit);
-            self.neighbors_nb.max_displacement_sq = self
-                .neighbors_nb
-                .max_displacement_sq
-                .max((a.vel * dt).magnitude_squared());
+
+            // self.neighbors_nb.max_displacement_sq = self
+            //     .neighbors_nb
+            //     .max_displacement_sq
+            //     .max((a.vel * dt).magnitude_squared());
         }
     }
 
     /// For Langevin middle.
     fn water_drift(&mut self, dt: f32) {
-        for w in &mut self.water {
+        for (i, w) in self.water.iter_mut().enumerate() {
             w.o.posit += w.o.vel * dt;
             w.h0.posit += w.h0.vel * dt;
             w.h1.posit += w.h1.vel * dt;
@@ -82,12 +83,13 @@ impl MdState {
             w.m.posit = self.cell.wrap(w.m.posit);
 
             // track displacement like you do for atoms
-            let upd = |v: Vec3| (v * dt).magnitude_squared();
-            let dmax = upd(w.o.vel)
-                .max(upd(w.h0.vel))
-                .max(upd(w.h1.vel))
-                .max(upd(w.m.vel));
-            self.neighbors_nb.max_displacement_sq = self.neighbors_nb.max_displacement_sq.max(dmax);
+            // let upd = |v: Vec3| (v * dt).magnitude_squared();
+            // let dmax = upd(w.o.vel)
+            //     .max(upd(w.h0.vel))
+            //     .max(upd(w.h1.vel))
+            //     .max(upd(w.m.vel));
+
+            // self.neighbors_nb.max_displacement_sq = self.neighbors_nb.max_displacement_sq.max(dmax);
         }
     }
 
@@ -159,7 +161,9 @@ impl MdState {
                 //     &mut self.atoms,
                 //     &mut self.water,
                 // );
+                // self.snapshot_ref_positions();
                 // self.regen_pme();
+                // self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
                 let start = Instant::now();
                 self.handle_spme_recip(dev);
@@ -198,7 +202,7 @@ impl MdState {
                 // todo: Do we want traditional verlet instead of velocity verlet (VV)?
                 // Note: We do not apply the accel unit conversion, nor mass division here; they're already
                 // included in this values from the previous step.
-                for a in &mut self.atoms {
+                for (i, a) in self.atoms.iter_mut().enumerate() {
                     a.vel += a.accel * dt_half; // Half-kick
 
                     a.posit += a.vel * dt; // Drift
@@ -207,10 +211,20 @@ impl MdState {
                     // todo: What is this? Implement it, or remove it?
                     // todo: Should this take water displacements into account?
                     // track the largest squared displacement to know when to rebuild the list
-                    self.neighbors_nb.max_displacement_sq = self
-                        .neighbors_nb
-                        .max_displacement_sq
-                        .max((a.vel * dt).magnitude_squared());
+
+                    {
+                        // after you've updated a.posit and wrapped it:
+                        let refp = self.neighbors_nb.ref_pos_dyn[i];
+                        let dv = self.cell.min_image(a.posit - refp);
+                        let d2 = dv.magnitude_squared();
+                        self.neighbors_nb.max_displacement_sq =
+                            self.neighbors_nb.max_displacement_sq.max(d2);
+                    }
+
+                    // self.neighbors_nb.max_displacement_sq = self
+                    //     .neighbors_nb
+                    //     .max_displacement_sq
+                    //     .max((a.vel * dt).magnitude_squared());
                 }
 
                 // todo: Consider applying the thermostat between the first half-kick and drift.
@@ -242,7 +256,9 @@ impl MdState {
                 //     &mut self.atoms,
                 //     &mut self.water,
                 // );
+                // self.snapshot_ref_positions();
                 // self.regen_pme();
+                // self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
                 let start = Instant::now();
                 // todo: YOu need to update potential energy from LR PME as well.
@@ -259,12 +275,12 @@ impl MdState {
                 // Second half-kick using the forces calculated this step, and update accelerations using the atom's mass;
                 // Between the accel reset and this step, the accelerations have been missing those factors; this is an optimization to
                 // do it once at the end.
-                for a in &mut self.atoms {
+                for (i, a) in self.atoms.iter_mut().enumerate() {
                     // We divide by mass here, once accelerations have been computed in parts above; this
                     // is an optimization to prevent dividing each accel component by it.
                     // This is the step where we A: convert force to accel, and B: Convert units from the param
                     // units to the ones we use in dynamics.
-                    a.accel *= ACCEL_CONVERSION as f32 / a.mass;
+                    a.accel *= self.mass_accel_factor[i];
                     a.vel += a.accel * dt_half;
                 }
 
@@ -292,13 +308,14 @@ impl MdState {
         self.step_count += 1;
 
         // todo: Ratio for this too?
+        self.update_max_displacement_since_rebuild();
         self.build_neighbors_if_needed(dev);
 
         // We keeping the cell centered on the dynamics atoms. Note that we don't change the dimensions,
         // as these are under management by the barostat.
         if self.step_count % CENTER_SIMBOX_RATIO == 0 {
             self.cell.recenter(&self.atoms);
-
+            self.snapshot_ref_positions();
             // todo: Will this interfere with carrying over state from the previous step?
             self.regen_pme();
         }
@@ -391,8 +408,9 @@ impl MdState {
                     w_recip += 0.5 * pos_all[k].dot(f_recip[k]);
                 }
                 PMEIndex::WatM(i) => {
-                    self.water[i].m.accel += f_recip[k];
-                    w_recip += 0.5 * pos_all[k].dot(f_recip[k]);
+                    let fM = f_recip[k];
+                    w_recip += 0.5 * pos_all[k].dot(fM); // r·F, like the other sites
+                    self.water[i].m.accel += fM; // stash PME M force; back-prop happens later
                 }
                 PMEIndex::WatH0(i) => {
                     self.water[i].h0.accel += f_recip[k];
@@ -407,26 +425,30 @@ impl MdState {
         }
         self.barostat.virial_pair_kcal += w_recip as f64;
 
-        // 1–4 Coulomb scaling correction
+        // 1–4 Coulomb scaling correction (vacuum correction)
         for &(i, j) in &self.pairs_14_scaled {
             let diff = self
                 .cell
                 .min_image(self.atoms[i].posit - self.atoms[j].posit);
             let r = diff.magnitude();
+            if r == 0.0 {
+                continue;
+            } // guard
             let dir = diff / r;
 
             let qi = self.atoms[i].partial_charge;
             let qj = self.atoms[j].partial_charge;
 
-            let Some(pme_recip) = &mut self.pme_recip else {
-                panic!("Missing PME recip; code error");
-            };
-            let df = ewald_comp_force(dir, r, qi, qj, pme_recip.alpha)
-                * (SCALE_COUL_14 - 1.0) // todo: Cache this.
-                * K_COUL;
+            // Vacuum Coulomb force (K=1 if charges are Amber-scaled)
+            let inv_r = 1.0 / r;
+            let inv_r2 = inv_r * inv_r;
+            let f_vac = dir * (qi * qj * inv_r2);
+
+            let df = f_vac * (SCALE_COUL_14 - 1.0);
 
             self.atoms[i].accel += df;
             self.atoms[j].accel -= df;
+
             self.barostat.virial_pair_kcal += (dir * r).dot(df) as f64; // r·F
         }
     }

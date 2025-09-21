@@ -44,100 +44,103 @@ pub struct NeighborsNb {
     // /// Doesn't change.
     // pub ref_pos_static: Vec<Vec3>,
     pub ref_pos_water_o: Vec<Vec3>, // use O as proxy for the rigid water
+    pub ref_pos_water_h0: Vec<Vec3>,
+    pub ref_pos_water_h1: Vec<Vec3>,
+    pub half_skin_sq: f32,
     /// Used to determine when to rebuild neighbor lists. todo: Implement.
     pub max_displacement_sq: f32,
 }
 
 impl MdState {
+    pub(crate) fn update_max_displacement_since_rebuild(&mut self) {
+        // dynamics
+        for (i, a) in self.atoms.iter().enumerate() {
+            let dv = self
+                .cell
+                .min_image(a.posit - self.neighbors_nb.ref_pos_dyn[i]);
+            self.neighbors_nb.max_displacement_sq = self
+                .neighbors_nb
+                .max_displacement_sq
+                .max(dv.magnitude_squared());
+        }
+
+        // waters: use max over O/H0/H1 to be conservative
+        for (i, w) in self.water.iter().enumerate() {
+            let dvo = self
+                .cell
+                .min_image(w.o.posit - self.neighbors_nb.ref_pos_water_o[i]);
+            let dvh0 = self
+                .cell
+                .min_image(w.h0.posit - self.neighbors_nb.ref_pos_water_h0[i]);
+            let dvh1 = self
+                .cell
+                .min_image(w.h1.posit - self.neighbors_nb.ref_pos_water_h1[i]);
+            let d2 = dvo
+                .magnitude_squared()
+                .max(dvh0.magnitude_squared())
+                .max(dvh1.magnitude_squared());
+            self.neighbors_nb.max_displacement_sq = self.neighbors_nb.max_displacement_sq.max(d2);
+        }
+    }
+
+    pub(crate) fn snapshot_ref_positions(&mut self) {
+        self.neighbors_nb.ref_pos_dyn.clear();
+        self.neighbors_nb
+            .ref_pos_dyn
+            .extend(self.atoms.iter().map(|a| self.cell.wrap(a.posit)));
+
+        self.neighbors_nb.ref_pos_water_o.clear();
+        self.neighbors_nb.ref_pos_water_h0.clear();
+        self.neighbors_nb.ref_pos_water_h1.clear();
+        self.neighbors_nb
+            .ref_pos_water_o
+            .extend(self.water.iter().map(|w| self.cell.wrap(w.o.posit)));
+        self.neighbors_nb
+            .ref_pos_water_h0
+            .extend(self.water.iter().map(|w| self.cell.wrap(w.h0.posit)));
+        self.neighbors_nb
+            .ref_pos_water_h1
+            .extend(self.water.iter().map(|w| self.cell.wrap(w.h1.posit)));
+
+        self.neighbors_nb.max_displacement_sq = 0.0;
+    }
+
     /// Call during each step; determines if we need to rebuild neighbors, and does so A/R.
     /// todo: Run on GPU?
-    pub fn build_neighbors_if_needed(&mut self, dev: &ComputationDevice) {
+    pub(crate) fn build_neighbors_if_needed(&mut self, dev: &ComputationDevice) {
         let start = Instant::now();
 
-        // Current positions
-        // let dyn_pos_now = positions_of(&self.atoms);
-        // let water_o_pos_now = positions_of_water_o(&self.water);
+        if self.neighbors_nb.max_displacement_sq >= self.neighbors_nb.half_skin_sq {
+            // current wrapped positions
+            let curr_dyn = positions_of(&self.atoms, &self.cell);
+            let curr_wat_o = positions_of_water_o(&self.water, &self.cell);
 
-        // Displacements
-        let dyn_disp_sq = max_disp_dyn(&self.cell, &self.atoms, &self.neighbors_nb.ref_pos_dyn);
-        let wat_disp_sq = max_disp_wat(&self.cell, &self.water, &self.neighbors_nb.ref_pos_water_o);
-
-        let mut rebuilt_dyn = false;
-        let mut rebuilt_wat = false;
-
-        let skin_sq_div4 = self.cfg.neighbor_skin.powi(2) / 4.;
-
-        if dyn_disp_sq > skin_sq_div4 {
             self.neighbors_nb.dy_dy = build_neighbors(
-                &self.neighbors_nb.ref_pos_dyn,
-                &self.neighbors_nb.ref_pos_dyn,
+                &curr_dyn,
+                &curr_dyn,
+                &self.cell,
+                true,
+                self.cfg.neighbor_skin,
+            );
+
+            self.neighbors_nb.water_water = build_neighbors(
+                &curr_wat_o,
+                &curr_wat_o,
                 &self.cell,
                 true,
                 self.cfg.neighbor_skin,
             );
 
             self.neighbors_nb.dy_water = build_neighbors(
-                &self.neighbors_nb.ref_pos_dyn,
-                &self.neighbors_nb.ref_pos_water_o,
+                &curr_dyn,
+                &curr_wat_o,
                 &self.cell,
                 false,
                 self.cfg.neighbor_skin,
             );
             self.rebuild_dy_water_inv();
 
-            rebuilt_dyn = true;
-        }
-
-        if wat_disp_sq > skin_sq_div4 {
-            self.neighbors_nb.water_water = build_neighbors(
-                &self.neighbors_nb.ref_pos_water_o,
-                &self.neighbors_nb.ref_pos_water_o,
-                &self.cell,
-                true,
-                self.cfg.neighbor_skin,
-            );
-
-            if !rebuilt_dyn {
-                // Don't double-run this, but it's required for both paths.
-                self.neighbors_nb.dy_water = build_neighbors(
-                    &self.neighbors_nb.ref_pos_dyn,
-                    &self.neighbors_nb.ref_pos_water_o,
-                    &self.cell,
-                    false,
-                    self.cfg.neighbor_skin,
-                );
-                self.rebuild_dy_water_inv();
-            }
-
-            rebuilt_wat = true;
-        }
-
-        // Rebuild reference position lists for next use, for use with determining when to rebuild the neighbor list.
-        // (Static refs doesn't get rebuilt after init)
-        if rebuilt_dyn {
-            for (i, a) in self.atoms.iter().enumerate() {
-                self.neighbors_nb.ref_pos_dyn[i] = a.posit;
-            }
-        }
-
-        if rebuilt_wat {
-            for (i, m) in self.water.iter().enumerate() {
-                self.neighbors_nb.ref_pos_water_o[i] = m.o.posit;
-            }
-        }
-
-        static mut PRINTED: bool = false;
-        if rebuilt_dyn || rebuilt_wat {
-            // let elapsed = start.elapsed();
-            if !unsafe { PRINTED } {
-                // println!("Neighbor build time: {:?} μs", elapsed.as_micros());
-                unsafe {
-                    PRINTED = true;
-                }
-            }
-
             self.setup_pairs();
-            self.neighbor_rebuild_count += 1;
 
             #[cfg(feature = "cuda")]
             if let ComputationDevice::Gpu((stream, _)) = dev {
@@ -149,12 +152,12 @@ impl MdState {
                     &self.lj_tables,
                 ));
             }
-        } else {
-            // println!("No rebuild needed.");
+
+            // refresh refs + reset displacement
+            self.snapshot_ref_positions();
         }
 
-        let elapsed = start.elapsed().as_micros();
-        self.neighbor_rebuild_us += elapsed as u64;
+        self.neighbor_rebuild_us += start.elapsed().as_micros() as u64;
     }
 
     /// This inverts our neighbor set between water and dynamic atoms.
@@ -251,30 +254,6 @@ pub fn build_neighbors(
     }
 }
 
-// pub fn max_displacement_sq_since_build(
-//     targets: &[Vec3],
-//     neighbor_ref_posits: &[Vec3],
-//     cell: &SimBox,
-// ) -> f32 {
-//     let mut result: f32 = 0.0;
-//
-//     for (i, posit) in targets.iter().enumerate() {
-//         let diff_min_img = cell.min_image(*posit - neighbor_ref_posits[i]);
-//         result = result.max(diff_min_img.magnitude_squared());
-//     }
-//     result
-// }
-
-/// Helper
-fn positions_of(atoms: &[AtomDynamics]) -> Vec<Vec3> {
-    atoms.iter().map(|a| a.posit).collect()
-}
-
-/// Helper
-fn positions_of_water_o(waters: &[WaterMol]) -> Vec<Vec3> {
-    waters.iter().map(|w| w.o.posit).collect()
-}
-
 fn max_disp_dyn(cell: &SimBox, atoms: &[AtomDynamics], ref_pos: &[Vec3]) -> f32 {
     let mut max_d2: f32 = 0.0;
     for (i, a) in atoms.iter().enumerate() {
@@ -283,21 +262,30 @@ fn max_disp_dyn(cell: &SimBox, atoms: &[AtomDynamics], ref_pos: &[Vec3]) -> f32 
     }
     max_d2
 }
-fn max_disp_wat(cell: &SimBox, waters: &[WaterMol], ref_pos: &[Vec3]) -> f32 {
+
+fn max_disp_wat(
+    cell: &SimBox,
+    waters: &[WaterMol],
+    ref_o: &[Vec3],
+    ref_h0: &[Vec3],
+    ref_h1: &[Vec3],
+) -> f32 {
     let mut max_d2: f32 = 0.0;
     for (i, w) in waters.iter().enumerate() {
-        let d = cell.min_image(w.o.posit - ref_pos[i]);
-        max_d2 = max_d2.max(d.magnitude_squared());
+        let d2 = cell
+            .min_image(w.o.posit - ref_o[i])
+            .magnitude_squared()
+            .max(cell.min_image(w.h0.posit - ref_h0[i]).magnitude_squared())
+            .max(cell.min_image(w.h1.posit - ref_h1[i]).magnitude_squared());
+        max_d2 = max_d2.max(d2);
     }
     max_d2
 }
 
-#[inline]
 fn wrap01(x: f32) -> f32 {
     x - x.floor()
 } // works for negatives too
 
-#[inline]
 fn cell_index_cart(
     p: Vec3,
     lx: f32,
@@ -314,4 +302,12 @@ fn cell_index_cart(
     let cy = (fy * ny as f32) as i32;
     let cz = (fz * nz as f32) as i32;
     (cx.min(nx - 1), cy.min(ny - 1), cz.min(nz - 1))
+}
+
+fn positions_of(atoms: &[AtomDynamics], cell: &SimBox) -> Vec<Vec3> {
+    atoms.iter().map(|a| cell.wrap(a.posit)).collect()
+}
+
+fn positions_of_water_o(waters: &[WaterMol], cell: &SimBox) -> Vec<Vec3> {
+    waters.iter().map(|w| cell.wrap(w.o.posit)).collect()
 }
