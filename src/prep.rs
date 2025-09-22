@@ -328,8 +328,6 @@ impl ForceFieldParamsIndexed {
                     }
                 }
 
-                data.k_b *= 2.0;
-
                 result.bond_stretching.insert((i0, i1), data);
                 result.bonds_topology.insert((i0, i1));
             }
@@ -379,9 +377,6 @@ impl ForceFieldParamsIndexed {
                     }
                 };
 
-                // This prevents multiplying by 2 each computation at runtime.
-                data.k *= 2.0;
-
                 result.angle.insert((n0, ctr, n1), data);
             }
         }
@@ -417,7 +412,7 @@ impl ForceFieldParamsIndexed {
                         let type_2 = &atoms[i2].force_field_type;
                         let type_3 = &atoms[i3].force_field_type;
 
-                        if let Some(dihe) = params.get_dihedral(
+                        if let Some(dihes) = params.get_dihedral(
                             &(
                                 type_0.clone(),
                                 type_1.clone(),
@@ -426,11 +421,13 @@ impl ForceFieldParamsIndexed {
                             ),
                             true,
                         ) {
-                            let mut dihe = dihe.clone();
-                            // Divide here; then don't do it during the dyamics run.
-                            dihe.barrier_height /= dihe.divider as f32;
-                            dihe.divider = 1;
-                            result.dihedral.insert(idx_key, dihe);
+                            let mut dihes = dihes.clone();
+                            for d in &mut dihes {
+                                // Divide here; then don't do it during the dynamics run. Optimization.
+                                d.barrier_height /= d.divider as f32;
+                                d.divider = 1;
+                            }
+                            result.dihedral.insert(idx_key, dihes);
                         } else {
                             return Err(ParamError::new(&format!(
                                 "MD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}"
@@ -484,19 +481,15 @@ impl ForceFieldParamsIndexed {
                         // have missing values. Impropers areonly, by Amber convention, for planar
                         // hub and spoke setups, so non-planar ones will be omitted. These may occur,
                         // for example, at ring intersections.
-                        if let Some(dihe) = params.get_dihedral(
-                            // &(t0.clone(), t1.clone(), t_ctr.clone(), t2.clone()),
-                            &key, false,
-                        ) {
-                            let mut dihe = dihe.clone();
-                            // Generally, there is no divisor for impropers, but set it up here
-                            // to be more general.
-                            dihe.barrier_height /= dihe.divider as f32;
-                            dihe.divider = 1;
-
-                            // println!("\nAdding improper: {:?}", dihe);
-
-                            result.improper.insert(idx_key, dihe);
+                        if let Some(dihes) = params.get_dihedral(&key, false) {
+                            let mut dihes = dihes.clone();
+                            for d in &mut dihes {
+                                // Generally, there is no divisor for impropers, but set it up here
+                                // to be more general.
+                                d.barrier_height /= d.divider as f32;
+                                d.divider = 1;
+                            }
+                            result.improper.insert(idx_key, dihes);
                         }
                     }
                 }

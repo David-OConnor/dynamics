@@ -41,6 +41,8 @@ pub fn make_water_mols(cell: &SimBox, t_target: f32, atoms_dy: &[AtomDynamics]) 
     let n_float = WATER_DENSITY * vol * (N_A / (MASS_WATER * 1.0e24));
     let n_mols = n_float.round() as usize;
 
+    let n_mols = 0; // todo temp!!
+
     let mut result = Vec::with_capacity(n_mols);
     let mut rng = rand::rng();
 

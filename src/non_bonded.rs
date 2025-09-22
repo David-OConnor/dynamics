@@ -509,18 +509,10 @@ pub fn f_nonbonded(
             inv_dist,
             tgt.partial_charge,
             src.partial_charge,
-            // (LONG_RANGE_SWITCH_START, LONG_RANGE_CUTOFF),
             LONG_RANGE_CUTOFF,
             EWALD_ALPHA,
         )
-
-        // force_coulomb(dir, dist, tgt.partial_charge, src.partial_charge, 1e-6)
     };
-
-    // // todo: Temp dir test
-    // if dist < 3.1 && dist > 2.9 {
-    //     println!("Dist: {:.2}, Src: {:.2} Tgt: {:.2}, q0: {:.2} q1: {:.2} LJ: {:.5} Coul: {:.5}", dist, src.posit.x, tgt.posit.x, src.partial_charge, tgt.partial_charge, f_lj.x, f_coulomb.x);
-    // }
 
     // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
     if scale14 {

@@ -17,13 +17,14 @@ pub fn f_bond_stretching(
 
     let r_delta = r_meas - params.r_0;
 
-    let term_1 = params.k_b * r_delta; // Shared bewteen force and energy.
-    // Note: We include the factor of 2x k_b when setting up indexed parameters.
+    // Pre-scaled by 2 when building the Indexed params.
+    let term_1 = 2. * params.k_b * r_delta; // Shared bewteen force and energy.
+
     // Unit check: kcal/mol/Å² * Å² = kcal/mol. (Energy).
     let f_mag = term_1 / r_meas.max(EPS);
 
-    // We divide by 2 due to the 2*kb factor stored in the indexed parameters.
-    let energy = term_1 * r_delta * 0.5;
+    // U = 2k_b x rΔ^2
+    let energy = term_1 * r_delta;
 
     (diff * f_mag, energy)
 }
@@ -55,8 +56,9 @@ pub fn f_angle_bending(
 
     let cos_θ = (bond_vec_01.dot(bond_vec_21) * inv_ab).clamp(-1.0, 1.0);
     let θ = cos_θ.acos();
+
     let Δθ = params.theta_0 - θ;
-    let dV_dθ = params.k * Δθ;
+    let dV_dθ = 2. * params.k * Δθ;
 
     let c = bond_vec_01.cross(bond_vec_21);
     let c_len2 = c.magnitude_squared().max(EPS); // was: c_len2 without guard + early return
@@ -69,19 +71,20 @@ pub fn f_angle_bending(
     let f_1 = -(f_0 + f_2);
 
     let f = (f_0, f_1, f_2);
-    // See note on bond len about division by 2.
-    let energy = dV_dθ * Δθ * 0.5;
+    let energy = dV_dθ * Δθ;
 
     (f, energy)
 }
 
+/// See Amber reference manual 2025, section 15.1: Torsion Terms and Out-of-Plane Terms.
 pub fn f_dihedral(
     posit_0: Vec3,
     posit_1: Vec3,
     posit_2: Vec3,
     posit_3: Vec3,
-    params: &DihedralParams,
-    improper: bool,
+    // There can be multiple terms.
+    params: &[DihedralParams],
+    // improper: bool,
 ) -> ((Vec3, Vec3, Vec3, Vec3), f32) {
     // Bond vectors (see Allen & Tildesley, chap. 4)
     let b1 = posit_1 - posit_0; // r_ij
@@ -90,32 +93,41 @@ pub fn f_dihedral(
 
     // Normal vectors to the two planes
     let n1 = b1.cross(b2);
-    let n2 = b3.cross(b2);
+    let n2 = b2.cross(b3);
 
-    let n1_sq = n1.magnitude_squared().max(EPS);
-    let n2_sq = n2.magnitude_squared().max(EPS);
-    let b2_len = b2.magnitude().max(EPS);
+    let n1_sq = n1.magnitude_squared();
+    let n2_sq = n2.magnitude_squared();
+    let b2_len = b2.magnitude();
+
+    // Bail out if dihedral is ill-defined (prevents singular impulses)
+    const DIH_TOL: f32 = 1.0e-6;
+    if n1_sq < DIH_TOL || n2_sq < DIH_TOL || b2_len < DIH_TOL {
+        return (
+            (
+                Vec3::new_zero(),
+                Vec3::new_zero(),
+                Vec3::new_zero(),
+                Vec3::new_zero(),
+            ),
+            0.0,
+        );
+    }
 
     let dihe_measured = calc_dihedral_angle_v2(&(posit_0, posit_1, posit_2, posit_3));
 
-    // Note: We have already divided barrier height by the integer divisor when setting up
-    // the Indexed params.
-    let k = params.barrier_height;
-    let per = params.periodicity as f32;
+    let mut energy = 0.;
+    let mut dV_dφ = 0.;
 
-    #[inline]
-    fn wrap_to_pi(x: f32) -> f32 {
-        (x + PI).rem_euclid(TAU) - PI
+    for param in params {
+        // Note: We have already divided barrier height by the integer divisor when setting up
+        // the Indexed params.
+        let k = param.barrier_height;
+        let per = param.periodicity as f32;
+
+        let dφ = per * dihe_measured - param.phase;
+        dV_dφ += -k * per * dφ.sin();
+        energy += k * (1.0 + dφ.cos());
     }
-
-    let (dV_dφ, dφ) = if improper {
-        let mut dφ = dihe_measured - params.phase;
-        dφ = wrap_to_pi(dφ);
-        (2.0 * k * dφ, dφ)
-    } else {
-        let dφ = per * dihe_measured - params.phase;
-        (-k * per * dφ.sin(), dφ)
-    };
 
     // ∂φ/∂r   (see e.g. DOI 10.1016/S0021-9991(97)00040-8)
     let dφ_dr1 = -n1 * (b2_len / n1_sq);
@@ -123,18 +135,11 @@ pub fn f_dihedral(
     let dφ_dr2 = n1 * (b1.dot(b2) / (b2_len * n1_sq)) - n2 * (b3.dot(b2) / (b2_len * n2_sq));
     let dφ_dr3 = -dφ_dr1 - dφ_dr2 - dφ_dr4; // Newton’s third law
 
-    // F_i = −dV/dφ · ∂φ/∂r_i
-    let f_0 = -dφ_dr1 * dV_dφ;
-    let f_1 = -dφ_dr2 * dV_dφ;
-    let f_2 = -dφ_dr3 * dV_dφ;
-    let f_3 = -dφ_dr4 * dV_dφ;
-
-    let energy = if improper {
-        0.5 * dV_dφ * dφ // okay here, since V = k Δφ²
-    } else {
-        // 0.5 * k * (1.0 + (per * dihe_measured - params.phase).cos())
-        k * (1.0 + (per * dihe_measured - params.phase).cos())
-    };
+    // F_i = dV/dφ · ∂φ/∂r_i
+    let f_0 = dφ_dr1 * dV_dφ;
+    let f_1 = dφ_dr2 * dV_dφ;
+    let f_2 = dφ_dr3 * dV_dφ;
+    let f_3 = dφ_dr4 * dV_dφ;
 
     ((f_0, f_1, f_2, f_3), energy)
 }

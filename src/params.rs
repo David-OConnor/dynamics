@@ -184,7 +184,8 @@ impl FfParamSet {
 
 /// This variant of forcefield parameters offers the fastest lookups. Unlike the Vec and Hashmap
 /// based parameter structs, this is specific to the atom in our docking setup: The indices are provincial
-/// to specific sets of atoms.
+/// to specific sets of atoms. For a description of fields, see `ForceFieldParams`, or the individual
+/// param-type structs here.
 ///
 /// Note: The single-atom fields of `mass` and `partial_charges` are omitted: They're part of our
 /// `AtomDynamics` struct.`
@@ -192,13 +193,11 @@ impl FfParamSet {
 pub(crate) struct ForceFieldParamsIndexed {
     pub mass: HashMap<usize, MassParams>,
     pub bond_stretching: HashMap<(usize, usize), BondStretchingParams>,
-    /// E.g. any bond to Hydrogen if configured this way. Distance^2 in Å, inv_mass in Daltons
+    /// Any bond to Hydrogen if configured as constrained. (Distance^2 in Å, 1 / mass in Daltons)
     pub bond_rigid_constraints: HashMap<(usize, usize), (f32, f32)>,
     pub angle: HashMap<(usize, usize, usize), AngleBendingParams>,
-    pub dihedral: HashMap<(usize, usize, usize, usize), DihedralParams>,
-    /// Generally only for planar hub and spoke arrangements, and always hold a planar dihedral shape.
-    /// (e.g. τ/2 with symmetry 2)
-    pub improper: HashMap<(usize, usize, usize, usize), DihedralParams>,
+    pub dihedral: HashMap<(usize, usize, usize, usize), Vec<DihedralParams>>,
+    pub improper: HashMap<(usize, usize, usize, usize), Vec<DihedralParams>>,
     /// We use this to determine which 1-2 exclusions to apply for non-bonded forces. We use this
     /// instead of `bond_stretching`, because `bond_stretching` omits bonds to Hydrogen, which we need
     /// to account when applying exclusions.
@@ -332,9 +331,6 @@ pub fn populate_peptide_ff_and_q(
                 if !found {
                     eprintln!("Problem populating FF or Q: {}", atom);
                     continue;
-                    // return Err(ParamError::new(&format!(
-                    //     "Error assigning FF type and q based on atom type in res: {atom}",
-                    // )));
                 }
             }
         }

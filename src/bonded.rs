@@ -3,12 +3,55 @@
 //! among four atoms in a hub configuration (Improper dihedrals). Bonds to hydrogen are treated
 //! differently: They have rigid lengths, which is good enough, and allows for a larger timestep.
 
+use std::time::Instant;
+
 use crate::{MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, split2_mut, split3_mut, split4_mut};
 
 const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
 
 impl MdState {
-    pub fn apply_bond_stretching_forces(&mut self) {
+    pub(crate) fn apply_bonded_forces(&mut self) {
+        // Bonded forces
+        let mut start = Instant::now();
+        self.apply_bond_stretching_forces();
+
+        if self.step_count == 1 {
+            // Not 0 to avoid this happening during energy minimization.
+            let elapsed = start.elapsed();
+            println!("Bond stretching time: {:?} μs", elapsed.as_micros());
+        }
+
+        if self.step_count == 1 {
+            start = Instant::now();
+        }
+        self.apply_angle_bending_forces();
+
+        if self.step_count == 1 {
+            let elapsed = start.elapsed();
+            println!("Angle bending time: {:?} μs", elapsed.as_micros());
+        }
+
+        if self.step_count == 1 {
+            start = Instant::now();
+        }
+
+        self.apply_dihedral_forces(false);
+        if self.step_count == 1 {
+            let elapsed = start.elapsed();
+            println!("Dihedral: {:?} μs", elapsed.as_micros());
+        }
+
+        if self.step_count == 1 {
+            start = Instant::now();
+        }
+
+        self.apply_dihedral_forces(true);
+        if self.step_count == 1 {
+            let elapsed = start.elapsed();
+            println!("Improper time: {:?} μs", elapsed.as_micros());
+        }
+    }
+    pub(crate) fn apply_bond_stretching_forces(&mut self) {
         for (indices, params) in &self.force_field_params.bond_stretching {
             let (a_0, a_1) = split2_mut(&mut self.atoms, indices.0, indices.1);
 
@@ -52,7 +95,7 @@ impl MdState {
     ///
     /// This applies both "proper" linear dihedral angles, and "improper", hub-and-spoke dihedrals. These
     /// two angles are calculated in the same way, but the covalent-bond arrangement of the 4 atoms differs.
-    pub fn apply_dihedral_forces(&mut self, improper: bool) {
+    pub(crate) fn apply_dihedral_forces(&mut self, improper: bool) {
         let dihedrals = if improper {
             &self.force_field_params.improper
         } else {
@@ -64,9 +107,8 @@ impl MdState {
             let (a_0, a_1, a_2, a_3) =
                 split4_mut(&mut self.atoms, indices.0, indices.1, indices.2, indices.3);
 
-            let ((f_0, f_1, f_2, f3), energy) = bonded_forces::f_dihedral(
-                a_0.posit, a_1.posit, a_2.posit, a_3.posit, params, improper,
-            );
+            let ((f_0, f_1, f_2, f3), energy) =
+                bonded_forces::f_dihedral(a_0.posit, a_1.posit, a_2.posit, a_3.posit, params);
 
             // We divide by mass in `step`.
             a_0.accel += f_0;
@@ -78,8 +120,10 @@ impl MdState {
         }
     }
 
+    // todo: Energy from constrained H?
+
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub fn shake_hydrogens(&mut self) {
+    pub(crate) fn shake_hydrogens(&mut self) {
         for _ in 0..SHAKE_MAX_IT {
             let mut max_corr: f32 = 0.0;
 
@@ -107,7 +151,7 @@ impl MdState {
     }
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub fn rattle_hydrogens(&mut self) {
+    pub(crate) fn rattle_hydrogens(&mut self) {
         // RATTLE on velocities so that d/dt(|r|²)=0  ⇒  v_ij · r_ij = 0
         for (indices, (_r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
             // println!("RATTLE: {:?}", (i, j, _r0));

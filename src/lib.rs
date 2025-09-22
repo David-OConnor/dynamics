@@ -799,55 +799,29 @@ impl MdState {
     }
 
     fn apply_all_forces(&mut self, dev: &ComputationDevice) {
-        // Bonded forces
+        self.apply_bonded_forces();
+
         let mut start = Instant::now();
-        self.apply_bond_stretching_forces();
-
-        if self.step_count == 1 {
-            // Not 0 to avoid this happening during energy minimization.
-            let elapsed = start.elapsed();
-            println!("Bond stretching time: {:?} μs", elapsed.as_micros());
-        }
-
-        if self.step_count == 1 {
-            start = Instant::now();
-        }
-        self.apply_angle_bending_forces();
-
-        if self.step_count == 1 {
-            let elapsed = start.elapsed();
-            println!("Angle bending time: {:?} μs", elapsed.as_micros());
-        }
-
-        if self.step_count == 1 {
-            start = Instant::now();
-        }
-
-        self.apply_dihedral_forces(false);
-        if self.step_count == 1 {
-            let elapsed = start.elapsed();
-            println!("Dihedral: {:?} μs", elapsed.as_micros());
-        }
-
-        if self.step_count == 1 {
-            start = Instant::now();
-        }
-
-        self.apply_dihedral_forces(true);
-        if self.step_count == 1 {
-            let elapsed = start.elapsed();
-            println!("Improper time: {:?} μs", elapsed.as_micros());
-        }
-
         if self.step_count == 1 {
             start = Instant::now();
         }
 
         // Note: Non-bonded takes the vast majority of time.
-        self.apply_nonbonded_forces(dev);
+        // todo: Temp tm rm!!
+        // self.apply_nonbonded_forces(dev);
         if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("Non-bonded time: {:?} μs", elapsed.as_micros());
+        }
+
+        let start = Instant::now();
+        // todo: YOu need to update potential energy from LR PME as well.
+
+        // todo: Integrate this into nonbonded_forces fn A/R.
+        // self.handle_spme_recip(dev); // todo temp rm!
+        if self.step_count == 1 {
+            let elapsed = start.elapsed();
+            println!("SPME recip time: {:?} μs", elapsed.as_micros());
         }
     }
 
@@ -887,7 +861,6 @@ impl MdState {
             this.reset_accel_e();
             this.potential_energy = 0.0;
             this.apply_all_forces(dev);
-            this.handle_spme_recip(dev);
         };
 
         compute_forces_and_energy(self);
@@ -948,7 +921,7 @@ impl MdState {
                 let s = f * (step_mag / fm);
 
                 a.posit += s;
-                a.posit = self.cell.wrap(a.posit);
+                // a.posit = self.cell.wrap(a.posit);
                 last_step[i] = s;
 
                 self.neighbors_nb.max_displacement_sq = self
@@ -979,7 +952,7 @@ impl MdState {
                     let s = last_step[i];
                     if s.magnitude_squared() > 0.0 {
                         a.posit -= s;
-                        a.posit = self.cell.wrap(a.posit);
+                        // a.posit = self.cell.wrap(a.posit);
                     }
                 }
 

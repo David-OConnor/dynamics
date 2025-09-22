@@ -60,7 +60,7 @@ impl MdState {
     fn drift_atoms(&mut self, dt: f32) {
         for (i, a) in self.atoms.iter_mut().enumerate() {
             a.posit += a.vel * dt;
-            a.posit = self.cell.wrap(a.posit);
+            // a.posit = self.cell.wrap(a.posit);
 
             // self.neighbors_nb.max_displacement_sq = self
             //     .neighbors_nb
@@ -121,6 +121,8 @@ impl MdState {
                     w.h1.vel += w.h1.accel * dt_half;
                 }
 
+                // self.apply_thermostat_nudge(dt); // todo: Experimenting
+
                 self.drift_atoms(dt_half);
                 self.water_drift(dt_half);
 
@@ -165,13 +167,6 @@ impl MdState {
                 // self.regen_pme();
                 // self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
-                let start = Instant::now();
-                self.handle_spme_recip(dev);
-                if self.step_count == 1 {
-                    let elapsed = start.elapsed();
-                    println!("SPME recip time: {:?} μs", elapsed.as_micros());
-                }
-
                 for (i, a) in self.atoms.iter_mut().enumerate() {
                     a.accel *= self.mass_accel_factor[i];
                     a.vel += a.accel * dt_half;
@@ -198,15 +193,16 @@ impl MdState {
                     self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
                 }
 
+                // self.apply_thermostat_nudge(dt); // todo: Experimenting
+
                 // First half-kick (v += a dt/2) and drift (x += v dt)
-                // todo: Do we want traditional verlet instead of velocity verlet (VV)?
                 // Note: We do not apply the accel unit conversion, nor mass division here; they're already
                 // included in this values from the previous step.
                 for (i, a) in self.atoms.iter_mut().enumerate() {
                     a.vel += a.accel * dt_half; // Half-kick
 
                     a.posit += a.vel * dt; // Drift
-                    a.posit = self.cell.wrap(a.posit);
+                    // a.posit = self.cell.wrap(a.posit);
 
                     // todo: What is this? Implement it, or remove it?
                     // todo: Should this take water displacements into account?
@@ -259,15 +255,6 @@ impl MdState {
                 // self.snapshot_ref_positions();
                 // self.regen_pme();
                 // self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
-
-                let start = Instant::now();
-                // todo: YOu need to update potential energy from LR PME as well.
-
-                self.handle_spme_recip(dev);
-                if self.step_count == 1 {
-                    let elapsed = start.elapsed();
-                    println!("SPME recip time: {:?} μs", elapsed.as_micros());
-                }
 
                 // Forces (bonded and nonbonded, to dynamic and water atoms) have been applied; perform other
                 // steps required for integration; second half-kick, RATTLE for hydrogens; SETTLE for water. -----
@@ -369,6 +356,7 @@ impl MdState {
     }
 
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
+        return; // todo temp!!
         const K_COUL: f32 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
 
         let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();
