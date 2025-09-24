@@ -266,7 +266,7 @@ impl MdState {
             ke += (0.5 * w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
             ke += (0.5 * w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
         }
-        ke * ACCEL_CONVERSION_INV
+        ke * AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT
     }
 
     fn num_constraints_estimate(&self) -> usize {
@@ -363,52 +363,6 @@ impl MdState {
 
         self.apply_langevin_thermostat_water(dt, gamma_ps, temp_k);
     }
-
-    // /// Our attempt at a thermostat that enforces the correct temperature; we've been having
-    // /// problems with runaway energy that the other thermostats aren't fixing.
-    // pub(crate) fn apply_thermostat_nudge(&mut self, dt: f32) {
-    //     // Proportional gain (per ps). Tune ~0.1–2.0 depending on how tight you want control.
-    //     let p_term: f32 = 0.5;
-    //
-    //     // Current and target kinetic energies (molar units), from dof and target T.
-    //     let dof = self.dof_for_thermo().max(1) as f32;
-    //     let ke = self.kinetic_energy_kcal() as f32;
-    //     let t_target_k = self.kinetic_energy as f32; // assumes you already store this
-    //     let ke_bar = 0.5 * dof * GAS_CONST_R * t_target_k;
-    //
-    //     // Ideal instantaneous rescale to land exactly on target KE:
-    //     // v' = λ_ideal * v with λ_ideal = sqrt(ke_bar / ke).
-    //     // Then blend proportionally so it's gentle (avoids ringing).
-    //     let mut lam_ideal = (ke_bar / ke).sqrt();
-    //     if !lam_ideal.is_finite() { lam_ideal = 1.0; }
-    //
-    //     // Proportional blend toward λ_ideal; dt makes gain time-constant aware.
-    //     let mut lam = 1.0 + p_term * (lam_ideal - 1.0) * dt;
-    //
-    //     // Clamp per-step rescale to keep dynamics smooth and prevent overshoot.
-    //     // Tighten these if you still see oscillations; loosen if response is too slow.
-    //     const LAM_MIN: f32 = 0.95;
-    //     const LAM_MAX: f32 = 1.05;
-    //     if lam < LAM_MIN { lam = LAM_MIN; }
-    //     if lam > LAM_MAX { lam = LAM_MAX; }
-    //
-    //     // Apply global rescale
-    //     for a in &mut self.atoms {
-    //         a.vel *= lam;
-    //     }
-    //     for w in &mut self.water {
-    //         w.o.vel *= lam;
-    //         w.h0.vel *= lam;
-    //         w.h1.vel *= lam;
-    //         w.m.vel *= lam; // if you integrate M-site velocity; remove if massless and not used
-    //     }
-    //
-    //     // Optional: lightweight telemetry every 100 steps.
-    //     if self.step_count % 100 == 0 {
-    //         let t_inst = (2.0 * ke) / (dof * GAS_CONST_R as f32);
-    //         println!("A/R nudge: T={t_inst:.2}K → {t_target_k:.2}K, λ={lam:.5} (λ*={lam_ideal:.5})");
-    //     }
-    // }
 
     /// Part of the langevin thermostat.
     /// todo: Should this be based on f64?

@@ -430,7 +430,8 @@ impl ForceFieldParamsIndexed {
                             result.dihedral.insert(idx_key, dihes);
                         } else {
                             return Err(ParamError::new(&format!(
-                                "MD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}"
+                                "MD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}. (atom0 sn: {})",
+                                atoms[i0].serial_number
                             )));
                         }
                     }

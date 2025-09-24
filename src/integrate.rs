@@ -3,17 +3,18 @@
 use std::{
     fmt,
     fmt::{Display, Formatter},
-    time::Instant,
 };
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use ewald::{PmeRecip, ewald_comp_force};
+use ewald::PmeRecip;
 use lin_alg::f32::Vec3;
 
+const COM_REMOVAL_RATIO_LINEAR: usize = 10;
+const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
+
 use crate::{
-    ACCEL_CONVERSION, CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState,
-    PMEIndex,
+    CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState, PMEIndex,
     ambient::instantaneous_pressure_bar,
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
@@ -40,8 +41,12 @@ pub enum Integrator {
 }
 
 impl Default for Integrator {
+    // fn default() -> Self {
+    //     Self::LangevinMiddle { gamma: 1. }
+    // }
+    // todo: Until we fix both Langevin integrators/thermostats.
     fn default() -> Self {
-        Self::LangevinMiddle { gamma: 1. }
+        Self::VerletVelocity
     }
 }
 
@@ -186,14 +191,22 @@ impl MdState {
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens();
                 }
+
+                if self.step_count % COM_REMOVAL_RATIO_LINEAR == 0 {
+                    self.zero_linear_momentum_atoms();
+                }
+                if self.step_count % COM_REMOVAL_RATIO_ANGULAR == 0 {
+                    self.zero_angular_momentum_atoms();
+                }
             }
             _ => {
                 // O(dt/2)
                 if let Integrator::Langevin { gamma } = self.cfg.integrator {
                     self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
+                    if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
+                        self.rattle_hydrogens();
+                    }
                 }
-
-                // self.apply_thermostat_nudge(dt); // todo: Experimenting
 
                 // First half-kick (v += a dt/2) and drift (x += v dt)
                 // Note: We do not apply the accel unit conversion, nor mass division here; they're already
@@ -281,6 +294,13 @@ impl MdState {
 
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens();
+                }
+
+                if self.step_count % COM_REMOVAL_RATIO_LINEAR == 0 {
+                    self.zero_linear_momentum_atoms();
+                }
+                if self.step_count % COM_REMOVAL_RATIO_ANGULAR == 0 {
+                    self.zero_angular_momentum_atoms();
                 }
             }
         }

@@ -94,6 +94,7 @@ mod water_init;
 mod water_opc;
 mod water_settle;
 
+mod com_zero;
 #[cfg(feature = "cuda")]
 mod gpu_interface;
 
@@ -808,7 +809,7 @@ impl MdState {
 
         // Note: Non-bonded takes the vast majority of time.
         // todo: Temp tm rm!!
-        // self.apply_nonbonded_forces(dev);
+        self.apply_nonbonded_forces(dev);
         if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("Non-bonded time: {:?} μs", elapsed.as_micros());
