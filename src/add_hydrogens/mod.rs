@@ -27,13 +27,14 @@ use bio_files::{AtomGeneric, ChainGeneric, ResidueGeneric};
 use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes};
 
 use crate::{
-    ParamError, ProtFFTypeChargeMap, ProtFfMap,
+    ParamError,
     add_hydrogens::{
         add_hydrogens_2::{Dihedral, aa_data_from_coords},
         bond_vecs::init_local_bond_vecs,
         ph::{his_choice, standard_allowed_at_ph, variant_allowed_at_ph},
     },
 };
+use crate::params::{ProtFfChargeMap, ProtFfChargeMapSet};
 
 pub(crate) mod add_hydrogens_2;
 mod bond_vecs;
@@ -87,7 +88,7 @@ fn frac_protonated(p_h: f32, p_ka: f32) -> f32 {
 // todo: Include N and C terminus maps A/R.
 /// Helper to get the digit part of the H from what's expected in Amber's naming conventions.
 /// E.g. this might map an incrementing `0` and `1` to `2` and `3` for HE2 and HE3.
-fn make_h_digit_map(ff_map: &ProtFfMap, ph: f32) -> DigitMap {
+fn make_h_digit_map(ff_map: &ProtFfChargeMap, ph: f32) -> DigitMap {
     let mut result: DigitMap = HashMap::new();
 
     // Preselect a single HIS state at this pH so we don't mix HID/HIE/HIP digits.
@@ -386,7 +387,7 @@ pub fn populate_hydrogens_dihedrals(
     atoms: &mut Vec<AtomGeneric>,
     residues: &mut Vec<ResidueGeneric>,
     chains: &mut [ChainGeneric],
-    ff_map: &ProtFFTypeChargeMap,
+    ff_map: &ProtFfChargeMapSet,
     ph: f32,
 ) -> Result<Vec<Dihedral>, ParamError> {
     println!("Populating hydrogens and measuring dihedrals...");

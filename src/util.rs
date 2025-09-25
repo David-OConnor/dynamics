@@ -65,6 +65,8 @@ pub fn save_snapshots(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
     for snap in snapshots {
         let snap_ser = snap.to_bytes();
         result[i..i + snap_ser.len()].copy_from_slice(&snap_ser);
+
+        i += snap_ser.len();
     }
 
     file.write_all(&result)?;

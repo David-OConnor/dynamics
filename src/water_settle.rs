@@ -1,9 +1,9 @@
 //! This module implements the SETTLE algorithm for rigid water molecules.
 
-use lin_alg::{f32::Vec3 as Vec3F32, f64::Vec3};
+use lin_alg::{f32::Vec3 as Vec3F32};
 
 use crate::{
-    ACCEL_CONVERSION, ACCEL_CONVERSION_F32, AtomDynamics,
+    ACCEL_CONVERSION_F32, AtomDynamics,
     ambient::SimBox,
     water_opc::{H_MASS, O_MASS},
 };

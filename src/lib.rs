@@ -123,7 +123,6 @@ use lin_alg::f64::{Vec3x4, f64x4};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use neighbors::NeighborsNb;
-pub use params::{ProtFFTypeChargeMap, ProtFfMap};
 pub use prep::{HydrogenConstraint, merge_params};
 use rand::Rng;
 pub use util::{load_snapshots, save_snapshots};
@@ -199,6 +198,7 @@ pub enum FfMolType {
     Carbohydrate,
 }
 
+
 /// Packages information required to perform dynamics on a Molecule. This is used to initialize
 /// the simulation with atoms and related; one or more of these is passed at init.
 #[derive(Clone, Debug)]
@@ -219,6 +219,10 @@ pub struct MolDynamics {
     pub static_: bool,
     /// If present, any values here override molecule-type general parameters.
     pub mol_specific_params: Option<ForceFieldParams>,
+    /// todo experimentin
+    /// If true, this atom exerts and experiences non-bonded forces only.
+    /// This may be useful for protein atoms that aren't near a docking site.
+    pub bonded_only: bool,
 }
 
 impl MolDynamics {
@@ -239,6 +243,7 @@ impl MolDynamics {
             adjacency_list: None,
             static_: false,
             mol_specific_params,
+            bonded_only: false,
         }
     }
 
@@ -258,6 +263,7 @@ impl MolDynamics {
             adjacency_list: None,
             static_: false,
             mol_specific_params,
+            bonded_only: false,
         }
     }
 
@@ -281,6 +287,7 @@ impl MolDynamics {
             adjacency_list: None,
             static_: false,
             mol_specific_params: Some(params),
+            bonded_only: false,
         })
     }
 }
@@ -294,6 +301,9 @@ pub struct AtomDynamics {
     /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
     /// and VDW) only.
     pub static_: bool,
+    /// If true, this atom exerts and experiences non-bonded forces only.
+    /// This may be useful for protein atoms that aren't near a docking site.
+    pub bonded_only: bool,
     pub force_field_type: String,
     pub element: Element,
     // pub name: String,
@@ -312,6 +322,7 @@ pub struct AtomDynamics {
     pub lj_sigma: f32,
     /// kcal/mol
     pub lj_eps: f32,
+
 }
 
 impl Display for AtomDynamics {
@@ -858,7 +869,7 @@ impl MdState {
         }
 
         // Force/E at current geometry
-        let mut compute_forces_and_energy = |this: &mut MdState| {
+        let compute_forces_and_energy = |this: &mut MdState| {
             this.reset_accel_e();
             this.potential_energy = 0.0;
             this.apply_all_forces(dev);
@@ -868,8 +879,8 @@ impl MdState {
 
         // Helper to measure convergence
         let mut max_f = 0.0f32;
-        let mut rms_f = 0.0f32;
-        let mut force_stats = |this: &MdState| -> (f32, f32) {
+        let mut _rms_f = 0.0f32;
+        let force_stats = |this: &MdState| -> (f32, f32) {
             let mut max_f_loc = 0.0f32;
             let mut sum = 0.0f32;
             let mut n = 0usize;
@@ -887,7 +898,7 @@ impl MdState {
             (max_f_loc, rms)
         };
 
-        (max_f, rms_f) = force_stats(self);
+        (max_f, _rms_f) = force_stats(self);
         if max_f <= F_TOL {
             return;
         }
@@ -943,7 +954,7 @@ impl MdState {
                 e_prev = e_new;
                 alpha = (alpha * GROW).min(ALPHA_MAX);
 
-                (max_f, rms_f) = force_stats(self);
+                (max_f, _rms_f) = force_stats(self);
                 if max_f <= F_TOL {
                     break 'outer;
                 }

@@ -22,15 +22,13 @@
 // Best guess: Type 1 identifies labels within the residue only. Type 2 (AA) and Type 3 (small mol) are the FF types.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashSet},
     fmt,
-    thread::park_timeout_ms,
 };
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::{
-    AtomGeneric, BondGeneric,
     md_params::{AngleBendingParams, BondStretchingParams, ForceFieldParams, LjParams, MassParams},
 };
 use itertools::Itertools;
@@ -343,7 +341,7 @@ impl ForceFieldParamsIndexed {
                 let type_ctr = &atoms[ctr].force_field_type;
                 let type_n1 = &atoms[n1].force_field_type;
 
-                let mut data = match params.angle.get(&(
+                let data = match params.angle.get(&(
                     type_n0.clone(),
                     type_ctr.clone(),
                     type_n1.clone(),

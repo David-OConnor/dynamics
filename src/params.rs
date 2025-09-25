@@ -6,19 +6,17 @@ use std::{
     path::PathBuf,
 };
 
-use bio_files::{
-    AtomGeneric, BondGeneric, ChainGeneric, MmCif, ResidueEnd, ResidueGeneric, ResidueType,
-    create_bonds,
-    md_params::{
-        AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParams,
-        LjParams, MassParams, load_amino_charges, parse_amino_charges,
-    },
-};
+use bio_files::{AtomGeneric, BondGeneric, ChainGeneric, MmCif, ResidueEnd, ResidueGeneric, ResidueType, create_bonds, md_params::{
+    AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParams,
+    LjParams, MassParams, load_amino_charges, parse_amino_charges,
+}, LipidStandard};
+use bio_files::md_params::{parse_lipid_charges, ChargeParamsLipid};
 use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element};
 
 use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};
 
-pub type ProtFfMap = HashMap<AminoAcidGeneral, Vec<ChargeParams>>;
+pub type ProtFfChargeMap = HashMap<AminoAcidGeneral, Vec<ChargeParams>>;
+pub type LipidFfChargeMap = HashMap<LipidStandard, Vec<ChargeParamsLipid>>;
 
 // We include Amber parameter files with this package.
 // Proteins and amino acids:
@@ -31,7 +29,8 @@ const AMINO_CT12: &str = include_str!("../param_data/aminoct12.lib"); // Charge;
 // Ligands/small organic molecules: *General Amber Force Fields*.
 const GAFF2: &str = include_str!("../param_data/gaff2.dat");
 // Lipids
-const LIPID_21: &str = include_str!("../param_data/lipid21.dat");
+const LIPID_21: &str = include_str!("../param_data/lipid21.dat"); // Bonded and LJ
+const LIPID_21_LIB: &str = include_str!("../param_data/lipid21.lib"); // Charge and FF names
 
 // DNA (OL24) and RNA (OL3)
 const OL24_LIB: &str = include_str!("../param_data/ff-nucleic-OL24.lib");
@@ -55,7 +54,8 @@ pub struct FfParamSet {
     pub carbohydrates: Option<ForceFieldParams>,
     /// In addition to charge, this also contains the mapping of res type to FF type; required to map
     /// other parameters to protein atoms. E.g. from `amino19.lib`, and its N and C-terminus variants.
-    pub peptide_ff_q_map: Option<ProtFFTypeChargeMap>,
+    pub peptide_ff_q_map: Option<ProtFfChargeMapSet>,
+    pub lipid_ff_q_map: Option<LipidFfChargeMap>,
 }
 
 /// Paths for to general parameter files. Used to create a FfParamSet.
@@ -100,7 +100,7 @@ impl FfParamSet {
             }
         }
 
-        let mut ff_map = ProtFFTypeChargeMap::default();
+        let mut ff_map = ProtFfChargeMapSet::default();
         if let Some(p) = &paths.peptide_ff_q {
             ff_map.internal = load_amino_charges(p)?;
         }
@@ -153,19 +153,23 @@ impl FfParamSet {
         let peptide_frcmod = ForceFieldParams::from_frcmod(FRCMOD_FF19SB)?;
         result.peptide = Some(merge_params(&peptide, &peptide_frcmod));
 
-        let internal = parse_amino_charges(AMINO_19)?;
-        let n_terminus = parse_amino_charges(AMINO_NT12)?;
-        let c_terminus = parse_amino_charges(AMINO_CT12)?;
+        {
+            let internal = parse_amino_charges(AMINO_19)?;
+            let n_terminus = parse_amino_charges(AMINO_NT12)?;
+            let c_terminus = parse_amino_charges(AMINO_CT12)?;
 
-        // todo: Sort out the ingest error, then come back to this
-        // let lipid = ForceFieldParams::from_dat(LIPID_21)?;
-        // result.lipids = Some(lipid);
+            result.peptide_ff_q_map = Some(ProtFfChargeMapSet {
+                internal,
+                n_terminus,
+                c_terminus,
+            });
+        }
 
-        result.peptide_ff_q_map = Some(ProtFFTypeChargeMap {
-            internal,
-            n_terminus,
-            c_terminus,
-        });
+        let lipid_dat = ForceFieldParams::from_dat(LIPID_21)?;
+        result.lipids = Some(lipid_dat);
+
+        let lipid_charges = parse_lipid_charges(LIPID_21_LIB)?;
+        result.lipid_ff_q_map = Some(lipid_charges);
 
         result.small_mol = Some(ForceFieldParams::from_dat(GAFF2)?);
 
@@ -175,7 +179,6 @@ impl FfParamSet {
         // let dna = ForceFieldParams::from_dat(OL24_LIB)?;
         // let dna_frcmod = ForceFieldParams::from_frcmod(OL24_FRCMOD)?;
         // result.dna = Some(merge_params(&dna, Some(&dna_frcmod)));
-        //
         // result.rna = Some(ForceFieldParams::from_dat(RNA_LIB)?);
 
         Ok(result)
@@ -209,10 +212,10 @@ pub(crate) struct ForceFieldParamsIndexed {
 /// Maps type-in-residue (found in, e.g. mmCIF and PDB files) to Amber FF type, and partial charge.
 /// We assume that if one of these is loaded, so are the others. So, these aren't `Options`s, but
 /// the field that holds this struct should be one.
-pub struct ProtFFTypeChargeMap {
-    pub internal: ProtFfMap,
-    pub n_terminus: ProtFfMap,
-    pub c_terminus: ProtFfMap,
+pub struct ProtFfChargeMapSet {
+    pub internal: ProtFfChargeMap,
+    pub n_terminus: ProtFfChargeMap,
+    pub c_terminus: ProtFfChargeMap,
 }
 
 /// Populate forcefield type, and partial charge on atoms. This should be run on mmCIF
@@ -223,7 +226,7 @@ pub struct ProtFFTypeChargeMap {
 pub fn populate_peptide_ff_and_q(
     atoms: &mut [AtomGeneric],
     residues: &[ResidueGeneric],
-    ff_type_charge: &ProtFFTypeChargeMap,
+    ff_type_charge: &ProtFfChargeMapSet,
 ) -> Result<(), ParamError> {
     // Tis is slower than if we had an index map already.
     let mut index_map = HashMap::new();
@@ -346,7 +349,7 @@ pub fn prepare_peptide(
     bonds: &mut Vec<BondGeneric>,
     residues: &mut Vec<ResidueGeneric>,
     chains: &mut [ChainGeneric],
-    ff_map: &ProtFFTypeChargeMap,
+    ff_map: &ProtFfChargeMapSet,
     ph: f32, // todo: Implement.
 ) -> Result<Vec<Dihedral>, ParamError> {
     let mut dihedrals = Vec::new();
@@ -372,7 +375,7 @@ pub fn prepare_peptide(
 /// See docs on `prepare_peptide`. This is a convenience variant that uses an `MmCif` file.
 pub fn prepare_peptide_mmcif(
     mol: &mut MmCif,
-    ff_map: &ProtFFTypeChargeMap,
+    ff_map: &ProtFfChargeMapSet,
     ph: f32, // todo: Implement.
 ) -> Result<(Vec<BondGeneric>, Vec<Dihedral>), ParamError> {
     let mut dihedrals = Vec::new();
