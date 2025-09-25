@@ -4,9 +4,7 @@
 
 use std::f32::consts::TAU;
 
-use lin_alg::{
-    f32::{Mat3 as Mat3F32, Quaternion as QuaternionF32, Vec3 as Vec3F32},
-};
+use lin_alg::f32::{Mat3 as Mat3F32, Quaternion as QuaternionF32, Vec3 as Vec3F32};
 use rand::{Rng, distr::Uniform};
 use rand_distr::Distribution;
 

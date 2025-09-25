@@ -6,11 +6,15 @@ use std::{
     path::PathBuf,
 };
 
-use bio_files::{AtomGeneric, BondGeneric, ChainGeneric, MmCif, ResidueEnd, ResidueGeneric, ResidueType, create_bonds, md_params::{
-    AngleBendingParams, BondStretchingParams, ChargeParams, DihedralParams, ForceFieldParams,
-    LjParams, MassParams, load_amino_charges, parse_amino_charges,
-}, LipidStandard};
-use bio_files::md_params::{parse_lipid_charges, ChargeParamsLipid};
+use bio_files::{
+    AtomGeneric, BondGeneric, ChainGeneric, LipidStandard, MmCif, ResidueEnd, ResidueGeneric,
+    ResidueType, create_bonds,
+    md_params::{
+        AngleBendingParams, BondStretchingParams, ChargeParams, ChargeParamsLipid, DihedralParams,
+        ForceFieldParams, LjParams, MassParams, load_amino_charges, parse_amino_charges,
+        parse_lipid_charges,
+    },
+};
 use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element};
 
 use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};
@@ -30,7 +34,9 @@ const AMINO_CT12: &str = include_str!("../param_data/aminoct12.lib"); // Charge;
 const GAFF2: &str = include_str!("../param_data/gaff2.dat");
 // Lipids
 const LIPID_21: &str = include_str!("../param_data/lipid21.dat"); // Bonded and LJ
-const LIPID_21_LIB: &str = include_str!("../param_data/lipid21.lib"); // Charge and FF names
+
+// Public, so we can use it for lipid templates.
+pub const LIPID_21_LIB: &str = include_str!("../param_data/lipid21.lib"); // Charge and FF names
 
 // DNA (OL24) and RNA (OL3)
 const OL24_LIB: &str = include_str!("../param_data/ff-nucleic-OL24.lib");

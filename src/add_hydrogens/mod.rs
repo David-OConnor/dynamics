@@ -33,8 +33,8 @@ use crate::{
         bond_vecs::init_local_bond_vecs,
         ph::{his_choice, standard_allowed_at_ph, variant_allowed_at_ph},
     },
+    params::{ProtFfChargeMap, ProtFfChargeMapSet},
 };
-use crate::params::{ProtFfChargeMap, ProtFfChargeMapSet};
 
 pub(crate) mod add_hydrogens_2;
 mod bond_vecs;

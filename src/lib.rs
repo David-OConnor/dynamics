@@ -198,7 +198,6 @@ pub enum FfMolType {
     Carbohydrate,
 }
 
-
 /// Packages information required to perform dynamics on a Molecule. This is used to initialize
 /// the simulation with atoms and related; one or more of these is passed at init.
 #[derive(Clone, Debug)]
@@ -322,7 +321,6 @@ pub struct AtomDynamics {
     pub lj_sigma: f32,
     /// kcal/mol
     pub lj_eps: f32,
-
 }
 
 impl Display for AtomDynamics {
