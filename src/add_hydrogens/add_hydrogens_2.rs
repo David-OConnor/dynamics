@@ -26,14 +26,6 @@ use crate::{
     },
 };
 
-pub struct PlacementError {}
-
-// From Peptide. Radians.
-pub const PHI_HELIX: f64 = -0.715584993317675;
-pub const PSI_HELIX: f64 = -0.715584993317675;
-pub const PHI_SHEET: f64 = -140. * TAU / 360.;
-pub const PSI_SHEET: f64 = 135. * TAU / 360.;
-
 // The dihedral angle must be within this of [0 | TAU | TAU/2] for atoms to be considered planar.
 const PLANAR_DIHEDRAL_THRESH: f64 = 0.4;
 
