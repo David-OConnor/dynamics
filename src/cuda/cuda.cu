@@ -1,8 +1,5 @@
-// #include <math.h>
+#include <cstdint>
 #include <initializer_list>
-
-// todo: A/R
-// #include <math.h>
 #include <math_constants.h> // CUDART_PI_F
 
 #include "util.cu"
