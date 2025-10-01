@@ -390,7 +390,6 @@ pub fn populate_hydrogens_dihedrals(
     ff_map: &ProtFfChargeMapSet,
     ph: f32,
 ) -> Result<Vec<Dihedral>, ParamError> {
-    println!("Populating hydrogens and measuring dihedrals...");
     // todo: Move this fn to this module? Split this and its diehdral component, or not?
 
     // Sets up write-once static muts.
@@ -400,8 +399,6 @@ pub fn populate_hydrogens_dihedrals(
     for (i, atom) in atoms.iter().enumerate() {
         index_map.insert(atom.serial_number, i);
     }
-
-    let mut start = Instant::now();
 
     let mut dihedrals = Vec::with_capacity(residues.len());
 
@@ -482,10 +479,6 @@ pub fn populate_hydrogens_dihedrals(
         // res.dihedral = Some(dihedral);
         dihedrals.push(dihedral);
     }
-
-    // original with indices etc: 2.4ms.
-    let end = start.elapsed();
-    println!("TIME: {:?}", end.as_micros());
 
     Ok(dihedrals)
 }
