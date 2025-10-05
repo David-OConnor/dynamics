@@ -13,13 +13,7 @@ use lin_alg::f32::Vec3;
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
-use crate::{
-    CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState, PMEIndex,
-    ambient::instantaneous_pressure_bar,
-    non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N},
-    snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
-    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
-};
+use crate::{CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState, PMEIndex, ambient::instantaneous_pressure_bar, non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N}, snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd}, water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O}, SPME_RATIO};
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -126,8 +120,6 @@ impl MdState {
                     w.h1.vel += w.h1.accel * dt_half;
                 }
 
-                // self.apply_thermostat_nudge(dt); // todo: Experimenting
-
                 self.drift_atoms(dt_half);
                 self.water_drift(dt_half);
 
@@ -160,17 +152,16 @@ impl MdState {
                 );
                 self.apply_all_forces(dev);
 
-                // todo temp rm
-                // self.barostat.apply_isotropic(
-                //     dt as f64,
-                //     p_inst_bar,
-                //     &mut self.cell,
-                //     &mut self.atoms,
-                //     &mut self.water,
-                // );
-                // self.snapshot_ref_positions();
-                // self.regen_pme();
-                // self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
+                self.barostat.apply_isotropic(
+                    dt as f64,
+                    p_inst_bar,
+                    &mut self.cell,
+                    &mut self.atoms,
+                    &mut self.water,
+                );
+                self.snapshot_ref_positions();
+                self.regen_pme();
+                self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
                 for (i, a) in self.atoms.iter_mut().enumerate() {
                     a.accel *= self.mass_accel_factor[i];
@@ -215,11 +206,6 @@ impl MdState {
                     a.vel += a.accel * dt_half; // Half-kick
 
                     a.posit += a.vel * dt; // Drift
-                    // a.posit = self.cell.wrap(a.posit);
-
-                    // todo: What is this? Implement it, or remove it?
-                    // todo: Should this take water displacements into account?
-                    // track the largest squared displacement to know when to rebuild the list
 
                     {
                         // after you've updated a.posit and wrapped it:
@@ -229,11 +215,6 @@ impl MdState {
                         self.neighbors_nb.max_displacement_sq =
                             self.neighbors_nb.max_displacement_sq.max(d2);
                     }
-
-                    // self.neighbors_nb.max_displacement_sq = self
-                    //     .neighbors_nb
-                    //     .max_displacement_sq
-                    //     .max((a.vel * dt).magnitude_squared());
                 }
 
                 // todo: Consider applying the thermostat between the first half-kick and drift.
@@ -257,17 +238,16 @@ impl MdState {
 
                 self.apply_all_forces(dev);
 
-                // todo temp fm
-                // self.barostat.apply_isotropic(
-                //     dt as f64,
-                //     p_inst_bar,
-                //     &mut self.cell,
-                //     &mut self.atoms,
-                //     &mut self.water,
-                // );
-                // self.snapshot_ref_positions();
-                // self.regen_pme();
-                // self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
+                self.barostat.apply_isotropic(
+                    dt as f64,
+                    p_inst_bar,
+                    &mut self.cell,
+                    &mut self.atoms,
+                    &mut self.water,
+                );
+                self.snapshot_ref_positions();
+                self.regen_pme();
+                self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
                 // Forces (bonded and nonbonded, to dynamic and water atoms) have been applied; perform other
                 // steps required for integration; second half-kick, RATTLE for hydrogens; SETTLE for water. -----
@@ -376,7 +356,6 @@ impl MdState {
     }
 
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
-        return; // todo temp!!
         const K_COUL: f32 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
 
         let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();
@@ -395,8 +374,6 @@ impl MdState {
         };
 
         self.potential_energy += e_recip as f64;
-
-        // println!("F RECIP: {:?}", &f_recip[0..20]);
 
         // todo: QC this.
         // Scale to Amber force units
@@ -452,12 +429,13 @@ impl MdState {
             let inv_r2 = inv_r * inv_r;
             let f_vac = dir * (qi * qj * inv_r2);
 
-            let df = f_vac * (SCALE_COUL_14 - 1.0);
+            // We run this once every `SPME_RATIO` steps, so multiply the force by it.
+            let df = f_vac * (SCALE_COUL_14 - 1.0) * SPME_RATIO as f32;
 
             self.atoms[i].accel += df;
             self.atoms[j].accel -= df;
 
-            self.barostat.virial_pair_kcal += (dir * r).dot(df) as f64; // r·F
+            self.barostat.virial_pair_kcal += (dir * r).dot(df) as f64 * SPME_RATIO as f64; // r·F
         }
     }
 

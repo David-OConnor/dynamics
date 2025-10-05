@@ -162,6 +162,10 @@ const SHAKE_MAX_IT: usize = 100;
 // Every this many steps, re-
 const CENTER_SIMBOX_RATIO: usize = 30;
 
+/// Run SPME once every these steps. It's the slowest computation, and is comparatively
+/// smooth over time compared to Coulomb and LJ.
+const SPME_RATIO: usize = 2;
+
 #[derive(Debug, Clone, Default)]
 pub enum ComputationDevice {
     #[default]
@@ -828,7 +832,12 @@ impl MdState {
         // todo: YOu need to update potential energy from LR PME as well.
 
         // todo: Integrate this into nonbonded_forces fn A/R.
-        // self.handle_spme_recip(dev); // todo temp rm!
+
+        if self.step_count.is_multiple_of(SPME_RATIO) {
+            self.handle_spme_recip(dev);
+        }
+
+
         if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("SPME recip time: {:?} μs", elapsed.as_micros());
