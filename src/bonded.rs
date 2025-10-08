@@ -137,8 +137,13 @@ impl MdState {
                 let lambda = (dist_sq - r0_sq) / (2.0 * inv_mass * dist_sq.max(EPS_SHAKE_RATTLE));
                 let corr = diff * lambda; // vector correction
 
-                ai.posit += corr / ai.mass;
-                aj.posit -= corr / aj.mass;
+                if !ai.static_ {
+                    ai.posit += corr / ai.mass;
+                }
+
+                if !aj.static_ {
+                    aj.posit -= corr / aj.mass;
+                }
 
                 max_corr = max_corr.max(corr.magnitude());
             }

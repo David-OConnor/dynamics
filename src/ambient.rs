@@ -223,13 +223,14 @@ impl BerendsenBarostat {
         let c = simbox.center();
         let lc = lam as f32;
 
-        #[inline(always)]
-        fn scale_pos(p: &mut lin_alg::f32::Vec3, c: lin_alg::f32::Vec3, s: f32) {
+        fn scale_pos(p: &mut Vec3, c: Vec3, s: f32) {
             *p = c + (*p - c) * s;
         }
 
         for a in atoms_dyn.iter_mut() {
-            scale_pos(&mut a.posit, c, lc);
+            if !a.static_ {
+                scale_pos(&mut a.posit, c, lc);
+            }
         }
         for w in waters.iter_mut() {
             scale_pos(&mut w.o.posit, c, lc);
@@ -243,7 +244,9 @@ impl BerendsenBarostat {
         // If you prefer, omit this and let the thermostat handle KE. Either way is acceptable for Berendsen.
         let lv = lc; // or comment out this block to leave velocities unchanged
         for a in atoms_dyn.iter_mut() {
-            a.vel *= lv;
+            if !a.static_ {
+                a.vel *= lv;
+            }
         }
         for w in waters.iter_mut() {
             w.o.vel *= lv;
@@ -258,7 +261,9 @@ impl MdState {
         // dynamic atoms + waters (skip massless EP)
         let mut ke = 0.0;
         for a in &self.atoms {
-            ke += 0.5 * (a.mass * a.vel.magnitude_squared()) as f64;
+            if !a.static_ {
+                ke += 0.5 * (a.mass * a.vel.magnitude_squared()) as f64;
+            }
         }
 
         for w in &self.water {
@@ -307,7 +312,6 @@ impl MdState {
     /// A canonical velocity-rescale algorithm.
     /// Cheap with gentle coupling, but doesn't imitate solvent drag.
     pub(crate) fn apply_thermostat_csvr(&mut self, dt: f64, t_target_k: f64) {
-        // todo: QC f32 vs f64 here.
         use rand_distr::{ChiSquared, Distribution, StandardNormal};
 
         let dof = self.dof_for_thermo().max(2) as f64;
@@ -330,6 +334,9 @@ impl MdState {
         let lam = (kprime / ke).sqrt() as f32;
 
         for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
             a.vel *= lam;
         }
         for w in &mut self.water {
@@ -348,6 +355,10 @@ impl MdState {
         let s2 = (1.0 - c * c).max(0.0); // numerical guard
 
         for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
+
             // per-component σ for velocity noise
             // per-component σ for velocity noise
             let sigma = (KB_A2_PS2_PER_K_PER_AMU * temp_k * s2 / a.mass).sqrt();

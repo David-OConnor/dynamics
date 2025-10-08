@@ -145,7 +145,7 @@ impl PerNeighborGpu {
 
         for (i, pair) in pairs.iter().enumerate() {
             let q_tgt = match pair.tgt {
-                BodyRef::Dyn(j) => {
+                BodyRef::NonWater(j) => {
                     tgt_is.push(j as u32);
                     &atoms_dyn[j]
                 }
@@ -168,7 +168,7 @@ impl PerNeighborGpu {
             .partial_charge;
 
             let q_src = match pair.src {
-                BodyRef::Dyn(j) => {
+                BodyRef::NonWater(j) => {
                     src_is.push(j as u32);
                     &atoms_dyn[j]
                 }

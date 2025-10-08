@@ -61,9 +61,9 @@ pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 #[derive(Debug)]
 pub enum LjTableIndices {
     /// (tgt, src)
-    DynDyn((usize, usize)),
+    StdStd((usize, usize)),
     /// (dyn tgt or src))
-    DynWater(usize),
+    StdWater(usize),
     /// One value, stored as a constant (Water O -> Water O)
     WaterWater,
 }
@@ -118,7 +118,7 @@ impl LjTables {
     /// Get (σ, ε)
     pub fn lookup(&self, i: &LjTableIndices) -> (f32, f32) {
         match i {
-            LjTableIndices::DynDyn((i0, i1)) => {
+            LjTableIndices::StdStd((i0, i1)) => {
                 // Row-major over N×N with diagonal removed.
                 let row_stride = self.n_dyn - 1;
                 let col = if *i1 < *i0 { *i1 } else { *i1 - 1 }; // Skip the diagonal
@@ -126,7 +126,7 @@ impl LjTables {
 
                 self.dynamic[index]
             }
-            LjTableIndices::DynWater(ix) => self.water_dyn[*ix],
+            LjTableIndices::StdWater(ix) => self.water_dyn[*ix],
             LjTableIndices::WaterWater => (O_SIGMA, O_EPS),
         }
     }
@@ -143,7 +143,7 @@ impl AddAssign<Self> for ForcesOnWaterMol {
 
 #[derive(Copy, Clone)]
 pub enum BodyRef {
-    Dyn(usize),
+    NonWater(usize),
     // Static(usize),
     Water { mol: usize, site: WaterSite },
 }
@@ -151,11 +151,11 @@ pub enum BodyRef {
 impl BodyRef {
     pub(crate) fn get<'a>(
         &self,
-        dyns: &'a [AtomDynamics],
+        non_waters: &'a [AtomDynamics],
         waters: &'a [WaterMol],
     ) -> &'a AtomDynamics {
         match *self {
-            BodyRef::Dyn(i) => &dyns[i],
+            BodyRef::NonWater(i) => &non_waters[i],
             BodyRef::Water { mol, site } => match site {
                 WaterSite::O => &waters[mol].o,
                 WaterSite::M => &waters[mol].m,
@@ -176,15 +176,15 @@ pub struct NonBondedPair {
     pub symmetric: bool,
 }
 
-/// Add a force into the right accumulator (dyn or water). Static never accumulates.
+/// Add a force into the right accumulator (std or water). Static never accumulates.
 fn add_to_sink(
-    sink_dyn: &mut [Vec3F64],
+    sink_non_water: &mut [Vec3F64],
     sink_wat: &mut [ForcesOnWaterMol],
     body_type: BodyRef,
     f: Vec3F64,
 ) {
     match body_type {
-        BodyRef::Dyn(i) => sink_dyn[i] += f,
+        BodyRef::NonWater(i) => sink_non_water[i] += f,
         BodyRef::Water { mol, site } => match site {
             WaterSite::O => sink_wat[mol].f_o += f,
             WaterSite::M => sink_wat[mol].f_m += f,
@@ -201,12 +201,12 @@ fn add_to_sink(
 /// Return the virial pair component we accumulate. For use with the temp/barostat. (kcal/mol)
 fn calc_force(
     pairs: &[NonBondedPair],
-    atoms_dyn: &[AtomDynamics],
+    atoms_std: &[AtomDynamics],
     water: &[WaterMol],
     cell: &SimBox,
     lj_tables: &LjTables,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
-    let n_dyn = atoms_dyn.len();
+    let n_std = atoms_std.len();
     let n_wat = water.len();
 
     pairs
@@ -215,15 +215,15 @@ fn calc_force(
             || {
                 (
                     // Sums as f64.
-                    vec![Vec3F64::new_zero(); n_dyn],
+                    vec![Vec3F64::new_zero(); n_std],
                     vec![ForcesOnWaterMol::default(); n_wat],
                     0.0_f64, // Virial sum
                     0.0_f64, // Energy sum
                 )
             },
             |(mut acc_d, mut acc_w, mut virial, mut energy), p| {
-                let a_t = p.tgt.get(atoms_dyn, water);
-                let a_s = p.src.get(atoms_dyn, water);
+                let a_t = p.tgt.get(atoms_std, water);
+                let a_s = p.src.get(atoms_std, water);
 
                 let (f, e_pair) = f_nonbonded(
                     &mut virial,
@@ -246,10 +246,10 @@ fn calc_force(
 
                 // We are not interested, in this point, at energy that does not involve our dyanamic (ligand) atoms.
                 // We skip water-water, and water-static interations.
-                let involves_dyn =
-                    matches!(p.tgt, BodyRef::Dyn(_)) || matches!(p.src, BodyRef::Dyn(_));
+                let involves_std =
+                    matches!(p.tgt, BodyRef::NonWater(_)) || matches!(p.src, BodyRef::NonWater(_));
 
-                if involves_dyn {
+                if involves_std {
                     energy += e_pair as f64;
                 }
 
@@ -259,15 +259,15 @@ fn calc_force(
         .reduce(
             || {
                 (
-                    vec![Vec3F64::new_zero(); n_dyn],
+                    vec![Vec3F64::new_zero(); n_std],
                     vec![ForcesOnWaterMol::default(); n_wat],
                     0.0_f64,
                     0.0_f64,
                 )
             },
-            |(mut f_on_dyn, mut f_on_water, virial_a, e_a), (db, wb, virial_b, e_b)| {
-                for i in 0..n_dyn {
-                    f_on_dyn[i] += db[i];
+            |(mut f_on_std, mut f_on_water, virial_a, e_a), (db, wb, virial_b, e_b)| {
+                for i in 0..n_std {
+                    f_on_std[i] += db[i];
                 }
                 for i in 0..n_wat {
                     f_on_water[i].f_o += wb[i].f_o;
@@ -276,20 +276,20 @@ fn calc_force(
                     f_on_water[i].f_h1 += wb[i].f_h1;
                 }
 
-                (f_on_dyn, f_on_water, virial_a + virial_b, e_a + e_b)
+                (f_on_std, f_on_water, virial_a + virial_b, e_a + e_b)
             },
         )
 }
 
 impl MdState {
-    /// Run the appropriate force-computation function to get force on dynamic atoms, force
+    /// Run the appropriate force-computation function to get force on non-water atoms, force
     /// on water atoms, and virial sum for the barostat. Uses GPU if available.
     ///
-    /// Applies Coulomb and Van der Waals (Lennard-Jones) forces on dynamic atoms, in place.
+    /// Applies Coulomb and Van der Waals (Lennard-Jones) forces on non-water atoms, in place.
     /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
-    /// applies forces from dynamic, static, and water sources.
+    /// applies forces from non-water, and water sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
-        let (f_on_dyn, f_on_water, virial, energy) = match dev {
+        let (f_on_std, f_on_water, virial, energy) = match dev {
             ComputationDevice::Cpu => calc_force(
                 &self.nb_pairs,
                 &self.atoms,
@@ -313,7 +313,7 @@ impl MdState {
 
         // `.into()` below converts accumulated forces to f32.
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
-            let f: Vec3 = f_on_dyn[i].into();
+            let f: Vec3 = f_on_std[i].into();
             tgt.accel += f;
         }
 
@@ -334,10 +334,10 @@ impl MdState {
         self.potential_energy += energy;
     }
 
-    /// [Re] initialize non-bonded interaction pairs between atoms. Do this whenever rebuilding neighbors.
+    /// [Re] initialize non-bonded interaction pairs between atoms. Do this whenever we rebuild neighbors.
     /// Build the neighbors set prior to running this.
     pub(crate) fn setup_pairs(&mut self) {
-        let n_dyn = self.atoms.len();
+        let n_std = self.atoms.len();
         let n_water_mols = self.water.len();
 
         let sites = [WaterSite::O, WaterSite::M, WaterSite::H0, WaterSite::H1];
@@ -349,15 +349,15 @@ impl MdState {
 
         // ------ Forces from other dynamic atoms on dynamic ones ------
 
-        // Exclusions and scaling apply to dynamic-dynamic interactions only.
+        // Exclusions and scaling apply to std-std interactions only.
         let exclusions = &self.pairs_excluded_12_13;
         let scaled_set = &self.pairs_14_scaled;
 
         // Set up pairs ahead of time; conducive to parallel iteration. We skip excluded pairs,
-        // and mark scaled ones. These pairs, in symmetric cases (e.g. dynamic-dynamic), only
-        let pairs_dyn_dyn: Vec<_> = (0..n_dyn)
+        // and mark scaled ones. These pairs, in symmetric cases (e.g. std-std), only
+        let pairs_std_std: Vec<_> = (0..n_std)
             .flat_map(|i_tgt| {
-                self.neighbors_nb.dy_dy[i_tgt]
+                self.neighbors_nb.std_std[i_tgt]
                     .iter()
                     .copied()
                     .filter(move |&j| j > i_tgt) // Ensure stable order
@@ -368,11 +368,14 @@ impl MdState {
                         }
                         let scale_14 = scaled_set.contains(&key);
 
+                        // We skip LJ and coulomb interactions for the static-static case
+                        // by ommitting them from our neighbor list.
+
                         Some(NonBondedPair {
-                            tgt: BodyRef::Dyn(i_tgt),
-                            src: BodyRef::Dyn(i_src),
+                            tgt: BodyRef::NonWater(i_tgt),
+                            src: BodyRef::NonWater(i_src),
                             scale_14,
-                            lj_indices: LjTableIndices::DynDyn(key),
+                            lj_indices: LjTableIndices::StdStd(key),
                             calc_lj: true,
                             calc_coulomb: true,
                             symmetric: true,
@@ -381,19 +384,19 @@ impl MdState {
             })
             .collect();
 
-        // Forces from water on dynamic atoms, and vice-versa
-        let mut pairs_dyn_water: Vec<_> = (0..n_dyn)
-            .flat_map(|i_dyn| {
-                self.neighbors_nb.dy_water[i_dyn]
+        // Forces from water on non-water atoms, and vice-versa
+        let mut pairs_std_water: Vec<_> = (0..n_std)
+            .flat_map(|i_std| {
+                self.neighbors_nb.std_water[i_std]
                     .iter()
                     .copied()
                     .flat_map(move |i_water| {
                         sites.into_iter().map(move |site| NonBondedPair {
-                            tgt: BodyRef::Dyn(i_dyn),
+                            tgt: BodyRef::NonWater(i_std),
                             src: BodyRef::Water { mol: i_water, site },
                             scale_14: false,
                             // todo: Ensure you reverse it.
-                            lj_indices: LjTableIndices::DynWater(i_dyn),
+                            lj_indices: LjTableIndices::StdWater(i_std),
                             calc_lj: site == WaterSite::O,
                             calc_coulomb: site != WaterSite::O,
                             symmetric: true,
@@ -442,12 +445,12 @@ impl MdState {
 
         // todo: Consider just removing the functional parts above, and add to `pairs` directly.
         // Combine pairs into a single set; we compute in one parallel pass.
-        let len_added = pairs_dyn_water.len() + pairs_water_water.len();
+        let len_added = pairs_std_water.len() + pairs_water_water.len();
 
-        let mut pairs = pairs_dyn_dyn;
+        let mut pairs = pairs_std_std;
         pairs.reserve(len_added);
 
-        pairs.append(&mut pairs_dyn_water);
+        pairs.append(&mut pairs_std_water);
         pairs.append(&mut pairs_water_water);
 
         self.nb_pairs = pairs;

@@ -497,40 +497,6 @@ impl ForceFieldParamsIndexed {
 }
 
 impl MdState {
-    /// Note: We don't call this during runtime, as we don't rebuild static there,
-    /// and we don't necessarily rebuild water at the same time as dyn.
-    pub(crate) fn init_neighbors(&mut self) {
-        self.neighbors_nb.ref_pos_dyn = self.atoms.iter().map(|a| a.posit).collect();
-        // Static refs don't change. The dyn and water positions pdate periodically.
-        // self.neighbors_nb.ref_pos_static = self.atoms_static.iter().map(|a| a.posit).collect();
-        self.neighbors_nb.ref_pos_water_o = self.water.iter().map(|m| m.o.posit).collect();
-
-        self.neighbors_nb.dy_dy = build_neighbors(
-            &self.neighbors_nb.ref_pos_dyn,
-            &self.neighbors_nb.ref_pos_dyn,
-            &self.cell,
-            true,
-            self.cfg.neighbor_skin,
-        );
-
-        self.neighbors_nb.dy_water = build_neighbors(
-            &self.neighbors_nb.ref_pos_dyn,
-            &self.neighbors_nb.ref_pos_water_o,
-            &self.cell,
-            false,
-            self.cfg.neighbor_skin,
-        );
-        self.rebuild_dy_water_inv();
-
-        self.neighbors_nb.water_water = build_neighbors(
-            &self.neighbors_nb.ref_pos_water_o,
-            &self.neighbors_nb.ref_pos_water_o,
-            &self.cell,
-            true,
-            self.cfg.neighbor_skin,
-        );
-    }
-
     /// We use this to set up optimizations defined in the Amber reference manual. `excluded` deals
     /// with sections were we skip coulomb and Vdw interactions for atoms separated by 1 or 2 bonds. `scaled14` applies a force
     /// scaler for these interactions, when separated by 3 bonds.

@@ -13,7 +13,13 @@ use lin_alg::f32::Vec3;
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
-use crate::{CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState, PMEIndex, ambient::instantaneous_pressure_bar, non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N}, snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd}, water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O}, SPME_RATIO};
+use crate::{
+    CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState, PMEIndex, SPME_RATIO,
+    ambient::instantaneous_pressure_bar,
+    non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N},
+    snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
+    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
+};
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -57,14 +63,12 @@ impl Display for Integrator {
 impl MdState {
     /// For Langevin middle.
     fn drift_atoms(&mut self, dt: f32) {
-        for (i, a) in self.atoms.iter_mut().enumerate() {
-            a.posit += a.vel * dt;
-            // a.posit = self.cell.wrap(a.posit);
+        for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
 
-            // self.neighbors_nb.max_displacement_sq = self
-            //     .neighbors_nb
-            //     .max_displacement_sq
-            //     .max((a.vel * dt).magnitude_squared());
+            a.posit += a.vel * dt;
         }
     }
 
@@ -80,15 +84,6 @@ impl MdState {
             w.h0.posit = self.cell.wrap(w.h0.posit);
             w.h1.posit = self.cell.wrap(w.h1.posit);
             w.m.posit = self.cell.wrap(w.m.posit);
-
-            // track displacement like you do for atoms
-            // let upd = |v: Vec3| (v * dt).magnitude_squared();
-            // let dmax = upd(w.o.vel)
-            //     .max(upd(w.h0.vel))
-            //     .max(upd(w.h1.vel))
-            //     .max(upd(w.m.vel));
-
-            // self.neighbors_nb.max_displacement_sq = self.neighbors_nb.max_displacement_sq.max(dmax);
         }
     }
 
@@ -111,6 +106,9 @@ impl MdState {
 
                 // Half-kick
                 for a in &mut self.atoms {
+                    if a.static_ {
+                        continue;
+                    }
                     a.vel += a.accel * dt_half;
                 }
 
@@ -164,6 +162,9 @@ impl MdState {
                 self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
                 for (i, a) in self.atoms.iter_mut().enumerate() {
+                    if a.static_ {
+                        continue;
+                    }
                     a.accel *= self.mass_accel_factor[i];
                     a.vel += a.accel * dt_half;
                 }
@@ -202,19 +203,14 @@ impl MdState {
                 // First half-kick (v += a dt/2) and drift (x += v dt)
                 // Note: We do not apply the accel unit conversion, nor mass division here; they're already
                 // included in this values from the previous step.
-                for (i, a) in self.atoms.iter_mut().enumerate() {
-                    a.vel += a.accel * dt_half; // Half-kick
-
-                    a.posit += a.vel * dt; // Drift
-
-                    {
-                        // after you've updated a.posit and wrapped it:
-                        let refp = self.neighbors_nb.ref_pos_dyn[i];
-                        let dv = self.cell.min_image(a.posit - refp);
-                        let d2 = dv.magnitude_squared();
-                        self.neighbors_nb.max_displacement_sq =
-                            self.neighbors_nb.max_displacement_sq.max(d2);
+                // for (i, a) in self.atoms.iter_mut().enumerate() {
+                for a in &mut self.atoms {
+                    if a.static_ {
+                        continue;
                     }
+
+                    a.vel += a.accel * dt_half; // Half-kick
+                    a.posit += a.vel * dt; // Drift
                 }
 
                 // todo: Consider applying the thermostat between the first half-kick and drift.
@@ -249,13 +245,16 @@ impl MdState {
                 self.regen_pme();
                 self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
-                // Forces (bonded and nonbonded, to dynamic and water atoms) have been applied; perform other
+                // Forces (bonded and nonbonded, to non-water and water atoms) have been applied; perform other
                 // steps required for integration; second half-kick, RATTLE for hydrogens; SETTLE for water. -----
 
                 // Second half-kick using the forces calculated this step, and update accelerations using the atom's mass;
                 // Between the accel reset and this step, the accelerations have been missing those factors; this is an optimization to
                 // do it once at the end.
                 for (i, a) in self.atoms.iter_mut().enumerate() {
+                    if a.static_ {
+                        continue;
+                    }
                     // We divide by mass here, once accelerations have been computed in parts above; this
                     // is an optimization to prevent dividing each accel component by it.
                     // This is the step where we A: convert force to accel, and B: Convert units from the param
@@ -384,7 +383,7 @@ impl MdState {
         let mut w_recip = 0.0;
         for (k, tag) in map.iter().enumerate() {
             match *tag {
-                PMEIndex::Dyn(i) => {
+                PMEIndex::NonWat(i) => {
                     self.atoms[i].accel += f_recip[k];
                     w_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial
                 }
@@ -440,25 +439,24 @@ impl MdState {
     }
 
     // todo: QC, and simplify as required.
-    /// Gather all particles that contribute to PME (dyn, water sites, statics).
+    /// Gather all particles that contribute to PME (non-water atoms, water sites).
     /// Returns positions wrapped to the primary box, their charges, and a map telling
     /// us which original DOF each entry corresponds to.
     fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3>, Vec<f32>, Vec<PMEIndex>) {
-        let n_dyn = self.atoms.len();
+        let n_std = self.atoms.len();
         let n_wat = self.water.len();
         // let n_st = self.atoms_static.len();
 
-        // Capacity hint: dyn + 4*water + statics
-        // let mut pos = Vec::with_capacity(n_dyn + 4 * n_wat + n_st);
-        let mut pos = Vec::with_capacity(n_dyn + 4 * n_wat);
+        // Capacity hint: std + 4*water + statics
+        let mut pos = Vec::with_capacity(n_std + 4 * n_wat);
         let mut q = Vec::with_capacity(pos.capacity());
         let mut map = Vec::with_capacity(pos.capacity());
 
-        // Dynamic atoms
+        // Non-water atoms.
         for (i, a) in self.atoms.iter().enumerate() {
             pos.push(self.cell.wrap(a.posit)); // [0,L) per axis
             q.push(a.partial_charge); // already scaled to Amber units
-            map.push(PMEIndex::Dyn(i));
+            map.push(PMEIndex::NonWat(i));
         }
 
         // Water sites (OPC: O usually has 0 charge; include anyway—cost is negligible)

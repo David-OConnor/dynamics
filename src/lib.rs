@@ -749,8 +749,7 @@ impl MdState {
         result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
 
         result.setup_nonbonded_exclusion_scale_flags();
-        result.init_neighbors();
-        result.setup_pairs();
+        result.build_all_neighbors(dev);
 
         // Initializes the FFT planner[s], among other things.
         result.regen_pme();
@@ -836,7 +835,6 @@ impl MdState {
         if self.step_count.is_multiple_of(SPME_RATIO) {
             self.handle_spme_recip(dev);
         }
-
 
         if self.step_count == 1 {
             let elapsed = start.elapsed();
@@ -939,14 +937,15 @@ impl MdState {
                 let step_mag = (alpha * fm).min(STEP_MAX);
                 let s = f * (step_mag / fm);
 
-                a.posit += s;
-                // a.posit = self.cell.wrap(a.posit);
-                last_step[i] = s;
+                if !a.static_ {
+                    a.posit += s;
 
-                self.neighbors_nb.max_displacement_sq = self
-                    .neighbors_nb
-                    .max_displacement_sq
-                    .max(s.magnitude_squared());
+                    self.neighbors_nb.max_displacement_sq = self
+                        .neighbors_nb
+                        .max_displacement_sq
+                        .max(s.magnitude_squared());
+                }
+                last_step[i] = s;
             }
 
             if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -1050,7 +1049,6 @@ impl MdState {
     }
 }
 
-#[inline]
 /// Mutable aliasing helpers.
 pub(crate) fn split2_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T) {
     assert!(i != j);
@@ -1060,7 +1058,6 @@ pub(crate) fn split2_mut<T>(v: &mut [T], i: usize, j: usize) -> (&mut T, &mut T)
     (&mut left[low], &mut right[0])
 }
 
-#[inline]
 fn split3_mut<T>(v: &mut [T], i: usize, j: usize, k: usize) -> (&mut T, &mut T, &mut T) {
     let len = v.len();
     assert!(i < len && j < len && k < len, "index out of bounds");
@@ -1076,7 +1073,6 @@ fn split3_mut<T>(v: &mut [T], i: usize, j: usize, k: usize) -> (&mut T, &mut T, 
     }
 }
 
-#[inline]
 pub(crate) fn split4_mut<T>(
     slice: &mut [T],
     i0: usize,
@@ -1110,7 +1106,7 @@ pub(crate) fn split4_mut<T>(
 #[derive(Clone, Copy, Debug)]
 pub enum PMEIndex {
     // Dynamic atoms (protein, ligand, ions, etc.)
-    Dyn(usize),
+    NonWat(usize),
 
     // Water sites (by molecule index)
     WatO(usize),

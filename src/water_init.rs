@@ -33,12 +33,11 @@ const N_A: f32 = 6.022_140_76e23;
 
 /// We pass atoms in so this doesn't generate water molecules that overlap with them.
 pub fn make_water_mols(cell: &SimBox, t_target: f32, atoms_dy: &[AtomDynamics]) -> Vec<WaterMol> {
+    println!("Initializing water molecules...");
     let vol = cell.volume();
 
     let n_float = WATER_DENSITY * vol * (N_A / (MASS_WATER * 1.0e24));
     let n_mols = n_float.round() as usize;
-
-    // let n_mols = 0; // todo temp!!
 
     let mut result = Vec::with_capacity(n_mols);
     let mut rng = rand::rng();
@@ -90,6 +89,8 @@ pub fn make_water_mols(cell: &SimBox, t_target: f32, atoms_dy: &[AtomDynamics]) 
     }
 
     init_velocities_rigid(&mut result, t_target, cell);
+
+    println!("Complete.");
     result
 }
 
