@@ -1,15 +1,16 @@
 //! Misc utility functions.
 
 use std::{
+    fmt::{Display, Formatter},
     fs::File,
     io,
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     path::Path,
 };
 
 use bio_files::{AtomGeneric, BondGeneric};
 
-use crate::{ParamError, snapshot::Snapshot};
+use crate::{COMPUTATION_TIME_RATIO, ParamError, snapshot::Snapshot};
 
 /// Build a list of indices that relate atoms that are connected by covalent bonds.
 /// For each outer atom index, the inner values are indices of the atom it's bonded to.
@@ -94,4 +95,129 @@ pub fn load_snapshots(path: &Path) -> io::Result<Vec<Snapshot>> {
     }
 
     Ok(out)
+}
+
+/// The output of `ComputationTime`, averaged over step count. In μs.
+#[derive(Debug)]
+pub struct ComputationTime {
+    pub step_count: usize,
+    pub bonded: u64,
+    pub non_bonded_short_range: u64,
+    pub ewald_long_range: u64,
+    pub neighbor_all: u64,
+    pub neighbor_rebuild: u64,
+    pub neighbor_rebuild_ratio: f32,
+    pub integration: u64,
+    pub ambient: u64,
+    pub snapshots: u64,
+    /// Others substracted from `total`. Assumes no overlap. Uses `neighbor_all`, since `neighbor_rebuild`
+    /// is part of it.
+    pub other: u64,
+    pub total: u64,
+}
+
+impl Display for ComputationTime {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        writeln!(
+            f,
+            "Computation time from {} steps, averaged per step, sampled every {COMPUTATION_TIME_RATIO} steps:",
+            self.step_count
+        )?;
+
+        writeln!(f, "--Bonded: {} μs", self.bonded)?;
+        writeln!(
+            f,
+            "--Non-bonded (short-range): {} μs",
+            self.non_bonded_short_range
+        )?;
+        writeln!(f, "--Non-bonded (long-range): {} μs", self.ewald_long_range)?;
+
+        writeln!(f, "--Neighbor rebuild: {} μs", self.neighbor_rebuild)?;
+        writeln!(
+            f,
+            "--Neighbor rebuild ratio: {:.2}",
+            self.neighbor_rebuild_ratio
+        )?;
+
+        writeln!(f, "--Integration: {} μs", self.integration)?;
+        writeln!(f, "--Baro/Thermo: {} μs", self.ambient)?;
+        writeln!(f, "--Other: {} μs", self.other + self.snapshots)?;
+        writeln!(f, "--Total: {} μs", self.total)?;
+
+        Ok(())
+    }
+}
+
+/// We use this to monitor performance, by component. We track
+/// Times are in μs. todo: Add integration time, H Shaking, Water settle, SPME rebuild etc A/R.
+#[derive(Debug, Default)]
+pub(crate) struct ComputationTimeSums {
+    pub bonded_sum: u64,
+    pub non_bonded_short_range_sum: u64,
+    pub ewald_long_range_sum: u64,
+    /// The ratio doesn't apply to neighbors; log each time we do this.
+    /// `neighbor_all` includes code that determines when we need to rebuild.
+    /// note: The neighbor rebuild makes up the large majority of the time taken of neighbor_all.
+    /// todo: Consider removing one or the other.
+    pub neighbor_all_sum: u64,
+    /// Just the actual rebuild time; not each time.
+    pub neighbor_rebuild_sum: u64,
+    pub neighbor_rebuild_count: u16,
+    pub integration_sum: u64,
+    /// Thermostat, barostat, sim box rebuilds.
+    /// todo: Split this up into these components if it's significantly large.
+    pub ambient_sum: u64,
+    pub snapshot_sum: u64,
+    /// If the other values don't add up to nearly this, parts we haven't counted
+    /// make up a significant amount of the computation time; we may need to include them.
+    pub total: u64,
+}
+
+impl ComputationTimeSums {
+    pub fn time_per_step(&self, num_steps: usize) -> io::Result<ComputationTime> {
+        if num_steps == 0 {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "No steps to perform the computation on",
+            ));
+        }
+
+        let c = COMPUTATION_TIME_RATIO as f32 / num_steps as f32;
+
+        let apply = |v| (v as f32 * c) as u64;
+
+        let bonded = apply(self.bonded_sum);
+        let non_bonded_short_range = apply(self.non_bonded_short_range_sum);
+        let ewald_long_range = apply(self.ewald_long_range_sum);
+        let neighbor_all = self.neighbor_all_sum / num_steps as u64;
+        let neighbor_rebuild = self.neighbor_rebuild_sum / num_steps as u64;
+        let integration = apply(self.integration_sum);
+        let ambient = apply(self.ambient_sum);
+        let snapshots = apply(self.snapshot_sum);
+        let total = apply(self.total);
+
+        let other = total
+            - (bonded
+                + non_bonded_short_range
+                + ewald_long_range
+                + neighbor_all
+                + integration
+                + ambient
+                + snapshots);
+
+        Ok(ComputationTime {
+            step_count: num_steps,
+            bonded,
+            non_bonded_short_range,
+            ewald_long_range,
+            neighbor_all,
+            neighbor_rebuild,
+            neighbor_rebuild_ratio: self.neighbor_rebuild_count as f32 / num_steps as f32,
+            integration,
+            ambient,
+            snapshots,
+            other,
+            total,
+        })
+    }
 }

@@ -6,8 +6,6 @@
 A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac.
 Uses CPU with threadpools and SIMD, or an Nvidia GPU.
 
-## Warning: Early release! Lots of missing features. If you see something, post a Github issue.
-
 It uses traditional forcefield-based molecular dynamics, and is inspired by Amber.
 It does not use quantum-mechanics, nor ab-initio methods.
 
@@ -467,6 +465,9 @@ cfg.integrator = dynamics.Integrator.VelocityVerlet
 cfg.temp_target = 310.
 # etc
 ```
+
+You can run `md_state.computation_time()` after running to get a breakdown of how long each computation component took
+to run, averaged per step.
 
 ## Using with GPU
 

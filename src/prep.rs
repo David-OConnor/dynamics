@@ -31,9 +31,7 @@ use bio_files::md_params::{
 use itertools::Itertools;
 use na_seq::Element;
 
-use crate::{
-    AtomDynamics, MdState, ParamError, neighbors::build_neighbors, params::ForceFieldParamsIndexed,
-};
+use crate::{AtomDynamics, MdState, ParamError, params::ForceFieldParamsIndexed};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
 /// the baseline.
@@ -48,53 +46,8 @@ pub fn merge_params(baseline: &ForceFieldParams, add_this: &ForceFieldParams) ->
     merged.dihedral.extend(add_this.dihedral.clone());
     merged.improper.extend(add_this.improper.clone());
 
-    // merged.mass.reserve(add_this.mass.len());
-    // for (k, v) in &add_this.mass {
-    //     merged.mass.insert(k.clone(), v.clone());
-    // }
-    //
-    // merged.lennard_jones.reserve(add_this.lennard_jones.len());
-    // for (k, v) in &add_this.lennard_jones {
-    //     merged.lennard_jones.insert(k.clone(), v.clone());
-    // }
-    //
-    // merged.bond.reserve(add_this.bond.len());
-    // for (k, v) in &add_this.bond {
-    //     merged.bond.insert(k.clone(), v.clone());
-    // }
-    //
-    // merged.angle.reserve(add_this.angle.len());
-    // for (k, v) in &add_this.angle {
-    //     merged.angle.insert(k.clone(), v.clone());
-    // }
-    //
-    // merged.dihedral.reserve(add_this.dihedral.len());
-    // for (k, v) in &add_this.dihedral {
-    //     merged.dihedral.insert(k.clone(), v.clone());
-    // }
-    //
-    // merged.improper.reserve(add_this.improper.len());
-    // for (k, v) in &add_this.improper {
-    //     merged.improper.insert(k.clone(), v.clone());
-    // }
-
     merged
 }
-
-// /// Helper that reduces repetition. Used for populating all bonded parameters by index.
-// fn ff_type_from_idx<'a>(
-//     atoms: &'a [AtomGeneric],
-//     idx: usize,
-//     descriptor: &str,
-// ) -> Result<&'a String, ParamError> {
-//     let atom = &atoms[idx];
-//
-//     atom.force_field_type.as_ref().ok_or_else(|| {
-//         ParamError::new(&format!(
-//             "MD failure: Atom missing FF type on {descriptor}: {atom}"
-//         ))
-//     })
-// }
 
 #[derive(Clone, Default, Debug)]
 pub(crate) struct HydrogenRigidConstraint {

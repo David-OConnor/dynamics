@@ -493,6 +493,11 @@ impl MdState {
         self.inner.step(&dev, dt);
     }
 
+    /// A string for now to keep this wrapper simple.
+    fn computation_time(&self) -> String {
+        self.inner.computation_time().to_string()
+    }
+
     fn __str__(&self) -> String {
         format!("{}", self.inner)
     }

@@ -135,7 +135,7 @@ use crate::{
     non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
-    util::build_adjacency_list,
+    util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
     water_init::make_water_mols,
     water_opc::WaterMol,
 };
@@ -162,9 +162,12 @@ const SHAKE_MAX_IT: usize = 100;
 // Every this many steps, re-
 const CENTER_SIMBOX_RATIO: usize = 30;
 
-/// Run SPME once every these steps. It's the slowest computation, and is comparatively
-/// smooth over time compared to Coulomb and LJ.
+// Run SPME once every these steps. It's the slowest computation, and is comparatively
+// smooth over time compared to Coulomb and LJ.
 const SPME_RATIO: usize = 2;
+
+// Log computation time every this many steps. (Except for neighbor rebuild)
+const COMPUTATION_TIME_RATIO: usize = 50;
 
 #[derive(Debug, Clone, Default)]
 pub enum ComputationDevice {
@@ -565,9 +568,9 @@ pub struct MdState {
     #[cfg(feature = "cuda")]
     per_neighbor_gpu: Option<PerNeighborGpu>,
     pub neighbor_rebuild_count: usize,
-    pub neighbor_rebuild_us: u64,
     /// A cache of accel_factor / mass, per atom. Built once, at init.
     mass_accel_factor: Vec<f32>,
+    pub computation_time: ComputationTimeSums,
 }
 
 impl Display for MdState {
@@ -603,8 +606,6 @@ impl MdState {
                 "No molecules to simulate. Please provide at least one molecule.",
             ));
         }
-
-        // let mut atoms_md_static: Vec<AtomDynamics> = Vec::new();
 
         // todo: Sort this out. One set for all molecules now. Assumes unique FF names between
         // todo differenet set types.
@@ -743,19 +744,23 @@ impl MdState {
             ..Default::default()
         };
 
+        // Set up our LJ cache. Do this prior to building neighbors for the first time,
+        // as that also sets up the GPU-struct LJ data.
+        result.lj_tables = LjTables::new(&result.atoms);
+
+        result.neighbors_nb = NeighborsNb::new(result.cfg.neighbor_skin);
+
         result.barostat.pressure_target = cfg.pressure_target as f64;
 
         result.water = make_water_mols(&result.cell, cfg.temp_target, &result.atoms);
         result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
 
         result.setup_nonbonded_exclusion_scale_flags();
+
         result.build_all_neighbors(dev);
 
         // Initializes the FFT planner[s], among other things.
         result.regen_pme();
-
-        // Set up our LJ cache.
-        result.lj_tables = LjTables::new(&result.atoms, &result.water);
 
         // Allocate force buffers on the GPU, and store a handle. Used for the entire run.
         // Initialize the per-neighbor data as well; we will do this again every time
@@ -783,13 +788,18 @@ impl MdState {
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
 
-        result.neighbors_nb.half_skin_sq = (result.cfg.neighbor_skin * 0.5).powi(2);
-        result.snapshot_ref_positions();
-
         // todo: Add to config A/R,
         // result.minimize_energy(dev, cfg.max_init_relaxation_iters);
 
+        // Reset computation time to negate anything that was applied by minimization, initial
+        // neighbor rebuild, and anything else done here that may affect it.
+        result.computation_time = Default::default();
+
         Ok(result)
+    }
+
+    pub fn computation_time(&self) -> io::Result<ComputationTime> {
+        self.computation_time.time_per_step(self.step_count)
     }
 
     /// Reset acceleration and virial pair. Do this each step after the first half-step and drift, and
@@ -812,28 +822,40 @@ impl MdState {
     }
 
     fn apply_all_forces(&mut self, dev: &ComputationDevice) {
-        self.apply_bonded_forces();
-
         let mut start = Instant::now();
-        if self.step_count == 1 {
+        let log_time = self.step_count.is_multiple_of(COMPUTATION_TIME_RATIO);
+
+        if log_time {
             start = Instant::now();
         }
 
-        // Note: Non-bonded takes the vast majority of time.
-        // todo: Temp tm rm!!
-        self.apply_nonbonded_forces(dev);
-        if self.step_count == 1 {
-            let elapsed = start.elapsed();
-            println!("Non-bonded time: {:?} μs", elapsed.as_micros());
+        self.apply_bonded_forces();
+
+        if log_time {
+            let elapsed = start.elapsed().as_micros() as u64;
+            self.computation_time.bonded_sum += elapsed;
         }
 
-        let start = Instant::now();
-        // todo: YOu need to update potential energy from LR PME as well.
+        self.apply_nonbonded_forces(dev);
 
-        // todo: Integrate this into nonbonded_forces fn A/R.
+        if log_time {
+            let elapsed = start.elapsed().as_micros() as u64;
+            self.computation_time.non_bonded_short_range_sum += elapsed;
+        }
 
         if self.step_count.is_multiple_of(SPME_RATIO) {
+            // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
+            // It will produce inaccurate results otherwise.
+            if log_time {
+                start = Instant::now();
+            }
+
             self.handle_spme_recip(dev);
+
+            if log_time {
+                let elapsed = start.elapsed().as_micros() as u64;
+                self.computation_time.ewald_long_range_sum += elapsed;
+            }
         }
 
         if self.step_count == 1 {
@@ -997,7 +1019,6 @@ impl MdState {
 
         // Keep consistent with your normal cadence.
         self.cell.recenter(&self.atoms);
-        self.snapshot_ref_positions();
         self.regen_pme();
 
         println!("Complete");

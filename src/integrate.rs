@@ -3,6 +3,7 @@
 use std::{
     fmt,
     fmt::{Display, Formatter},
+    time::Instant,
 };
 
 #[cfg(feature = "encode")]
@@ -14,7 +15,8 @@ const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
 use crate::{
-    CENTER_SIMBOX_RATIO, ComputationDevice, HydrogenConstraint, MdState, PMEIndex, SPME_RATIO,
+    CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
+    PMEIndex, SPME_RATIO,
     ambient::instantaneous_pressure_bar,
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
@@ -92,17 +94,26 @@ impl MdState {
     /// This method orchestrates the dynamics at each time step. Uses a Verlet Velocity base,
     /// with different thermostat approaches depending on configuration.
     pub fn step(&mut self, dev: &ComputationDevice, dt: f32) {
+        let mut start_entire_step = Instant::now();
+        let mut start = Instant::now(); // Per-item
+
+        let log_time = self.step_count.is_multiple_of(COMPUTATION_TIME_RATIO);
+
         let dt_half = 0.5 * dt;
 
         // todo: YOu can remove this once we crush the root cause.
         if self.nb_pairs.len() == 0 {
-            eprintln!("UHoh. Pairs count is 0. THis likely means the system blew up.");
+            eprintln!("UHoh. Pairs count is 0. THis likely means the system blew up. :(");
             return;
         }
 
         match self.cfg.integrator {
             Integrator::LangevinMiddle { gamma } => {
                 // See notes in the below branch.
+
+                if log_time {
+                    start = Instant::now();
+                }
 
                 // Half-kick
                 for a in &mut self.atoms {
@@ -125,7 +136,23 @@ impl MdState {
                     self.shake_hydrogens();
                 }
 
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
+                }
+
+                if log_time {
+                    start = Instant::now();
+                }
                 self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.ambient_sum += elapsed;
+                }
+
+                if log_time {
+                    start = Instant::now();
+                }
 
                 // (Optional but recommended) Velocity-constraint pass if your hydrogens/water need RATTLE after OU
                 // You can defer to the final RATTLE if you prefer, but best practice is to keep velocities on-constraint.
@@ -141,7 +168,17 @@ impl MdState {
                     self.shake_hydrogens();
                 }
 
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
+                }
+
                 self.reset_accel_e();
+
+                if log_time {
+                    start = Instant::now();
+                }
+
                 let p_inst_bar = instantaneous_pressure_bar(
                     &self.atoms,
                     &self.water,
@@ -157,9 +194,17 @@ impl MdState {
                     &mut self.atoms,
                     &mut self.water,
                 );
-                self.snapshot_ref_positions();
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.ambient_sum += elapsed;
+                }
+
                 self.regen_pme();
-                self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
+
+                if log_time {
+                    start = Instant::now();
+                }
 
                 for (i, a) in self.atoms.iter_mut().enumerate() {
                     if a.static_ {
@@ -190,14 +235,41 @@ impl MdState {
                 if self.step_count % COM_REMOVAL_RATIO_ANGULAR == 0 {
                     self.zero_angular_momentum_atoms();
                 }
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
+                }
             }
             _ => {
                 // O(dt/2)
                 if let Integrator::Langevin { gamma } = self.cfg.integrator {
+                    if log_time {
+                        start_entire_step = Instant::now();
+                    }
                     self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
+
+                    if log_time {
+                        let elapsed = start.elapsed().as_micros() as u64;
+                        self.computation_time.ambient_sum += elapsed;
+                    }
+
+                    if log_time {
+                        start_entire_step = Instant::now();
+                    }
+
                     if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
                         self.rattle_hydrogens();
                     }
+
+                    if log_time {
+                        let elapsed = start.elapsed().as_micros() as u64;
+                        self.computation_time.integration_sum += elapsed;
+                    }
+                }
+
+                if log_time {
+                    start = Instant::now();
                 }
 
                 // First half-kick (v += a dt/2) and drift (x += v dt)
@@ -224,15 +296,24 @@ impl MdState {
                     self.shake_hydrogens();
                 }
 
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
+                }
+
                 self.reset_accel_e();
+                self.apply_all_forces(dev);
+
+                if log_time {
+                    start = Instant::now();
+                }
+
                 let p_inst_bar = instantaneous_pressure_bar(
                     &self.atoms,
                     &self.water,
                     &self.cell,
                     self.barostat.virial_pair_kcal,
                 );
-
-                self.apply_all_forces(dev);
 
                 self.barostat.apply_isotropic(
                     dt as f64,
@@ -241,9 +322,13 @@ impl MdState {
                     &mut self.atoms,
                     &mut self.water,
                 );
-                self.snapshot_ref_positions();
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.ambient_sum += elapsed;
+                }
+
                 self.regen_pme();
-                self.neighbors_nb.half_skin_sq = (self.cfg.neighbor_skin * 0.5).powi(2);
 
                 // Forces (bonded and nonbonded, to non-water and water atoms) have been applied; perform other
                 // steps required for integration; second half-kick, RATTLE for hydrogens; SETTLE for water. -----
@@ -251,6 +336,9 @@ impl MdState {
                 // Second half-kick using the forces calculated this step, and update accelerations using the atom's mass;
                 // Between the accel reset and this step, the accelerations have been missing those factors; this is an optimization to
                 // do it once at the end.
+                if log_time {
+                    start = Instant::now();
+                }
                 for (i, a) in self.atoms.iter_mut().enumerate() {
                     if a.static_ {
                         continue;
@@ -266,13 +354,36 @@ impl MdState {
                 // self.water_vv_second_half(&mut self.forces_on_water, dt_half);
                 self.water_vv_second_half(dt_half);
 
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
+                }
+
+                if log_time {
+                    start = Instant::now();
+                }
+
                 // O(dt/2)
                 if let Integrator::Langevin { gamma } = self.cfg.integrator {
                     self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
                 }
 
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.ambient_sum += elapsed;
+                }
+
+                if log_time {
+                    start = Instant::now();
+                }
+
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens();
+                }
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
                 }
 
                 if self.step_count % COM_REMOVAL_RATIO_LINEAR == 0 {
@@ -284,28 +395,53 @@ impl MdState {
             }
         }
 
-        let dt_f64 = dt as f64;
-
         if let Integrator::VerletVelocity = self.cfg.integrator {
-            self.apply_thermostat_csvr(dt_f64, self.cfg.temp_target as f64);
+            if log_time {
+                start = Instant::now();
+            }
+
+            self.apply_thermostat_csvr(dt as f64, self.cfg.temp_target as f64);
+
+            if log_time {
+                let elapsed = start.elapsed().as_micros() as u64;
+                self.computation_time.ambient_sum += elapsed;
+            }
         }
 
         self.time += dt as f64;
         self.step_count += 1;
 
-        // todo: Ratio for this too?
+        start = Instant::now(); // No ratio for neighbor times.
+
         self.update_max_displacement_since_rebuild();
         self.build_neighbors_if_needed(dev);
 
+        let elapsed = start.elapsed().as_micros() as u64;
+        self.computation_time.neighbor_all_sum += elapsed;
+
         // We keeping the cell centered on the dynamics atoms. Note that we don't change the dimensions,
         // as these are under management by the barostat.
-        if self.step_count % CENTER_SIMBOX_RATIO == 0 {
+        if self.step_count.is_multiple_of(CENTER_SIMBOX_RATIO) {
             self.cell.recenter(&self.atoms);
-            self.snapshot_ref_positions();
             // todo: Will this interfere with carrying over state from the previous step?
             self.regen_pme();
         }
 
+        let start = Instant::now(); // Not sure how else to handle. (Option would work)
+        self.handle_snapshots();
+
+        if log_time {
+            let elapsed = start.elapsed().as_micros() as u64;
+            self.computation_time.snapshot_sum += elapsed;
+        }
+
+        if log_time {
+            let elapsed = start_entire_step.elapsed().as_micros() as u64;
+            self.computation_time.total += elapsed;
+        }
+    }
+
+    fn handle_snapshots(&mut self) {
         let mut updated_ke = false;
         let mut take_ss = false;
         let mut take_ss_file = false;
@@ -499,6 +635,7 @@ impl MdState {
     /// Run this at init, and whenever you update the sim box.
     pub(crate) fn regen_pme(&mut self) {
         let [lx, ly, lz] = self.cell.extent.to_arr();
+
         self.pme_recip = Some(PmeRecip::new(
             (SPME_N, SPME_N, SPME_N),
             (lx, ly, lz),

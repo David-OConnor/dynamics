@@ -1,6 +1,6 @@
 //! For VDW and Coulomb forces
 
-use std::ops::AddAssign;
+use std::{ops::AddAssign, time::Instant};
 
 use ewald::force_coulomb_short_range;
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
@@ -9,7 +9,7 @@ use rayon::prelude::*;
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
-    AtomDynamics, ComputationDevice, MdState,
+    AtomDynamics, COMPUTATION_TIME_RATIO, ComputationDevice, MdState,
     ambient::SimBox,
     forces::force_e_lj,
     water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
@@ -18,7 +18,6 @@ use crate::{
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.
 pub const CUTOFF_VDW: f32 = 12.0;
-// const CUTOFF_VDW_SQ: f64 = CUTOFF_VDW * CUTOFF_VDW;
 
 // Ewald SPME approximation for Coulomb force
 
@@ -28,7 +27,7 @@ pub const CUTOFF_VDW: f32 = 12.0;
 
 // We don't use a taper, for now.
 // const LONG_RANGE_SWITCH_START: f64 = 8.0; // start switching (Å)
-pub const LONG_RANGE_CUTOFF: f32 = 10.0;
+pub const LONG_RANGE_CUTOFF: f32 = 10.0; // Å
 
 // A bigger α means more damping, and a smaller real-space contribution. (Cheaper real), but larger
 // reciprocal load.
@@ -52,9 +51,6 @@ pub const SCALE_COUL_14: f32 = 1.0 / 1.2;
 // on their construction.
 pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 
-// (indices), (sigma, eps)
-// pub type LjTable = HashMap<(usize, usize), (f32, f32)>;
-
 /// We use this to load the correct data from LJ lookup tables. Since we use indices,
 /// we must index correctly into the dynamic, or static tables. We have single-index lookups
 /// for atoms acting on water, since there is only one O LJ type.
@@ -68,65 +64,84 @@ pub enum LjTableIndices {
     WaterWater,
 }
 
-/// We cache sigma and eps on the first step, then use it on the others. This increases
+/// We cache σ and ε on the first step, then use it on the others. This increases
 /// memory use, and reduces CPU use. We use indices, as they're faster than HashMaps.
+/// The indices are flattened, of each interaction pair. Values are (σ, ε).
+///
+/// Water-water is not included, as it's a single, hard-coded parameter pair.
 #[derive(Default)]
 pub struct LjTables {
-    /// Keys: (Dynamic, Dynamic). For acting on dynamic atoms.
-    pub dynamic: Vec<(f32, f32)>,
-    /// Keys: Dynamic. Water acting on water O.
-    /// Water tables are simpler than ones on dynamic: no combinations needed, as the source is a single
-    /// target atom type: O (water).
-    pub water_dyn: Vec<(f32, f32)>,
-    pub n_dyn: usize,
+    /// Non-water, non-water interactions. Upper triangle.
+    pub std: Vec<(f32, f32)>,
+    /// Water, non-water interactions.
+    pub water_std: Vec<(f32, f32)>,
+    pub n_std: usize,
 }
 
 // todo note: On large systems, this can have very high memory use. Consider
 // todo setting up your table by atom type, instead of by atom, if that proves to be a problem.
 impl LjTables {
     /// Create an indexed table, flattened.
-    pub fn new(atoms: &[AtomDynamics], water: &[WaterMol]) -> Self {
-        let n_dyn = atoms.len();
+    pub fn new(atoms: &[AtomDynamics]) -> Self {
+        let n_std = atoms.len();
 
-        let mut dynamic = Vec::with_capacity(n_dyn.saturating_sub(1) * n_dyn);
+        // Construct an upper triangle table, excluding reverse order, and self interactions.
+        let mut std = Vec::with_capacity(n_std * (n_std - 1) / 2);
 
-        for (i, atom_0) in atoms.iter().enumerate() {
-            for (j, atom_1) in atoms.iter().enumerate() {
-                if i == j {
+        for (i_0, atom_0) in atoms.iter().enumerate() {
+            for (i_1, atom_1) in atoms.iter().enumerate() {
+                if i_1 <= i_0 {
                     continue;
                 }
                 let (σ, ε) = combine_lj_params(atom_0, atom_1);
-                dynamic.push((σ, ε));
+                std.push((σ, ε));
             }
         }
 
         // One LJ pair per dynamic atom vs water O:
-        let mut water_dyn = Vec::with_capacity(n_dyn);
+        let mut water_std = Vec::with_capacity(n_std);
         for atom in atoms {
             let σ = 0.5 * (atom.lj_sigma + O_SIGMA);
             let ε = (atom.lj_eps * O_EPS).sqrt();
-            water_dyn.push((σ, ε));
+            water_std.push((σ, ε));
         }
 
         Self {
-            dynamic,
-            water_dyn,
-            n_dyn,
+            std,
+            water_std,
+            n_std,
         }
     }
 
     /// Get (σ, ε)
     pub fn lookup(&self, i: &LjTableIndices) -> (f32, f32) {
         match i {
-            LjTableIndices::StdStd((i0, i1)) => {
-                // Row-major over N×N with diagonal removed.
-                let row_stride = self.n_dyn - 1;
-                let col = if *i1 < *i0 { *i1 } else { *i1 - 1 }; // Skip the diagonal
-                let index = i0 * row_stride + col;
+            LjTableIndices::StdStd((i_0, i_1)) => {
+                // Map to (i<j), then index into the packed upper triangle (row-major).
+                let (i, j) = if i_0 < i_1 {
+                    (*i_0, *i_1)
+                } else {
+                    (*i_1, *i_0)
+                };
 
-                self.dynamic[index]
+                if i >= self.n_std {
+                    println!("I > i: {i} std: {}", self.n_std);
+                }
+
+                if j >= self.n_std {
+                    println!("J > J: {j} std: {}", self.n_std);
+                }
+
+                // todo temp
+                assert!(i < self.n_std && j < self.n_std && i != j);
+
+                // Elements before row i: sum_{r=0}^{i-1} (N-1-r) = i*(2N - i - 1)/2
+                // Offset within row i: (j - i - 1)
+                let idx = i * (2 * self.n_std - i - 1) / 2 + (j - i - 1);
+
+                self.std[idx]
             }
-            LjTableIndices::StdWater(ix) => self.water_dyn[*ix],
+            LjTableIndices::StdWater(ix) => self.water_std[*ix],
             LjTableIndices::WaterWater => (O_SIGMA, O_EPS),
         }
     }
@@ -384,6 +399,9 @@ impl MdState {
             })
             .collect();
 
+        // todo: Look at water_water
+        // todo: In general, your static exclusions will get messed up with this logic.
+
         // Forces from water on non-water atoms, and vice-versa
         let mut pairs_std_water: Vec<_> = (0..n_std)
             .flat_map(|i_std| {
@@ -412,7 +430,7 @@ impl MdState {
             for &i_1 in &self.neighbors_nb.water_water[i_0] {
                 if i_1 <= i_0 {
                     continue;
-                } // unique (i0,i1)
+                }
 
                 for &site_0 in &sites {
                     for &site_1 in &sites {
