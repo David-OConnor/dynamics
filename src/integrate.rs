@@ -18,7 +18,7 @@ use crate::{
     CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
     PMEIndex, SPME_RATIO,
     ambient::instantaneous_pressure_bar,
-    non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_N},
+    non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_MESH_SPACING},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
     water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
 };
@@ -499,8 +499,8 @@ impl MdState {
             Some(pme_recip) => match dev {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
-                ComputationDevice::Gpu((stream, module)) => {
-                    // pme_recip.forces_gpu(stream, module, &pos_all, &q_all)
+                ComputationDevice::Gpu((stream, _module)) => {
+                    // pme_recip.forces_gpu(stream, &pos_all, &q_all)
                     pme_recip.forces_gpu(&self.vkfft_ctx.0, &pos_all, &q_all)
                 }
             },
@@ -633,12 +633,35 @@ impl MdState {
         (pos, q, map)
     }
 
-    /// Run this at init, and whenever you update the sim box.
+    /// Re-initializes the SPME based on sim box dimensions. Run this at init, and whenever you
+    /// update the sim box. Sets FFT planner dimensions.
     pub(crate) fn regen_pme(&mut self) {
         let [lx, ly, lz] = self.cell.extent.to_arr();
 
+        // todo: This is awkward.
+        fn next_planner_n(mut n: usize) -> usize {
+            fn good(mut x: usize) -> bool {
+                for p in [2, 3, 5, 7] { while x % p == 0 { x /= p; } }
+                x == 1
+            }
+            if n < 2 { n = 2; }
+            while !good(n) { n += 1; }
+            n
+        }
+
+        let nx0 = (lx / SPME_MESH_SPACING).round().max(2.0) as usize;
+        let ny0 = (ly / SPME_MESH_SPACING).round().max(2.0) as usize;
+        let nz0 = (lz / SPME_MESH_SPACING).round().max(2.0) as usize;
+
+        let nx = next_planner_n(nx0);
+        let ny = next_planner_n(ny0);
+        let mut nz = next_planner_n(nz0);
+        if nz % 2 != 0 { nz = next_planner_n(nz + 1); }
+
+        println!("Using SPME planner dims: {:?}", (nx, ny, nz));
+
         self.pme_recip = Some(PmeRecip::new(
-            (SPME_N, SPME_N, SPME_N),
+            (nx, ny, nz),
             (lx, ly, lz),
             EWALD_ALPHA,
         ));

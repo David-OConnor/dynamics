@@ -34,8 +34,12 @@ pub const LONG_RANGE_CUTOFF: f32 = 10.0; // Å
 // Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
 pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff = 10.
 pub const PME_MESH_SPACING: f32 = 1.0;
-// SPME order‑4 B‑spline interpolation
-pub const SPME_N: usize = 64;
+
+// // SPME order‑4 B‑spline interpolation
+// pub const SPME_N: usize = 64;
+
+// Å. Smaller uses a higher-resolution mesh. 1 is a good default.
+pub const SPME_MESH_SPACING: f32 = 1.;
 
 // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
 // "Non-bonded interactions between atoms separated by three consecutive bonds... require a special
