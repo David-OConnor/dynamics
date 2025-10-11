@@ -101,19 +101,19 @@ pub fn load_snapshots(path: &Path) -> io::Result<Vec<Snapshot>> {
 #[derive(Debug)]
 pub struct ComputationTime {
     pub step_count: usize,
-    pub bonded: u64,
-    pub non_bonded_short_range: u64,
-    pub ewald_long_range: u64,
-    pub neighbor_all: u64,
-    pub neighbor_rebuild: u64,
+    pub bonded: u32,
+    pub non_bonded_short_range: u32,
+    pub ewald_long_range: u32,
+    pub neighbor_all: u32,
+    pub neighbor_rebuild: u32,
     pub neighbor_rebuild_ratio: f32,
-    pub integration: u64,
-    pub ambient: u64,
-    pub snapshots: u64,
+    pub integration: u32,
+    pub ambient: u32,
+    pub snapshots: u32,
     /// Others substracted from `total`. Assumes no overlap. Uses `neighbor_all`, since `neighbor_rebuild`
     /// is part of it.
-    pub other: u64,
-    pub total: u64,
+    pub other: i32,
+    pub total: u32,
 }
 
 impl Display for ComputationTime {
@@ -141,7 +141,7 @@ impl Display for ComputationTime {
 
         writeln!(f, "--Integration: {} μs", self.integration)?;
         writeln!(f, "--Baro/Thermo: {} μs", self.ambient)?;
-        writeln!(f, "--Other: {} μs", self.other + self.snapshots)?;
+        writeln!(f, "--Other: {} μs", self.other + self.snapshots as i32)?;
         writeln!(f, "--Total: {} μs", self.total)?;
 
         Ok(())
@@ -184,26 +184,26 @@ impl ComputationTimeSums {
 
         let c = COMPUTATION_TIME_RATIO as f32 / num_steps as f32;
 
-        let apply = |v| (v as f32 * c) as u64;
+        let apply = |v| (v as f32 * c) as u32;
 
         let bonded = apply(self.bonded_sum);
         let non_bonded_short_range = apply(self.non_bonded_short_range_sum);
         let ewald_long_range = apply(self.ewald_long_range_sum);
-        let neighbor_all = self.neighbor_all_sum / num_steps as u64;
-        let neighbor_rebuild = self.neighbor_rebuild_sum / num_steps as u64;
+        let neighbor_all = (self.neighbor_all_sum / num_steps as u64) as u32;
+        let neighbor_rebuild = (self.neighbor_rebuild_sum / num_steps as u64) as u32;
         let integration = apply(self.integration_sum);
         let ambient = apply(self.ambient_sum);
         let snapshots = apply(self.snapshot_sum);
         let total = apply(self.total);
 
-        let other = total
+        let other = total as i32
             - (bonded
                 + non_bonded_short_range
                 + ewald_long_range
                 + neighbor_all
                 + integration
                 + ambient
-                + snapshots);
+                + snapshots) as i32;
 
         Ok(ComputationTime {
             step_count: num_steps,

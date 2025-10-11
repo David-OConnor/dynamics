@@ -116,7 +116,7 @@ use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaFunction, CudaModule, CudaStream};
-use ewald::PmeRecip;
+use ewald::{PmeRecip, vk_fft::VkContext};
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use lin_alg::f64::{Vec3x4, f64x4};
@@ -166,8 +166,10 @@ const CENTER_SIMBOX_RATIO: usize = 30;
 // smooth over time compared to Coulomb and LJ.
 const SPME_RATIO: usize = 2;
 
+// todo: This may not be necessary, other than having it be a multiple of SPME_RATIO.
+// todo: This is because the recording is very fast. (ns order)
 // Log computation time every this many steps. (Except for neighbor rebuild)
-const COMPUTATION_TIME_RATIO: usize = 50;
+const COMPUTATION_TIME_RATIO: usize = 20;
 
 #[derive(Debug, Clone, Default)]
 pub enum ComputationDevice {
@@ -188,6 +190,35 @@ impl ParamError {
     pub fn new(descrip: &str) -> Self {
         Self {
             descrip: descrip.to_owned(),
+        }
+    }
+}
+
+// todo: Evaluate this VkFFT context data, and where it should go
+unsafe extern "C" {
+    fn vk_make_context_default() -> *mut core::ffi::c_void;
+    fn vk_destroy_context(ctx: *mut core::ffi::c_void);
+}
+
+#[cfg(feature = "cuda")]
+// tiny RAII so we don’t leak the driver primary context/stream
+struct VkCtx(Arc<VkContext>);
+
+#[cfg(feature = "cuda")]
+impl Default for VkCtx {
+    fn default() -> Self {
+        let handle = unsafe { vk_make_context_default() };
+        assert!(!handle.is_null());
+        VkCtx(Arc::new(VkContext { handle }))
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Drop for VkCtx {
+    fn drop(&mut self) {
+        // only when last Arc drops — ok for a demo
+        if Arc::strong_count(&self.0) == 1 {
+            unsafe { vk_destroy_context(self.0.handle) };
         }
     }
 }
@@ -567,6 +598,8 @@ pub struct MdState {
     forces_posits_gpu: Option<ForcesPositsGpu>,
     #[cfg(feature = "cuda")]
     per_neighbor_gpu: Option<PerNeighborGpu>,
+    #[cfg(feature = "cuda")]
+    vkfft_ctx: VkCtx,
     pub neighbor_rebuild_count: usize,
     /// A cache of accel_factor / mass, per atom. Built once, at init.
     mass_accel_factor: Vec<f32>,
@@ -608,7 +641,7 @@ impl MdState {
         }
 
         // todo: Sort this out. One set for all molecules now. Assumes unique FF names between
-        // todo differenet set types.
+        // todo different set types.
         // let mut ff_params: ForceFieldParamsIndexed = Default::default();
 
         // We combine all molecule general and specific params into this set, then
@@ -716,7 +749,6 @@ impl MdState {
 
         let force_field_params = ForceFieldParamsIndexed::new(
             &params,
-            // mol.mol_specific_params,
             &atoms_md,
             &adjacency_list,
             cfg.hydrogen_constraint,
@@ -743,6 +775,9 @@ impl MdState {
             mass_accel_factor,
             ..Default::default()
         };
+        //
+        // #[cfg(feature = "cuda")]
+        // result.vkfft_ctx = VkCtx::new();
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.

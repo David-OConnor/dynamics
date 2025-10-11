@@ -245,7 +245,7 @@ impl MdState {
                 // O(dt/2)
                 if let Integrator::Langevin { gamma } = self.cfg.integrator {
                     if log_time {
-                        start_entire_step = Instant::now();
+                        start = Instant::now();
                     }
                     self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
 
@@ -255,7 +255,7 @@ impl MdState {
                     }
 
                     if log_time {
-                        start_entire_step = Instant::now();
+                        start = Instant::now();
                     }
 
                     if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
@@ -500,7 +500,8 @@ impl MdState {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu((stream, module)) => {
-                    pme_recip.forces_gpu(stream, module, &pos_all, &q_all)
+                    // pme_recip.forces_gpu(stream, module, &pos_all, &q_all)
+                    pme_recip.forces_gpu(&self.vkfft_ctx.0, &pos_all, &q_all)
                 }
             },
             None => {
