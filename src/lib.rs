@@ -207,6 +207,7 @@ struct VkCtx(Arc<VkContext>);
 #[cfg(feature = "cuda")]
 impl Default for VkCtx {
     fn default() -> Self {
+        // This is just a placeholder; override it with the Cudarc stream.
         let handle = unsafe { vk_make_context_default() };
         assert!(!handle.is_null());
         VkCtx(Arc::new(VkContext { handle }))
@@ -775,9 +776,6 @@ impl MdState {
             mass_accel_factor,
             ..Default::default()
         };
-        //
-        // #[cfg(feature = "cuda")]
-        // result.vkfft_ctx = VkCtx::new();
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
@@ -819,6 +817,9 @@ impl MdState {
                 &result.water,
                 &result.lj_tables,
             ));
+
+            // Set up the SPME vkFFT to use the stream.
+            result.vkfft_ctx = VkCtx(Arc::new(VkContext::from_cudarc_stream(stream)));
         }
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
