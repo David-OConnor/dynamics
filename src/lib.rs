@@ -98,6 +98,9 @@ mod com_zero;
 #[cfg(feature = "cuda")]
 mod gpu_interface;
 
+// todo: Put back
+// mod h_bond_inference;
+
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 use std::{
@@ -116,7 +119,10 @@ use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaFunction, CudaModule, CudaStream};
-use ewald::{PmeRecip, vk_fft::VkContext};
+
+// use ewald::{PmeRecip, vk_fft::VkContext};
+use ewald::{PmeRecip};
+
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use lin_alg::f64::{Vec3x4, f64x4};
@@ -200,29 +206,30 @@ unsafe extern "C" {
     fn vk_destroy_context(ctx: *mut core::ffi::c_void);
 }
 
-#[cfg(feature = "cuda")]
-// tiny RAII so we don’t leak the driver primary context/stream
-struct VkCtx(Arc<VkContext>);
-
-#[cfg(feature = "cuda")]
-impl Default for VkCtx {
-    fn default() -> Self {
-        // This is just a placeholder; override it with the Cudarc stream.
-        let handle = unsafe { vk_make_context_default() };
-        assert!(!handle.is_null());
-        VkCtx(Arc::new(VkContext { handle }))
-    }
-}
-
-#[cfg(feature = "cuda")]
-impl Drop for VkCtx {
-    fn drop(&mut self) {
-        // only when last Arc drops — ok for a demo
-        if Arc::strong_count(&self.0) == 1 {
-            unsafe { vk_destroy_context(self.0.handle) };
-        }
-    }
-}
+// // todo: Get rid of these vkcontext wrappers or move them to Ewald.
+// #[cfg(feature = "cuda")]
+// // tiny RAII so we don’t leak the driver primary context/stream
+// struct VkCtx(Arc<VkContext>);
+//
+// #[cfg(feature = "cuda")]
+// impl Default for VkCtx {
+//     fn default() -> Self {
+//         // This is just a placeholder; override it with the Cudarc stream.
+//         let handle = unsafe { vk_make_context_default() };
+//         assert!(!handle.is_null());
+//         VkCtx(Arc::new(VkContext { handle }))
+//     }
+// }
+//
+// #[cfg(feature = "cuda")]
+// impl Drop for VkCtx {
+//     fn drop(&mut self) {
+//         // only when last Arc drops — ok for a demo
+//         if Arc::strong_count(&self.0) == 1 {
+//             unsafe { vk_destroy_context(self.0.handle) };
+//         }
+//     }
+// }
 
 /// This is used to assign the correct force field parameters to a molecule.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -599,8 +606,8 @@ pub struct MdState {
     forces_posits_gpu: Option<ForcesPositsGpu>,
     #[cfg(feature = "cuda")]
     per_neighbor_gpu: Option<PerNeighborGpu>,
-    #[cfg(feature = "cuda")]
-    vkfft_ctx: VkCtx,
+    // #[cfg(feature = "cuda")]
+    // vkfft_ctx: VkCtx,
     pub neighbor_rebuild_count: usize,
     /// A cache of accel_factor / mass, per atom. Built once, at init.
     mass_accel_factor: Vec<f32>,
@@ -819,7 +826,7 @@ impl MdState {
             ));
 
             // Set up the SPME vkFFT to use the stream.
-            result.vkfft_ctx = VkCtx(Arc::new(VkContext::from_cudarc_stream(stream)));
+            // result.vkfft_ctx = VkCtx(Arc::new(VkContext::from_cudarc_stream(stream)));
         }
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
@@ -1102,6 +1109,7 @@ impl MdState {
             water_velocities,
             energy_kinetic: self.kinetic_energy as f32,
             energy_potential: self.potential_energy as f32,
+            hydrogen_bonds: Vec::new(), // Populated later A/R.
         }
     }
 }

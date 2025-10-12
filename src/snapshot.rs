@@ -8,8 +8,9 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, MmCif, Mol2};
+use bio_files::{AtomGeneric, BondGeneric, MmCif, Mol2};
 use lin_alg::f32::Vec3;
+use na_seq::Element;
 
 // Append to any snapshot-saving files every this number of snapshots.
 // todo:  Update A/R. Likely higher.
@@ -56,7 +57,38 @@ pub struct Snapshot {
     pub water_velocities: Vec<Vec3>,
     pub energy_kinetic: f32,
     pub energy_potential: f32,
+    /// Optionally added as a post-processing step.
+    pub hydrogen_bonds: Vec<HydrogenBond>,
 }
+
+impl Snapshot {
+    /// The element indices must match the atom posits.
+    pub fn populate_hydrogen_bonds(&mut self, els: &[Element]) {
+        let mut result = Vec::new();
+        // todo
+
+        self.hydrogen_bonds = result;
+    }
+}
+
+/// Used for visualizing hydrogen bonds on a given snapshot.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum HBondAtomType {
+    Standard,
+    WaterO,
+    WaterH0,
+    WaterH1,
+}
+
+/// Used for visualizing hydrogen bonds on a given snapshot.
+#[derive(Clone, Debug)]
+pub struct HydrogenBond {
+    pub donor: (HBondAtomType, usize),
+    pub acceptor: (HBondAtomType, usize),
+    pub hydrogen: (HBondAtomType, usize),
+}
+
+
 
 macro_rules! parse_le {
     ($bytes:expr, $t:ty, $range:expr) => {{ <$t>::from_le_bytes($bytes[$range].try_into().unwrap()) }};
@@ -189,6 +221,7 @@ impl Snapshot {
             water_velocities,
             energy_kinetic,
             energy_potential,
+            hydrogen_bonds: Vec::new(),
         })
     }
 

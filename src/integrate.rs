@@ -500,8 +500,8 @@ impl MdState {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu((stream, _module)) => {
-                    // pme_recip.forces_gpu(stream, &pos_all, &q_all)
-                    pme_recip.forces_gpu(&self.vkfft_ctx.0, &pos_all, &q_all)
+                    pme_recip.forces_gpu(stream, &pos_all, &q_all)
+                    // pme_recip.forces_gpu(&self.vkfft_ctx.0, stream, &pos_all, &q_all)
                 }
             },
             None => {
@@ -657,8 +657,6 @@ impl MdState {
         let ny = next_planner_n(ny0);
         let mut nz = next_planner_n(nz0);
         if nz % 2 != 0 { nz = next_planner_n(nz + 1); }
-
-        println!("Using SPME planner dims: {:?}", (nx, ny, nz));
 
         self.pme_recip = Some(PmeRecip::new(
             (nx, ny, nz),
