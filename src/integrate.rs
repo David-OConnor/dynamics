@@ -641,11 +641,19 @@ impl MdState {
         // todo: This is awkward.
         fn next_planner_n(mut n: usize) -> usize {
             fn good(mut x: usize) -> bool {
-                for p in [2, 3, 5, 7] { while x % p == 0 { x /= p; } }
+                for p in [2, 3, 5, 7] {
+                    while x % p == 0 {
+                        x /= p;
+                    }
+                }
                 x == 1
             }
-            if n < 2 { n = 2; }
-            while !good(n) { n += 1; }
+            if n < 2 {
+                n = 2;
+            }
+            while !good(n) {
+                n += 1;
+            }
             n
         }
 
@@ -656,12 +664,10 @@ impl MdState {
         let nx = next_planner_n(nx0);
         let ny = next_planner_n(ny0);
         let mut nz = next_planner_n(nz0);
-        if nz % 2 != 0 { nz = next_planner_n(nz + 1); }
+        if nz % 2 != 0 {
+            nz = next_planner_n(nz + 1);
+        }
 
-        self.pme_recip = Some(PmeRecip::new(
-            (nx, ny, nz),
-            (lx, ly, lz),
-            EWALD_ALPHA,
-        ));
+        self.pme_recip = Some(PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA));
     }
 }

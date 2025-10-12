@@ -88,8 +88,6 @@ pub struct HydrogenBond {
     pub hydrogen: (HBondAtomType, usize),
 }
 
-
-
 macro_rules! parse_le {
     ($bytes:expr, $t:ty, $range:expr) => {{ <$t>::from_le_bytes($bytes[$range].try_into().unwrap()) }};
 }

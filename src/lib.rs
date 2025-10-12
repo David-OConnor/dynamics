@@ -88,6 +88,8 @@ mod neighbors;
 mod non_bonded;
 pub mod params;
 mod prep;
+#[cfg(target_arch = "x86_64")]
+mod simd;
 pub mod snapshot;
 mod util;
 mod water_init;
@@ -97,9 +99,6 @@ mod water_settle;
 mod com_zero;
 #[cfg(feature = "cuda")]
 mod gpu_interface;
-
-// todo: Put back
-// mod h_bond_inference;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
@@ -119,13 +118,11 @@ use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaFunction, CudaModule, CudaStream};
-
 // use ewald::{PmeRecip, vk_fft::VkContext};
-use ewald::{PmeRecip};
-
+use ewald::PmeRecip;
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use lin_alg::f64::{Vec3x4, f64x4};
+use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use neighbors::NeighborsNb;
@@ -437,18 +434,38 @@ impl AtomDynamics {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug)]
-pub(crate) struct AtomDynamicsx4 {
-    // pub posit: Vec3x8,
-    // pub vel: Vec3x8,
-    // pub accel: Vec3x8,
-    // pub mass: f32x8,
-    pub posit: Vec3x4,
-    pub vel: Vec3x4,
-    pub accel: Vec3x4,
-    pub mass: f64x4,
-    pub element: [Element; 4],
+pub(crate) struct AtomDynamicsx8 {
+    pub serial_number: [u32; 8],
+    pub static_: [bool; 8],
+    pub bonded_only: [bool; 8],
+    pub force_field_type: [String; 8],
+    pub element: [Element; 8],
+    pub posit: Vec3x8,
+    pub vel: Vec3x8,
+    pub accel: Vec3x8,
+    pub mass: f32x8,
+    pub partial_charge: f32x8,
+    pub lj_sigma: f32x8,
+    pub lj_eps: f32x8,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Debug)]
+pub(crate) struct AtomDynamicsx16 {
+    pub serial_number: [u32; 16],
+    pub static_: [bool; 16],
+    pub bonded_only: [bool; 16],
+    pub force_field_type: [String; 16],
+    pub element: [Element; 16],
+    pub posit: Vec3x16,
+    pub vel: Vec3x16,
+    pub accel: Vec3x16,
+    pub mass: f32x16,
+    pub partial_charge: f32x16,
+    pub lj_sigma: f32x16,
+    pub lj_eps: f32x16,
 }
 
 // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -549,6 +566,10 @@ pub struct MdState {
     // todo: You need to rework this state in light of arbitrary mol count.
     pub cfg: MdConfig,
     pub atoms: Vec<AtomDynamics>,
+    #[cfg(target_arch = "x86_64")]
+    pub atoms_x8: Vec<AtomDynamicsx8>,
+    #[cfg(target_arch = "x86_64")]
+    pub atoms_x16: Vec<AtomDynamicsx16>,
     pub adjacency_list: Vec<Vec<usize>>,
     // h_constraints: Vec<HydrogenConstraintInner>,
     // /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
@@ -830,6 +851,11 @@ impl MdState {
         }
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
+
+        // todo: Move this AR
+        // Pack SIMD once at init.
+        #[cfg(target_arch = "x86_64")]
+        result.pack_atoms();
 
         // todo: Add to config A/R,
         // result.minimize_energy(dev, cfg.max_init_relaxation_iters);
