@@ -22,17 +22,20 @@
 //!
 //! todo: H bond avg time: 1-20ps: Use this to validate your water model
 
-// use lin_alg::f64::{Quaternion, Vec3, X_VEC, Z_VEC};
+#[cfg(target_arch = "x86_64")]
+use lin_alg::f32::{Vec3x8, Vec3x16};
 use lin_alg::{
     f32::{Quaternion as QuaternionF32, Vec3 as Vec3F32, X_VEC, Z_VEC},
-    f64::{Quaternion, Vec3},
+    f64::Vec3,
 };
 use na_seq::Element;
 
 use crate::{
-    ACCEL_CONVERSION, ACCEL_CONVERSION_F32, AtomDynamics, MdState, non_bonded::CHARGE_UNIT_SCALER,
+    ACCEL_CONVERSION_F32, AtomDynamics, MdState, non_bonded::CHARGE_UNIT_SCALER,
     water_settle::settle_drift,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 // Constant parameters below are for the OPC water (JPCL, 2014, 5 (21), pp 3863-3871)
 // (Amber 2025, frcmod.opc) EP/M is the massless, 4th charge.
@@ -90,6 +93,26 @@ pub struct ForcesOnWaterMol {
     pub f_m: Vec3,
 }
 
+// todo: Note: These are 32-bit due to limits on 64-bit with. Be careful; you use 64-bit elsewhere.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Default)]
+pub struct ForcesOnWaterMolx8 {
+    pub f_o: Vec3x8,
+    pub f_h0: Vec3x8,
+    pub f_h1: Vec3x8,
+    pub f_m: Vec3x8,
+}
+
+// todo: Note: These are 32-bit due to limits on 64-bit with. Be careful; you use 64-bit elsewhere.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Default)]
+pub struct ForcesOnWaterMolx16 {
+    pub f_o: Vec3x16,
+    pub f_h0: Vec3x16,
+    pub f_h1: Vec3x16,
+    pub f_m: Vec3x16,
+}
+
 /// Contains 4 atoms for each water molecules, at a given time step. Note that these
 /// are not independent, but are useful in our general MD APIs, for compatibility with
 /// non-water atoms.
@@ -108,6 +131,22 @@ pub struct WaterMol {
     pub h1: AtomDynamics,
     /// The massless, charged particle offset from O. Also known as EP.
     pub m: AtomDynamics,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub struct WaterMolx8 {
+    pub o: AtomDynamicsx8,
+    pub h0: AtomDynamicsx8,
+    pub h1: AtomDynamicsx8,
+    pub m: AtomDynamicsx8,
+}
+
+#[cfg(target_arch = "x86_64")]
+pub struct WaterMolx16 {
+    pub o: AtomDynamicsx16,
+    pub h0: AtomDynamicsx16,
+    pub h1: AtomDynamicsx16,
+    pub m: AtomDynamicsx16,
 }
 
 impl WaterMol {

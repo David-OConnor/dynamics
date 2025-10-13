@@ -37,7 +37,7 @@ use crate::{
 };
 
 pub(crate) mod add_hydrogens_2;
-mod bond_vecs;
+pub mod bond_vecs;
 mod ph;
 mod sidechain;
 
@@ -78,11 +78,6 @@ fn validate_h_atom_type(
     }
 
     Ok(false)
-}
-
-fn frac_protonated(p_h: f32, p_ka: f32) -> f32 {
-    // Henderson–Hasselbalch, monoprotic acid/base
-    1.0 / (1.0 + 10f32.powf(p_h - p_ka))
 }
 
 // todo: Include N and C terminus maps A/R.

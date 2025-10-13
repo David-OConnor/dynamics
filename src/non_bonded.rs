@@ -3,13 +3,16 @@
 use std::{ops::AddAssign, time::Instant};
 
 use ewald::force_coulomb_short_range;
+#[cfg(target_arch = "x86_64")]
+use lin_alg::f32::{Vec3x8, Vec3x16, f32x16, f32x8};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
-    AtomDynamics, COMPUTATION_TIME_RATIO, ComputationDevice, MdState,
+    AtomDynamics, AtomDynamicsx8, AtomDynamicsx16, COMPUTATION_TIME_RATIO, ComputationDevice,
+    MdState,
     ambient::SimBox,
     forces::force_e_lj,
     water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
@@ -80,6 +83,26 @@ pub struct LjTables {
     /// Water, non-water interactions.
     pub water_std: Vec<(f32, f32)>,
     pub n_std: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Default)]
+pub struct LjTablesx8 {
+    /// Non-water, non-water interactions. Upper triangle.
+    pub std: Vec<(f32x8, f32x8)>,
+    /// Water, non-water interactions.
+    pub water_std: Vec<(f32x8, f32x8)>,
+    pub n_std: [usize; 8],
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Default)]
+pub struct LjTablesx16 {
+    /// Non-water, non-water interactions. Upper triangle.
+    pub std: Vec<(f32x16, f32x16)>,
+    /// Water, non-water interactions.
+    pub water_std: Vec<(f32x16, f32x16)>,
+    pub n_std: [usize; 8],
 }
 
 // todo note: On large systems, this can have very high memory use. Consider
@@ -240,7 +263,7 @@ fn calc_force(
                     0.0_f64, // Energy sum
                 )
             },
-            |(mut acc_d, mut acc_w, mut virial, mut energy), p| {
+            |(mut acc_std, mut acc_w, mut virial, mut energy), p| {
                 let a_t = p.tgt.get(atoms_std, water);
                 let a_s = p.src.get(atoms_std, water);
 
@@ -258,9 +281,9 @@ fn calc_force(
 
                 // Convert to f64 prior to summing.
                 let f: Vec3F64 = f.into();
-                add_to_sink(&mut acc_d, &mut acc_w, p.tgt, f);
+                add_to_sink(&mut acc_std, &mut acc_w, p.tgt, f);
                 if p.symmetric {
-                    add_to_sink(&mut acc_d, &mut acc_w, p.src, -f);
+                    add_to_sink(&mut acc_std, &mut acc_w, p.src, -f);
                 }
 
                 // We are not interested, in this point, at energy that does not involve our dyanamic (ligand) atoms.
@@ -272,7 +295,7 @@ fn calc_force(
                     energy += e_pair as f64;
                 }
 
-                (acc_d, acc_w, virial, energy)
+                (acc_std, acc_w, virial, energy)
             },
         )
         .reduce(
@@ -300,6 +323,26 @@ fn calc_force(
         )
 }
 
+// #[cfg(target_arch = "x86_64")]
+// fn calc_force_x8(
+//     pairs: &[NonBondedPair],
+//     atoms_std: &[AtomDynamicsx8],
+//     water: &[WaterMolx8],
+//     cell: &SimBox,
+//     lj_tables: &LjTablesx8,
+// ) -> (Vec<Vec3x8>, Vec<ForcesOnWaterMol>, f64, f64) {
+// }
+// 
+// #[cfg(target_arch = "x86_64")]
+// fn calc_force_x16(
+//     pairs: &[NonBondedPair],
+//     atoms_std: &[AtomDynamicsx16],
+//     water: &[WaterMolx16],
+//     cell: &SimBox,
+//     lj_tables: &LjTablesx16,
+// ) -> (Vec<Vec3x16>, Vec<ForcesOnWaterMol>, f64, f64) {
+// }
+
 impl MdState {
     /// Run the appropriate force-computation function to get force on non-water atoms, force
     /// on water atoms, and virial sum for the barostat. Uses GPU if available.
@@ -309,13 +352,33 @@ impl MdState {
     /// applies forces from non-water, and water sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
         let (f_on_std, f_on_water, virial, energy) = match dev {
-            ComputationDevice::Cpu => calc_force(
-                &self.nb_pairs,
-                &self.atoms,
-                &self.water,
-                &self.cell,
-                &self.lj_tables,
-            ),
+            ComputationDevice::Cpu => {
+                if is_x86_feature_detected!("avx512f") {
+                    // calc_force_x16(
+                    //     &self.nb_pairs,
+                    //     &self.atoms_x16,
+                    //     &self.water,
+                    //     &self.cell,
+                    //     &self.lj_tables,
+                    // )
+                } else {
+                    // calc_force_x8(
+                    //     &self.nb_pairs,
+                    //     &self.atoms_x8,
+                    //     &self.water,
+                    //     &self.cell,
+                    //     &self.lj_tables,
+                    // )
+                }
+
+                calc_force(
+                    &self.nb_pairs,
+                    &self.atoms,
+                    &self.water,
+                    &self.cell,
+                    &self.lj_tables,
+                )
+            }
             #[cfg(feature = "cuda")]
             ComputationDevice::Gpu((stream, module)) => force_nonbonded_gpu(
                 stream,

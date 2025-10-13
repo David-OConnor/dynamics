@@ -111,7 +111,7 @@ use std::{
     time::Instant,
 };
 
-pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals};
+pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals, bond_vecs::{find_planar_posit, find_tetra_posits}};
 use ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
