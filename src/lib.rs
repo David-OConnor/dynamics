@@ -113,7 +113,7 @@ use std::{
 
 pub use add_hydrogens::{
     add_hydrogens_2::Dihedral,
-    bond_vecs::{find_planar_posit, find_tetra_posits, find_tetra_posit_final},
+    bond_vecs::{find_planar_posit, find_tetra_posit_final, find_tetra_posits},
     populate_hydrogens_dihedrals,
 };
 use ambient::SimBox;
@@ -544,8 +544,12 @@ pub struct MdConfig {
     /// 2-4Å are common values. Higher values rebuild less often, and have more computationally-intense
     /// rebuilds. Rebuild the list if an atom moved > skin/2.
     pub neighbor_skin: f32,
-    /// Generally not advised.
+    /// For special cases.
     pub allow_missing_dihedral_params: bool,
+    /// For special cases.
+    pub skip_long_range_forces: bool,
+    /// For special cases.
+    pub skip_water: bool,
 }
 
 impl Default for MdConfig {
@@ -564,6 +568,8 @@ impl Default for MdConfig {
             max_init_relaxation_iters: Some(300), // todo: A/R
             neighbor_skin: 4.0,
             allow_missing_dihedral_params: false,
+            skip_long_range_forces: false,
+            skip_water: false,
         }
     }
 }
@@ -822,7 +828,12 @@ impl MdState {
 
         result.barostat.pressure_target = cfg.pressure_target as f64;
 
-        result.water = make_water_mols(&result.cell, cfg.temp_target, &result.atoms);
+        result.water = if cfg.skip_water {
+            Vec::new()
+        } else {
+            make_water_mols(&result.cell, cfg.temp_target, &result.atoms)
+        };
+
         result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
 
         result.setup_nonbonded_exclusion_scale_flags();
@@ -923,7 +934,7 @@ impl MdState {
             self.computation_time.non_bonded_short_range_sum += elapsed;
         }
 
-        if self.step_count.is_multiple_of(SPME_RATIO) {
+        if !self.cfg.skip_long_range_forces && self.step_count.is_multiple_of(SPME_RATIO) {
             // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
             // It will produce inaccurate results otherwise.
             if log_time {

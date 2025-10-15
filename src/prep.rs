@@ -25,7 +25,10 @@ use std::{collections::HashSet, fmt};
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::md_params::{AngleBendingParams, BondStretchingParams, DihedralParams, ForceFieldParams, LjParams, MassParams};
+use bio_files::md_params::{
+    AngleBendingParams, BondStretchingParams, DihedralParams, ForceFieldParams, LjParams,
+    MassParams,
+};
 use itertools::Itertools;
 use na_seq::Element;
 
@@ -98,7 +101,7 @@ impl ForceFieldParamsIndexed {
         // in case of fixed hydrogen.
         // h_constraints: &mut HydrogenConstraintInner,
         h_constraint: HydrogenConstraint,
-        allow_missing_dihedral_params: bool
+        allow_missing_dihedral_params: bool,
     ) -> Result<Self, ParamError> {
         let mut result = Self::default();
 
@@ -378,19 +381,22 @@ impl ForceFieldParamsIndexed {
                         } else {
                             if allow_missing_dihedral_params {
                                 // Default of no constraint
-                                result.dihedral.insert(idx_key, vec![DihedralParams {
-                                    atom_types: (
-                                        type_0.clone(),
-                                        type_1.clone(),
-                                        type_2.clone(),
-                                        type_3.clone(),
-                                    ),
-                                    divider: 1,
-                                    barrier_height: 0.,
-                                    phase: 0.,
-                                    periodicity: 1,
-                                    comment: None,
-                                }]);
+                                result.dihedral.insert(
+                                    idx_key,
+                                    vec![DihedralParams {
+                                        atom_types: (
+                                            type_0.clone(),
+                                            type_1.clone(),
+                                            type_2.clone(),
+                                            type_3.clone(),
+                                        ),
+                                        divider: 1,
+                                        barrier_height: 0.,
+                                        phase: 0.,
+                                        periodicity: 1,
+                                        comment: None,
+                                    }],
+                                );
                             } else {
                                 return Err(ParamError::new(&format!(
                                     "MD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}. (atom0 sn: {})",

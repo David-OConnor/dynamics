@@ -413,45 +413,52 @@ fn zero_forces_and_accums(
     stream: &Arc<CudaStream>,
     module: &Arc<CudaModule>,
     forces: &mut ForcesPositsGpu,
-    n_dyn: usize,
+    n_non_water: usize,
     n_water: usize,
 ) {
     // todo: Store these kernesl as you do the main one.
     let zero_f32 = module.load_function("zero_f32").unwrap();
     let zero_f64 = module.load_function("zero_f64").unwrap();
 
-    // dyn: 3 floats per atom
-    let dyn_len_u32 = (n_dyn * 3) as u32;
-    let cfg_dyn = LaunchConfig::for_num_elems(dyn_len_u32);
-    let mut l0 = stream.launch_builder(&zero_f32);
+    // Non-water atoms: 3 floats per atom
+    let std_len_u32 = (n_non_water * 3) as u32;
 
-    l0.arg(&mut forces.forces_on_dyn);
-    l0.arg(&dyn_len_u32);
-    unsafe { l0.launch(cfg_dyn) }.unwrap();
+    // If 0, we get a panic when launching.
+    if std_len_u32 > 0 {
+        let cfg_dyn = LaunchConfig::for_num_elems(std_len_u32);
+        let mut l0 = stream.launch_builder(&zero_f32);
+
+        l0.arg(&mut forces.forces_on_dyn);
+        l0.arg(&std_len_u32);
+        unsafe { l0.launch(cfg_dyn) }.unwrap();
+    }
 
     // water arrays: 3 floats per molecule for each site-buffer
     let wat_len_u32 = (n_water * 3) as u32;
-    let cfg_w = LaunchConfig::for_num_elems(wat_len_u32);
 
-    let mut l1 = stream.launch_builder(&zero_f32);
-    l1.arg(&mut forces.forces_on_water_o);
-    l1.arg(&wat_len_u32);
-    unsafe { l1.launch(cfg_w) }.unwrap();
+    if wat_len_u32 > 0 {
+        let cfg_w = LaunchConfig::for_num_elems(wat_len_u32);
 
-    let mut l2 = stream.launch_builder(&zero_f32);
-    l2.arg(&mut forces.forces_on_water_m);
-    l2.arg(&wat_len_u32);
-    unsafe { l2.launch(cfg_w) }.unwrap();
+        let mut l1 = stream.launch_builder(&zero_f32);
+        l1.arg(&mut forces.forces_on_water_o);
+        l1.arg(&wat_len_u32);
+        unsafe { l1.launch(cfg_w) }.unwrap();
 
-    let mut l3 = stream.launch_builder(&zero_f32);
-    l3.arg(&mut forces.forces_on_water_h0);
-    l3.arg(&wat_len_u32);
-    unsafe { l3.launch(cfg_w) }.unwrap();
+        let mut l2 = stream.launch_builder(&zero_f32);
+        l2.arg(&mut forces.forces_on_water_m);
+        l2.arg(&wat_len_u32);
+        unsafe { l2.launch(cfg_w) }.unwrap();
 
-    let mut l4 = stream.launch_builder(&zero_f32);
-    l4.arg(&mut forces.forces_on_water_h1);
-    l4.arg(&wat_len_u32);
-    unsafe { l4.launch(cfg_w) }.unwrap();
+        let mut l3 = stream.launch_builder(&zero_f32);
+        l3.arg(&mut forces.forces_on_water_h0);
+        l3.arg(&wat_len_u32);
+        unsafe { l3.launch(cfg_w) }.unwrap();
+
+        let mut l4 = stream.launch_builder(&zero_f32);
+        l4.arg(&mut forces.forces_on_water_h1);
+        l4.arg(&wat_len_u32);
+        unsafe { l4.launch(cfg_w) }.unwrap();
+    }
 
     // scalars
     let one: u32 = 1;

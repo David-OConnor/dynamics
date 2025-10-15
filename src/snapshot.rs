@@ -8,7 +8,7 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, BondGeneric, MmCif, Mol2};
+use bio_files::{AtomGeneric, MmCif, Mol2};
 use lin_alg::f32::Vec3;
 use na_seq::Element;
 
