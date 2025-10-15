@@ -4,7 +4,7 @@ use std::{ops::AddAssign, time::Instant};
 
 use ewald::force_coulomb_short_range;
 #[cfg(target_arch = "x86_64")]
-use lin_alg::f32::{Vec3x8, Vec3x16, f32x16, f32x8};
+use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
 
@@ -332,7 +332,7 @@ fn calc_force(
 //     lj_tables: &LjTablesx8,
 // ) -> (Vec<Vec3x8>, Vec<ForcesOnWaterMol>, f64, f64) {
 // }
-// 
+//
 // #[cfg(target_arch = "x86_64")]
 // fn calc_force_x16(
 //     pairs: &[NonBondedPair],

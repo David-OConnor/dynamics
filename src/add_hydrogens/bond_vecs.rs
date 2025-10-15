@@ -435,7 +435,6 @@ pub fn init_local_bond_vecs() {
     }
 }
 
-
 /// Given two positions, find the third planar position. Uses the central_posit_0 distance
 /// for the computed distances.
 pub fn find_planar_posit(central: Vec3, posit_0: Vec3, posit_1: Vec3) -> Vec3 {
@@ -445,7 +444,11 @@ pub fn find_planar_posit(central: Vec3, posit_0: Vec3, posit_1: Vec3) -> Vec3 {
 
     let mut dir = -(u0 + u1);
     if dir.magnitude_squared() < 1e-12 {
-        let a = if u0.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let a = if u0.x.abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 0.0)
+        };
         dir = (a - u0 * a.dot(u0)).to_normalized();
     } else {
         dir = dir.to_normalized();
@@ -453,15 +456,19 @@ pub fn find_planar_posit(central: Vec3, posit_0: Vec3, posit_1: Vec3) -> Vec3 {
     central + dir * r
 }
 
-/// Given two positions, find the third and fourth tetrahedral position. Uses the central_posit_0 distance
+/// Given two satelite positions, find the third and fourth tetrahedral position. Uses the central, posit_0 distance
 /// for the computed distances.
-pub fn find_tetra_posits(central: Vec3, posit_0: Vec3, posit_1: Vec3) -> Vec3 {
+pub fn find_tetra_posits(central: Vec3, posit_0: Vec3, posit_1: Vec3) -> (Vec3, Vec3) {
     let r = (posit_0 - central).magnitude();
     let u0 = (posit_0 - central).to_normalized();
     let mut u1p = posit_1 - central;
 
     if u1p.magnitude_squared() < 1e-24 {
-        let a = if u0.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let a = if u0.x.abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 0.0)
+        };
         u1p = (a - u0 * a.dot(u0)).to_normalized();
     } else {
         u1p = (u1p - u0 * u1p.dot(u0)).to_normalized();
@@ -469,10 +476,10 @@ pub fn find_tetra_posits(central: Vec3, posit_0: Vec3, posit_1: Vec3) -> Vec3 {
     let u2p = u0.cross(u1p);
 
     let s = (1.0f64 / 3.0).sqrt();
-    let v0 = Vec3::new( s,  s,  s);
-    let v1 = Vec3::new( s, -s, -s);
-    let v2 = Vec3::new(-s,  s, -s);
-    let _v3 = Vec3::new(-s, -s,  s);
+    let v0 = Vec3::new(s, s, s);
+    let v1 = Vec3::new(s, -s, -s);
+    let v2 = Vec3::new(-s, s, -s);
+    let v3 = Vec3::new(-s, -s, s);
 
     let asrc = v0.to_normalized();
     let bsrc = (v1 - asrc * v1.dot(asrc)).to_normalized();
@@ -490,5 +497,61 @@ pub fn find_tetra_posits(central: Vec3, posit_0: Vec3, posit_1: Vec3) -> Vec3 {
     };
 
     let u2 = m(v2).to_normalized();
-    central + u2 * r
+    let u3 = m(v3).to_normalized();
+    (central + u2 * r, central + u3 * r)
+}
+
+/// Given 3 satellite atoms, find the 4th, in tetrahedral config.
+pub fn find_tetra_posit_final(central: Vec3, sat_0: Vec3, sat_1: Vec3, sat_2: Vec3) -> Vec3 {
+    let r = (sat_0 - central).magnitude();
+    let u0 = (sat_0 - central).to_normalized();
+    let mut u1p = sat_1 - central;
+
+    if u1p.magnitude_squared() < 1e-24 {
+        let a = if u0.x.abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 0.0)
+        };
+        u1p = (a - u0 * a.dot(u0)).to_normalized();
+    } else {
+        u1p = (u1p - u0 * u1p.dot(u0)).to_normalized();
+    }
+    let u2p = u0.cross(u1p);
+
+    let s = (1.0f64 / 3.0).sqrt();
+    let v0 = Vec3::new(s, s, s);
+    let v1 = Vec3::new(s, -s, -s);
+    let v2 = Vec3::new(-s, s, -s);
+    let v3 = Vec3::new(-s, -s, s);
+
+    let asrc = v0.to_normalized();
+    let bsrc = (v1 - asrc * v1.dot(asrc)).to_normalized();
+    let csrc = asrc.cross(bsrc);
+
+    let adst = u0;
+    let bdst = u1p;
+    let cdst = u2p;
+
+    let m = |v: Vec3| -> Vec3 {
+        let x = v.dot(asrc);
+        let y = v.dot(bsrc);
+        let z = v.dot(csrc);
+        adst * x + bdst * y + cdst * z
+    };
+
+    let cand2 = m(v2).to_normalized();
+    let cand3 = m(v3).to_normalized();
+
+    let dir2 = sat_2 - central;
+    if dir2.magnitude_squared() < 1e-24 {
+        // Degenerate: pick either completion deterministically
+        return central + cand2 * r;
+    }
+
+    let u_given = dir2.to_normalized();
+    // If posit_2 matches cand2 better, return cand3; otherwise return cand2.
+    let choose_cand3 = u_given.dot(cand2) > u_given.dot(cand3);
+    let u_missing = if choose_cand3 { cand3 } else { cand2 };
+    central + u_missing * r
 }

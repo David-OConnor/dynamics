@@ -111,7 +111,11 @@ use std::{
     time::Instant,
 };
 
-pub use add_hydrogens::{add_hydrogens_2::Dihedral, populate_hydrogens_dihedrals, bond_vecs::{find_planar_posit, find_tetra_posits}};
+pub use add_hydrogens::{
+    add_hydrogens_2::Dihedral,
+    bond_vecs::{find_planar_posit, find_tetra_posits, find_tetra_posit_final},
+    populate_hydrogens_dihedrals,
+};
 use ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
@@ -253,6 +257,7 @@ pub struct MolDynamics {
     pub atom_posits: Option<Vec<Vec3F64>>,
     /// Not required if static.
     pub bonds: Vec<BondGeneric>,
+    /// A fast lookup for finding atoms, by index, covalently bonded to each atom.
     /// If None, will be generated automatically from atoms and bonds. Use this
     /// if you wish to cache.
     pub adjacency_list: Option<Vec<Vec<usize>>>,
@@ -533,12 +538,14 @@ pub struct MdConfig {
     pub sim_box: SimBoxInit,
     /// Prior to the first integrator step, we attempt to relax energy in the system.
     /// Use no more than this many iterations to do so. Higher can produce better results,
-    /// but is slower.
-    pub max_init_relaxation_iters: usize,
+    /// but is slower. If None, don't relax.
+    pub max_init_relaxation_iters: Option<usize>,
     /// Distance threshold, in Å, used to determine when we rebuild neighbor lists.
     /// 2-4Å are common values. Higher values rebuild less often, and have more computationally-intense
     /// rebuilds. Rebuild the list if an atom moved > skin/2.
     pub neighbor_skin: f32,
+    /// Generally not advised.
+    pub allow_missing_dihedral_params: bool,
 }
 
 impl Default for MdConfig {
@@ -554,8 +561,9 @@ impl Default for MdConfig {
                 ratio: 1,
             }],
             sim_box: Default::default(),
-            max_init_relaxation_iters: 300, // todo: A/R
+            max_init_relaxation_iters: Some(300), // todo: A/R
             neighbor_skin: 4.0,
+            allow_missing_dihedral_params: false,
         }
     }
 }
@@ -781,6 +789,7 @@ impl MdState {
             &atoms_md,
             &adjacency_list,
             cfg.hydrogen_constraint,
+            cfg.allow_missing_dihedral_params,
         )?;
 
         let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());
@@ -858,7 +867,9 @@ impl MdState {
         result.pack_atoms();
 
         // todo: Add to config A/R,
-        // result.minimize_energy(dev, cfg.max_init_relaxation_iters);
+        if let Some(max_iters) = cfg.max_init_relaxation_iters {
+            // result.minimize_energy(dev, max_iters);
+        }
 
         // Reset computation time to negate anything that was applied by minimization, initial
         // neighbor rebuild, and anything else done here that may affect it.
