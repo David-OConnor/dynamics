@@ -187,13 +187,14 @@ impl MdState {
                 );
                 self.apply_all_forces(dev);
 
-                self.barostat.apply_isotropic(
-                    dt as f64,
-                    p_inst_bar,
-                    &mut self.cell,
-                    &mut self.atoms,
-                    &mut self.water,
-                );
+                // todo: Troubleshooting; causes system to blow up.
+                // self.barostat.apply_isotropic(
+                //     dt as f64,
+                //     p_inst_bar,
+                //     &mut self.cell,
+                //     &mut self.atoms,
+                //     &mut self.water,
+                // );
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -315,13 +316,19 @@ impl MdState {
                     self.barostat.virial_pair_kcal,
                 );
 
-                self.barostat.apply_isotropic(
-                    dt as f64,
-                    p_inst_bar,
-                    &mut self.cell,
-                    &mut self.atoms,
-                    &mut self.water,
-                );
+                if self.step_count.is_multiple_of(100) {
+                    println!("Pressure: {p_inst_bar} bar");
+                }
+
+                // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
+                // todo is showing *much* to high.
+                // self.barostat.apply_isotropic(
+                //     dt as f64,
+                //     p_inst_bar,
+                //     &mut self.cell,
+                //     &mut self.atoms,
+                //     &mut self.water,
+                // );
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;

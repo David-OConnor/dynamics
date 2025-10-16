@@ -99,6 +99,7 @@ mod water_settle;
 mod com_zero;
 #[cfg(feature = "cuda")]
 mod gpu_interface;
+pub mod minimize_energy;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
@@ -879,7 +880,7 @@ impl MdState {
 
         // todo: Add to config A/R,
         if let Some(max_iters) = cfg.max_init_relaxation_iters {
-            // result.minimize_energy(dev, max_iters);
+            result.minimize_energy(dev, max_iters);
         }
 
         // Reset computation time to negate anything that was applied by minimization, initial
@@ -934,6 +935,8 @@ impl MdState {
             self.computation_time.non_bonded_short_range_sum += elapsed;
         }
 
+        // Note: We currently set to skip these on energy minimization, but this
+        // check may fail at step 0 anyway?
         if !self.cfg.skip_long_range_forces && self.step_count.is_multiple_of(SPME_RATIO) {
             // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
             // It will produce inaccurate results otherwise.
@@ -953,166 +956,6 @@ impl MdState {
             let elapsed = start.elapsed();
             println!("SPME recip time: {:?} μs", elapsed.as_micros());
         }
-    }
-
-    /// Relaxes the molecules. Use this at the start of the simulation to control kinetic energy that
-    /// arrises from differences between atom positions, and bonded parameters.
-    ///
-    /// todo: QC. This appears to work, but is slow.
-    fn minimize_energy(&mut self, dev: &ComputationDevice, max_iters: usize) {
-        println!("Minimizing energy...");
-        // Tunables
-        const F_TOL: f32 = 1.0e-3; // stop when max |F| is below this (force units used in your accel pre-division)
-        const STEP_INIT: f32 = 1.0e-4; // initial step along +F (Å per force-unit)
-        const STEP_MAX: f32 = 0.2; // cap per-atom displacement per iteration (Å)
-        const GROW: f32 = 1.2; // expand step if energy decreased
-        const SHRINK: f32 = 0.5; // backtrack factor if energy increased
-        const ALPHA_MIN: f32 = 1.0e-8;
-        const ALPHA_MAX: f32 = 1.0e-2;
-
-        // Zero velocities; we’re minimizing, not integrating.
-        for a in &mut self.atoms {
-            a.vel = Vec3::new_zero();
-            a.accel = Vec3::new_zero();
-        }
-        for w in &mut self.water {
-            w.o.vel = Vec3::new_zero();
-            w.h0.vel = Vec3::new_zero();
-            w.h1.vel = Vec3::new_zero();
-            w.m.vel = Vec3::new_zero();
-            w.o.accel = Vec3::new_zero();
-            w.h0.accel = Vec3::new_zero();
-            w.h1.accel = Vec3::new_zero();
-            w.m.accel = Vec3::new_zero();
-        }
-
-        // Force/E at current geometry
-        let compute_forces_and_energy = |this: &mut MdState| {
-            this.reset_accel_e();
-            this.potential_energy = 0.0;
-            this.apply_all_forces(dev);
-        };
-
-        compute_forces_and_energy(self);
-
-        // Helper to measure convergence
-        let mut max_f = 0.0f32;
-        let mut _rms_f = 0.0f32;
-        let force_stats = |this: &MdState| -> (f32, f32) {
-            let mut max_f_loc = 0.0f32;
-            let mut sum = 0.0f32;
-            let mut n = 0usize;
-            for a in &this.atoms {
-                if a.static_ {
-                    continue;
-                }
-                let f = a.accel; // pre-mass, pre-unit-conversion accumulator is your net force vector
-                let m = f.magnitude();
-                max_f_loc = max_f_loc.max(m);
-                sum += m * m;
-                n += 1;
-            }
-            let rms = if n > 0 { (sum / n as f32).sqrt() } else { 0.0 };
-            (max_f_loc, rms)
-        };
-
-        (max_f, _rms_f) = force_stats(self);
-        if max_f <= F_TOL {
-            return;
-        }
-
-        // Per-atom last step for backtracking
-        let n_atoms = self.atoms.len();
-        let mut last_step: Vec<Vec3F64> = vec![Vec3F64::new_zero(); n_atoms];
-
-        let mut alpha = STEP_INIT;
-        let mut e_prev = self.potential_energy;
-
-        // Per-atom last step for backtracking
-        let n_atoms = self.atoms.len();
-        let mut last_step: Vec<Vec3> = vec![Vec3::new_zero(); n_atoms];
-
-        'outer: for _iter in 0..max_iters {
-            for (i, a) in self.atoms.iter_mut().enumerate() {
-                last_step[i] = Vec3::new_zero();
-                if a.static_ {
-                    continue;
-                }
-
-                let f = a.accel;
-                let fm = f.magnitude();
-
-                if !fm.is_finite() || fm == 0.0 {
-                    continue; // skip non-finite or zero force
-                }
-
-                // Step magnitude = min(alpha*|F|, STEP_MAX), applied along finite unit(F)
-                let step_mag = (alpha * fm).min(STEP_MAX);
-                let s = f * (step_mag / fm);
-
-                if !a.static_ {
-                    a.posit += s;
-
-                    self.neighbors_nb.max_displacement_sq = self
-                        .neighbors_nb
-                        .max_displacement_sq
-                        .max(s.magnitude_squared());
-                }
-                last_step[i] = s;
-            }
-
-            if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                self.shake_hydrogens();
-            }
-            self.build_neighbors_if_needed(dev);
-
-            compute_forces_and_energy(self);
-            let e_new = self.potential_energy;
-
-            if e_new <= e_prev {
-                e_prev = e_new;
-                alpha = (alpha * GROW).min(ALPHA_MAX);
-
-                (max_f, _rms_f) = force_stats(self);
-                if max_f <= F_TOL {
-                    break 'outer;
-                }
-            } else {
-                // REVERT (subtract, not assign)
-                for (i, a) in self.atoms.iter_mut().enumerate() {
-                    let s = last_step[i];
-                    if s.magnitude_squared() > 0.0 {
-                        a.posit -= s;
-                        // a.posit = self.cell.wrap(a.posit);
-                    }
-                }
-
-                compute_forces_and_energy(self);
-
-                alpha *= SHRINK;
-                if alpha < ALPHA_MIN {
-                    break 'outer;
-                }
-                continue;
-            }
-        }
-
-        // Final cleanups: zero velocities, recenter, and refresh PME grid if you do this routinely elsewhere.
-        for a in &mut self.atoms {
-            a.vel = Vec3::new_zero();
-        }
-        for w in &mut self.water {
-            w.o.vel = Vec3::new_zero();
-            w.h0.vel = Vec3::new_zero();
-            w.h1.vel = Vec3::new_zero();
-            w.m.vel = Vec3::new_zero();
-        }
-
-        // Keep consistent with your normal cadence.
-        self.cell.recenter(&self.atoms);
-        self.regen_pme();
-
-        println!("Complete");
     }
 
     // todo: For calling by user at the end (temp), don't force it to append the path.
