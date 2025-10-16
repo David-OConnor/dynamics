@@ -1,7 +1,8 @@
 use std::time::Instant;
-use lin_alg::f32::Vec3;
-use crate::{ComputationDevice, HydrogenConstraint, MdState};
 
+use lin_alg::f32::Vec3;
+
+use crate::{ComputationDevice, HydrogenConstraint, MdState};
 
 // Force/E at current geometry
 fn compute_forces_and_energy(state: &mut MdState, dev: &ComputationDevice) {
@@ -11,7 +12,7 @@ fn compute_forces_and_energy(state: &mut MdState, dev: &ComputationDevice) {
     state.apply_all_forces(dev);
 }
 
-fn force_stats(state: &MdState)  -> (f32, f32)  {
+fn force_stats(state: &MdState) -> (f32, f32) {
     let mut max_f_loc = 0.0f32;
     let mut sum = 0.0f32;
 
@@ -103,16 +104,22 @@ impl MdState {
 
             for (i, a) in self.atoms.iter_mut().enumerate() {
                 last_step[i] = Vec3::new_zero();
-                if a.static_ { continue; }
+                if a.static_ {
+                    continue;
+                }
                 let f = a.accel;
                 let fm = f.magnitude();
-                if !fm.is_finite() || fm == 0.0 { continue; }
+                if !fm.is_finite() || fm == 0.0 {
+                    continue;
+                }
                 let step_mag = (alpha * fm).min(STEP_MAX);
                 let s = f * (step_mag / fm);
                 a.posit += s;
                 last_step[i] = s;
-                self.neighbors_nb.max_displacement_sq =
-                    self.neighbors_nb.max_displacement_sq.max(s.magnitude_squared());
+                self.neighbors_nb.max_displacement_sq = self
+                    .neighbors_nb
+                    .max_displacement_sq
+                    .max(s.magnitude_squared());
             }
 
             // for (wi, w) in self.water.iter_mut().enumerate() {

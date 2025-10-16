@@ -19,16 +19,16 @@ use crate::{
 
 // Per-molecule Boltzmann, in kcal/mol/K.
 // For assigning velocities from temperature, and other thermostat/barostat use.
-pub const GAS_CONST_R: f32 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
+pub(crate) const GAS_CONST_R: f32 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
 
 // Boltzmann constant in (amu · Å²/ps²) K⁻¹
 // We use this for the Langevin and Anderson thermostat, where we need per-particle Gaussian noise or variance.
-pub const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
+pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 
 // amu · Å²/ps²  We use this when accumulating kinetic energy, and need kcal/mol.
 // This, in practice, is for pressure computations.
-const AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT: f64 = 0.00239005736;
-const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
+pub(crate) const AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT: f64 = 0.00239005736;
+pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for water atoms. Its size and position should be such as to keep the system
@@ -169,7 +169,13 @@ pub struct BerendsenBarostat {
     pub tau_temp: f64,
     /// bar‑1 (≈4.5×10⁻⁵ for water at 300K, 1bar)
     pub kappa_t: f64,
-    pub virial_pair_kcal: f64,
+    /// Virials, in kcal. We split these up to make debugging easier.
+    pub virial_coulomb: f64,
+    pub virial_lj: f64,
+    pub virial_bonded: f64,
+    pub virial_constraints: f64,
+    /// I.e. SPME recip
+    pub virial_nonbonded_long_range: f64,
     pub rng: ThreadRng,
 }
 
@@ -183,7 +189,12 @@ impl Default for BerendsenBarostat {
             tau_temp: 1.,
             // Isothermal compressibility of water at 298 K.
             kappa_t: 4.5e-5,
-            virial_pair_kcal: 0.0, // Inits to 0 here, and at the start of each integrator step.
+            //These virials init to 0 here, and at the start of each integrator step.
+            virial_coulomb: 0.0,
+            virial_lj: 0.0,
+            virial_bonded: 0.0,
+            virial_constraints: 0.0,
+            virial_nonbonded_long_range: 0.0,
             rng: rand::rng(),
         }
     }
@@ -257,7 +268,8 @@ impl BerendsenBarostat {
 }
 
 impl MdState {
-    fn kinetic_energy_kcal(&self) -> f64 {
+    /// Computes total kinetic energy in kcal.
+    pub(crate) fn kinetic_energy_kcal(&self) -> f64 {
         // dynamic atoms + waters (skip massless EP)
         let mut ke = 0.0;
         for a in &self.atoms {
@@ -272,6 +284,15 @@ impl MdState {
             ke += (0.5 * w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
         }
         ke * AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT
+    }
+
+    /// Instantaneous temperature [K] (assumes rigid waters: 6 dof per molecule).
+    pub(crate) fn temperature_kelvin(&self) -> f64 {
+        let n_dyn_atoms = self.atoms.iter().filter(|a| !a.static_).count();
+        let ndof = 3 * n_dyn_atoms + 6 * self.water.len() - 3;
+
+        let k = self.kinetic_energy_kcal();
+        (2.0 * k) / (ndof as f64 * GAS_CONST_R as f64)
     }
 
     fn num_constraints_estimate(&self) -> usize {
@@ -538,8 +559,9 @@ impl MdState {
 }
 
 /// Instantaneous pressure in **bar** (pair virial only).
+/// todo: This is wildly high. What's going on? Can't make the barostat work until this is fixed.
 /// P = (2K + W) / (3V)
-pub(crate) fn instantaneous_pressure_bar(
+pub(crate) fn measure_instantaneous_pressure(
     atoms_dyn: &[AtomDynamics],
     waters: &[WaterMol],
     simbox: &SimBox,

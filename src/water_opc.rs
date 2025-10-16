@@ -31,7 +31,7 @@ use lin_alg::{
 use na_seq::Element;
 
 use crate::{
-    ACCEL_CONVERSION_F32, AtomDynamics, MdState, non_bonded::CHARGE_UNIT_SCALER,
+    ACCEL_CONVERSION, AtomDynamics, MdState, non_bonded::CHARGE_UNIT_SCALER,
     water_settle::settle_drift,
 };
 #[cfg(target_arch = "x86_64")]
@@ -68,8 +68,8 @@ pub const O_EPS: f32 = 0.212_800_813_0;
 const Q_H: f32 = 0.6791 * CHARGE_UNIT_SCALER;
 const Q_EP: f32 = -2. * Q_H;
 
-pub(crate) const ACCEL_CONV_WATER_O: f32 = ACCEL_CONVERSION_F32 / O_MASS;
-pub(crate) const ACCEL_CONV_WATER_H: f32 = ACCEL_CONVERSION_F32 / H_MASS;
+pub(crate) const ACCEL_CONV_WATER_O: f32 = ACCEL_CONVERSION / O_MASS;
+pub(crate) const ACCEL_CONV_WATER_H: f32 = ACCEL_CONVERSION / H_MASS;
 
 // We use this encoding when passing to CUDA. We reserve 0 for non-water atoms.
 #[derive(Copy, Clone, PartialEq)]
@@ -261,28 +261,6 @@ impl WaterMol {
 }
 
 impl MdState {
-    // /// Add reciprocal (PME) water-site forces into a per-water force array.
-    // /// Expects self.water_pme_sites_forces[iw] == [f_M, f_H0, f_H1] at current coords.
-    // ///
-    // /// Note that because this is for recip only, we don't apply force to O, because it's
-    // /// chargeless. (LJ only)
-    // // fn add_recip_to_water_forces(&self, fw: &mut [ForcesOnWaterMol]) {
-    // fn add_recip_to_water_forces(&mut self) {
-    //     // todo: QC that this is set up and working.
-    //     for (i, water_mol) in self.water.iter_mut().enumerate() {
-    //         let [f_m, f_h0, f_h1] = self
-    //             // todo: Hmmmm... do we want this pme_sites_forces at all?
-    //             .water_pme_sites_forces
-    //             .get(i)
-    //             .copied()
-    //             .unwrap_or([Vec3::new_zero(); 3]);
-    //
-    //         water_mol.m.accel += f_m;
-    //         water_mol.h0.accel += f_h0;
-    //         water_mol.h1.accel += f_h1;
-    //     }
-    // }
-
     /// Verlet velocity integration for water, part 1. Forces for this step must
     /// be pre-calculated. Accepts as mutable to allow projecting M/EP force onto the
     /// other atoms.
@@ -310,7 +288,7 @@ impl MdState {
                 &mut w.h1,
                 dt,
                 &self.cell,
-                &mut self.barostat.virial_pair_kcal,
+                &mut self.barostat.virial_coulomb,
             );
 
             // Place EP on the HOH bisector
@@ -335,8 +313,8 @@ impl MdState {
     /// Forces (as .accel) must be computed prior to this step.
     pub fn water_vv_second_half(&mut self, dt_half: f32) {
         // A cache.
-        let conv_o = ACCEL_CONVERSION_F32 / O_MASS;
-        let conv_h = ACCEL_CONVERSION_F32 / H_MASS;
+        let conv_o = ACCEL_CONVERSION / O_MASS;
+        let conv_h = ACCEL_CONVERSION / H_MASS;
 
         for iw in 0..self.water.len() {
             let w = &mut self.water[iw];

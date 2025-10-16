@@ -4,8 +4,8 @@
 //! differently: They have rigid lengths, which is good enough, and allows for a larger timestep.
 
 use crate::{
-    COMPUTATION_TIME_RATIO, MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, split2_mut,
-    split3_mut, split4_mut,
+    MdState, SHAKE_MAX_IT, SHAKE_TOL, ambient::AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT, bonded_forces,
+    split2_mut, split3_mut, split4_mut,
 };
 
 const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
@@ -27,6 +27,10 @@ impl MdState {
             // We divide by mass in `step`.
             a_0.accel += f;
             a_1.accel -= f;
+
+            // Local virial: Σ r_i · F_i  (convert accel→force_phys with mass and S)
+            let virial = a_0.posit.dot(f) + a_1.posit.dot(-f);
+            self.barostat.virial_bonded += virial as f64;
 
             self.potential_energy += energy as f64;
         }
@@ -52,6 +56,11 @@ impl MdState {
             a_1.accel += f_1;
             a_2.accel += f_2;
 
+            let virial = a_0.posit.dot(f_0)
+                + a_1.posit.dot(f_1)
+                + a_2.posit.dot(f_2);
+            self.barostat.virial_bonded += virial as f64;
+
             self.potential_energy += energy as f64;
         }
     }
@@ -74,14 +83,20 @@ impl MdState {
             let (a_0, a_1, a_2, a_3) =
                 split4_mut(&mut self.atoms, indices.0, indices.1, indices.2, indices.3);
 
-            let ((f_0, f_1, f_2, f3), energy) =
+            let ((f_0, f_1, f_2, f_3), energy) =
                 bonded_forces::f_dihedral(a_0.posit, a_1.posit, a_2.posit, a_3.posit, params);
 
             // We divide by mass in `step`.
             a_0.accel += f_0;
             a_1.accel += f_1;
             a_2.accel += f_2;
-            a_3.accel += f3;
+            a_3.accel += f_3;
+
+            let virial = a_0.posit.dot(f_0)
+                + a_1.posit.dot(f_1)
+                + a_2.posit.dot(f_2)
+                + a_3.posit.dot(f_3);
+            self.barostat.virial_bonded += virial as f64;
 
             self.potential_energy += energy as f64;
         }
@@ -123,7 +138,7 @@ impl MdState {
     }
 
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub(crate) fn rattle_hydrogens(&mut self) {
+    pub(crate) fn rattle_hydrogens(&mut self, dt: f32) {
         // RATTLE on velocities so that d/dt(|r|²)=0  ⇒  v_ij · r_ij = 0
         for (indices, (_r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
             // println!("RATTLE: {:?}", (i, j, _r0));
@@ -139,6 +154,11 @@ impl MdState {
 
             ai.vel += corr_v / ai.mass;
             aj.vel -= corr_v / aj.mass;
+
+            // ---- Constraint virial (kcal/mol) ----
+            // W_c = -(r^2 * lambda_p / dt_ps) * S
+            let virial = -r_sq * lambda_p / dt;
+            self.barostat.virial_constraints += virial as f64;
         }
     }
 }

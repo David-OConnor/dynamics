@@ -3,7 +3,7 @@
 use lin_alg::f32::Vec3 as Vec3F32;
 
 use crate::{
-    ACCEL_CONVERSION_F32, AtomDynamics,
+    ACCEL_CONVERSION, AtomDynamics,
     ambient::SimBox,
     water_opc::{H_MASS, O_MASS},
 };
@@ -103,9 +103,9 @@ pub fn settle_drift(
     let fH1_amu = dvH1 * H_MASS / dt;
 
     // Convert to kcal·mol⁻¹·Å⁻¹ to match your pair-virial units
-    let fO_kcal = fO_amu / ACCEL_CONVERSION_F32;
-    let fH0_kcal = fH0_amu / ACCEL_CONVERSION_F32;
-    let fH1_kcal = fH1_amu / ACCEL_CONVERSION_F32;
+    let fO_kcal = fO_amu / ACCEL_CONVERSION;
+    let fH0_kcal = fH0_amu / ACCEL_CONVERSION;
+    let fH1_kcal = fH1_amu / ACCEL_CONVERSION;
 
     // Midpoint COM-frame positions
     let rO_mid = (rO + rO2) * 0.5;

@@ -17,6 +17,7 @@ use crate::{
     forces::force_e_lj,
     water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };
+use crate::ambient::AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT;
 
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.
@@ -55,7 +56,7 @@ pub const SCALE_COUL_14: f32 = 1.0 / 1.2;
 // Multiply by this to convert partial charges from elementary charge (What we store in Atoms loaded from mol2
 // files and amino19.lib.) to the self-consistent amber units required to calculate Coulomb force.
 // We apply this to dynamic and static atoms when building Indexed params, and to water molecules
-// on their construction.
+// on their construction. We do not apply this during integration.
 pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 
 /// We use this to load the correct data from LJ lookup tables. Since we use indices,
@@ -241,7 +242,7 @@ fn add_to_sink(
 /// upstream.
 ///
 /// Return the virial pair component we accumulate. For use with the temp/barostat. (kcal/mol)
-fn calc_force(
+fn calc_force_cpu(
     pairs: &[NonBondedPair],
     atoms_std: &[AtomDynamics],
     water: &[WaterMol],
@@ -267,7 +268,7 @@ fn calc_force(
                 let a_t = p.tgt.get(atoms_std, water);
                 let a_s = p.src.get(atoms_std, water);
 
-                let (f, e_pair) = f_nonbonded(
+                let (f, e_pair) = f_nonbonded_cpu(
                     &mut virial,
                     a_t,
                     a_s,
@@ -371,7 +372,7 @@ impl MdState {
                     // )
                 }
 
-                calc_force(
+                calc_force_cpu(
                     &self.nb_pairs,
                     &self.atoms,
                     &self.water,
@@ -412,7 +413,7 @@ impl MdState {
             tgt.h1.accel += f_h1;
         }
 
-        self.barostat.virial_pair_kcal += virial;
+        self.barostat.virial_coulomb += virial;
         self.potential_energy += energy;
     }
 
@@ -547,7 +548,7 @@ impl MdState {
 ///
 /// We use a hard distance cutoff for Vdw, enabled by its ^-7 falloff.
 /// Returns energy as well.
-pub fn f_nonbonded(
+pub fn f_nonbonded_cpu(
     virial_w: &mut f64,
     tgt: &AtomDynamics,
     src: &AtomDynamics,

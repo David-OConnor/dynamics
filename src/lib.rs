@@ -123,8 +123,8 @@ use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaFunction, CudaModule, CudaStream};
-#[cfg(feature = "cuda")]
-use ewald::{vk_fft::{VkCtx, VkContext}};
+// #[cfg(feature = "cuda")]
+// use ewald::{vk_fft::VkContext};
 use ewald::PmeRecip;
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -156,10 +156,8 @@ pub const PTX: &str = include_str!("../dynamics.ptx");
 
 /// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all
 /// accelerations by this. (Bonded, and nonbonded)
-const ACCEL_CONVERSION: f64 = 418.4;
-const ACCEL_CONVERSION_F32: f32 = 418.4;
-const ACCEL_CONVERSION_INV: f64 = 1. / ACCEL_CONVERSION;
-const ACCEL_CONVERSION_INV_F32: f32 = 1. / ACCEL_CONVERSION_F32;
+const ACCEL_CONVERSION: f32 = 418.4;
+const ACCEL_CONVERSION_INV: f32 = 1. / ACCEL_CONVERSION;
 
 // SHAKE tolerances for fixed hydrogens. These SHAKE constraints are for fixed hydrogens.
 // The tolerance controls how close we get
@@ -612,8 +610,8 @@ pub struct MdState {
     forces_posits_gpu: Option<ForcesPositsGpu>,
     #[cfg(feature = "cuda")]
     per_neighbor_gpu: Option<PerNeighborGpu>,
-    #[cfg(feature = "cuda")]
-    vkfft_ctx: VkCtx,
+    // #[cfg(feature = "cuda")]
+    // vkfft_ctx: Arc<VkContext>,
     pub neighbor_rebuild_count: usize,
     /// A cache of accel_factor / mass, per atom. Built once, at init.
     mass_accel_factor: Vec<f32>,
@@ -774,7 +772,7 @@ impl MdState {
         // Assign mass, LJ params, etc.
         for (i, atom) in atoms_md.iter_mut().enumerate() {
             atom.assign_data_from_params(&force_field_params, i);
-            mass_accel_factor.push(ACCEL_CONVERSION_F32 / atom.mass);
+            mass_accel_factor.push(ACCEL_CONVERSION / atom.mass);
         }
 
         let cell = SimBox::new(&atoms_md, &cfg.sim_box);
@@ -838,7 +836,7 @@ impl MdState {
             ));
 
             // Set up the SPME vkFFT to use the stream.
-            result.vkfft_ctx = VkCtx(Arc::new(VkContext::from_cudarc_stream(stream)));
+            // result.vkfft_ctx = Arc::new(VkContext::from_cudarc_stream(stream));
         }
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
@@ -879,7 +877,11 @@ impl MdState {
             mol.h1.accel = Vec3::new_zero();
         }
 
-        self.barostat.virial_pair_kcal = 0.0;
+        self.barostat.virial_coulomb = 0.0;
+        self.barostat.virial_lj = 0.0;
+        self.barostat.virial_bonded = 0.0;
+        self.barostat.virial_constraints = 0.0;
+        self.barostat.virial_nonbonded_long_range = 0.0;
         self.potential_energy = 0.;
     }
 

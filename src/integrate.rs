@@ -17,7 +17,7 @@ const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 use crate::{
     CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
     PMEIndex, SPME_RATIO,
-    ambient::instantaneous_pressure_bar,
+    ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_MESH_SPACING},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
     water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
@@ -157,7 +157,7 @@ impl MdState {
                 // (Optional but recommended) Velocity-constraint pass if your hydrogens/water need RATTLE after OU
                 // You can defer to the final RATTLE if you prefer, but best practice is to keep velocities on-constraint.
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens();
+                    self.rattle_hydrogens(dt);
                 }
 
                 self.drift_atoms(dt_half);
@@ -179,11 +179,15 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                let p_inst_bar = instantaneous_pressure_bar(
+                let p_inst_bar = measure_instantaneous_pressure(
                     &self.atoms,
                     &self.water,
                     &self.cell,
-                    self.barostat.virial_pair_kcal,
+                    self.barostat.virial_bonded
+                        + self.barostat.virial_coulomb
+                        + self.barostat.virial_lj
+                        + self.barostat.virial_constraints
+                        + self.barostat.virial_nonbonded_long_range,
                 );
                 self.apply_all_forces(dev);
 
@@ -227,7 +231,7 @@ impl MdState {
 
                 // Final velocity constraint (RATTLE) after the last kick
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens();
+                    self.rattle_hydrogens(dt);
                 }
 
                 if self.step_count % COM_REMOVAL_RATIO_LINEAR == 0 {
@@ -260,7 +264,7 @@ impl MdState {
                     }
 
                     if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
-                        self.rattle_hydrogens();
+                        self.rattle_hydrogens(dt);
                     }
 
                     if log_time {
@@ -309,15 +313,19 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                let p_inst_bar = instantaneous_pressure_bar(
+                let p_inst_bar = measure_instantaneous_pressure(
                     &self.atoms,
                     &self.water,
                     &self.cell,
-                    self.barostat.virial_pair_kcal,
+                    self.barostat.virial_coulomb
+                    +self.barostat.virial_lj
+                        + self.barostat.virial_bonded
+                        + self.barostat.virial_constraints
+                        + self.barostat.virial_nonbonded_long_range,
                 );
 
                 if self.step_count.is_multiple_of(100) {
-                    println!("Pressure: {p_inst_bar} bar");
+                    self.print_ambient_data(p_inst_bar);
                 }
 
                 // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
@@ -385,7 +393,7 @@ impl MdState {
                 }
 
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens();
+                    self.rattle_hydrogens(dt);
                 }
 
                 if log_time {
@@ -508,7 +516,7 @@ impl MdState {
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu((stream, _module)) => {
                     pme_recip.forces_gpu(stream, &pos_all, &q_all)
-                    // pme_recip.forces_gpu(&self.vkfft_ctx.0, stream, &pos_all, &q_all)
+                    // pme_recip.forces_gpu(&self.vkfft_ctx, stream, &pos_all, &q_all)
                 }
             },
             None => {
@@ -524,34 +532,46 @@ impl MdState {
             *f *= K_COUL;
         }
 
-        let mut w_recip = 0.0;
+        // todo temp
+        let  mut f_0 = Vec3::new_zero();
+
+        let mut virial_lr_recip = 0.0;
         for (k, tag) in map.iter().enumerate() {
             match *tag {
                 PMEIndex::NonWat(i) => {
                     self.atoms[i].accel += f_recip[k];
-                    w_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial
+                    if i == 0 {
+                        f_0 = f_recip[k];
+                    }
                 }
                 PMEIndex::WatO(i) => {
                     self.water[i].o.accel += f_recip[k];
-                    w_recip += 0.5 * pos_all[k].dot(f_recip[k]);
                 }
                 PMEIndex::WatM(i) => {
                     let fM = f_recip[k];
-                    w_recip += 0.5 * pos_all[k].dot(fM); // r·F, like the other sites
                     self.water[i].m.accel += fM; // stash PME M force; back-prop happens later
                 }
                 PMEIndex::WatH0(i) => {
                     self.water[i].h0.accel += f_recip[k];
-                    w_recip += 0.5 * pos_all[k].dot(f_recip[k]);
                 }
                 PMEIndex::WatH1(i) => {
                     self.water[i].h1.accel += f_recip[k];
-                    w_recip += 0.5 * pos_all[k].dot(f_recip[k]);
                 }
-                PMEIndex::Static(_) => { /* contributes to field, no accel update */ }
+                PMEIndex::Static(_) => { /* contributes to field, no accel update */}
             }
+
+            // todo: Debug
+            if self.step_count.is_multiple_of(20) {
+                println!("F RECIP a0: {}", f_0);
+            }
+
+
+            // todo: QC that you don't want the 1/2 factor.
+            // virial_lr_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial
+            virial_lr_recip += pos_all[k].dot(f_recip[k]); // tin-foil virial
         }
-        self.barostat.virial_pair_kcal += w_recip as f64;
+
+        self.barostat.virial_nonbonded_long_range += virial_lr_recip as f64;
 
         // 1–4 Coulomb scaling correction (vacuum correction)
         for &(i, j) in &self.pairs_14_scaled {
@@ -578,7 +598,7 @@ impl MdState {
             self.atoms[i].accel += df;
             self.atoms[j].accel -= df;
 
-            self.barostat.virial_pair_kcal += (dir * r).dot(df) as f64 * SPME_RATIO as f64; // r·F
+            self.barostat.virial_nonbonded_long_range += (dir * r).dot(df) as f64; // r·F
         }
     }
 
@@ -589,7 +609,6 @@ impl MdState {
     fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3>, Vec<f32>, Vec<PMEIndex>) {
         let n_std = self.atoms.len();
         let n_wat = self.water.len();
-        // let n_st = self.atoms_static.len();
 
         // Capacity hint: std + 4*water + statics
         let mut pos = Vec::with_capacity(n_std + 4 * n_wat);
@@ -608,33 +627,18 @@ impl MdState {
             pos.push(self.cell.wrap(w.o.posit));
             q.push(w.o.partial_charge);
             map.push(PMEIndex::WatO(i));
+
             pos.push(self.cell.wrap(w.m.posit));
             q.push(w.m.partial_charge);
             map.push(PMEIndex::WatM(i));
+
             pos.push(self.cell.wrap(w.h0.posit));
             q.push(w.h0.partial_charge);
             map.push(PMEIndex::WatH0(i));
+
             pos.push(self.cell.wrap(w.h1.posit));
             q.push(w.h1.partial_charge);
             map.push(PMEIndex::WatH1(i));
-        }
-
-        // // Static atoms (contribute to field but you won't update accel)
-        // for (i, a) in self.atoms_static.iter().enumerate() {
-        //     pos.push(self.cell.wrap(a.posit));
-        //     q.push(a.partial_charge);
-        //     map.push(PMEIndex::Static(i));
-        // }
-
-        // Optional sanity check (debug only): near-neutral total charge
-        #[cfg(debug_assertions)]
-        {
-            let qsum: f64 = q.iter().map(|q_| (*q_) as f64).sum();
-            if qsum.abs() > 1e-6 {
-                eprintln!(
-                    "[PME] Warning: net charge = {qsum:.6e} (PME assumes neutral or a uniform background)"
-                );
-            }
         }
 
         (pos, q, map)
@@ -676,5 +680,50 @@ impl MdState {
         }
 
         self.pme_recip = Some(PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA));
+    }
+
+    /// Print ambient parameters, as a sanity check.
+    fn print_ambient_data(&self, pressure: f64) {
+        println!("\nPressure: {pressure} bar");
+        println!("------------------------");
+        let temp = self.temperature_kelvin();
+        println!("Temp: {temp} K");
+
+        let mut water_v = 0.;
+        for mol in &self.water {
+            water_v += mol.o.vel.magnitude();
+        }
+        println!("Water O vel: {:?}", water_v / self.water.len() as f32);
+
+        let K_kcal = self.kinetic_energy_kcal();
+        let V_a3 = self.cell.volume() as f64;
+        eprintln!(
+            "K[kcal/mol]={:.3}  V[Å^3]={:.3} W_bonded: {:.3}  W_Coul: [kcal/mol]={:.3} W_LJ: [kcal/mol]={:.3} W_long range: {:.3} W_constraint: {:.5}",
+            K_kcal,
+            V_a3,
+            self.barostat.virial_bonded,
+            self.barostat.virial_coulomb,
+            self.barostat.virial_lj,
+            self.barostat.virial_nonbonded_long_range,
+            self.barostat.virial_constraints
+        );
+
+        // reconstruct pressure path
+        let p_kcal_per_a3 = (2.0 * K_kcal
+            + self.barostat.virial_coulomb
+            + self.barostat.virial_lj
+            + self.barostat.virial_bonded
+            + self.barostat.virial_constraints
+            + self.barostat.virial_nonbonded_long_range)
+            / (3.0 * V_a3);
+        eprintln!(
+            "P_from_terms[bar]={:.3}",
+            p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
+        );
+
+        // temperature path
+        let ndof = 3 * self.atoms.iter().filter(|a| !a.static_).count() + 6 * self.water.len() - 3;
+        let T_k = (2.0 * K_kcal) / (ndof as f64 * GAS_CONST_R as f64);
+        eprintln!("T[K]={:.1}  ndof={}", T_k, ndof);
     }
 }
