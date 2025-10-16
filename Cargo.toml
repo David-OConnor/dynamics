@@ -63,5 +63,5 @@ bio_files = { path = "../bio_files" }
 
 
 [features]
-cuda = ["cuda_setup", "cudarc", "lin_alg/cuda", "ewald/cufft"]
+cuda = ["cuda_setup", "cudarc", "lin_alg/cuda", "ewald/vkfft"]
 encode = ["bincode"]
