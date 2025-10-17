@@ -362,6 +362,7 @@ impl MdState {
                     // is an optimization to prevent dividing each accel component by it.
                     // This is the step where we A: convert force to accel, and B: Convert units from the param
                     // units to the ones we use in dynamics.
+
                     a.accel *= self.mass_accel_factor[i];
                     a.vel += a.accel * dt_half;
                 }
@@ -515,7 +516,9 @@ impl MdState {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu((stream, _module)) => {
-                    pme_recip.forces_gpu(stream, &pos_all, &q_all)
+                    // todo for now
+                    pme_recip.forces(&pos_all, &q_all)
+                    // pme_recip.forces_gpu(stream, &pos_all, &q_all)
                     // pme_recip.forces_gpu(&self.vkfft_ctx, stream, &pos_all, &q_all)
                 }
             },
@@ -532,8 +535,7 @@ impl MdState {
             *f *= K_COUL;
         }
 
-        // todo temp
-        let  mut f_0 = Vec3::new_zero();
+        // println!("F prior accel a0: {}",  self.atoms[1].accel);
 
         let mut virial_lr_recip = 0.0;
         for (k, tag) in map.iter().enumerate() {
@@ -541,7 +543,7 @@ impl MdState {
                 PMEIndex::NonWat(i) => {
                     self.atoms[i].accel += f_recip[k];
                     if i == 0 {
-                        f_0 = f_recip[k];
+                        // f_0 = f_recip[k];
                     }
                 }
                 PMEIndex::WatO(i) => {
@@ -561,14 +563,17 @@ impl MdState {
             }
 
             // todo: Debug
-            if self.step_count.is_multiple_of(20) {
-                println!("F RECIP a0: {}", f_0);
-            }
+            // if self.step_count.is_multiple_of(20) {
+            //     println!("F RECIP a0: {}", f_0);
+            //     println!("F RECIP a1: {}", f_1);
+            // }
 
 
             // todo: QC that you don't want the 1/2 factor.
             // virial_lr_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial
             virial_lr_recip += pos_all[k].dot(f_recip[k]); // tin-foil virial
+
+            // println!("LR. i: {k}, f: {:?}", f_recip[k]);
         }
 
         self.barostat.virial_nonbonded_long_range += virial_lr_recip as f64;

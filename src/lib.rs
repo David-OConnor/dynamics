@@ -377,13 +377,18 @@ impl AtomDynamics {
             }
         };
 
+        let partial_charge = match atom.partial_charge {
+            Some(p) => p,
+            None => return Err(ParamError::new("Missing partial charge on atom {i}")),
+        };
+
         Ok(Self {
             serial_number: atom.serial_number,
             static_,
             element: atom.element,
-            // name: atom.type_in_res.clone().unwrap_or_default(),
             posit: atom_posits[i],
             force_field_type: ff_type,
+            partial_charge,
             ..Default::default()
         })
     }
@@ -916,6 +921,7 @@ impl MdState {
                 start = Instant::now();
             }
 
+            // todo: Temp rm!!
             self.handle_spme_recip(dev);
 
             if log_time {

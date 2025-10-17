@@ -268,7 +268,6 @@ impl ForceFieldParamsIndexed {
                         // We will populate inverse mass in a second loop.
 
                         let inv_mass = 1. / atoms[i0].mass + 1. / atoms[i0].mass;
-                        println!("Inverse mass: {:?}", inv_mass); // todo: Just checking to confirm populated.
 
                         result
                             .bond_rigid_constraints

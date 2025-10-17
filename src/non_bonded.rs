@@ -398,6 +398,7 @@ impl MdState {
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
             let f: Vec3 = f_on_std[i].into();
             tgt.accel += f;
+            // println!("SHORT. i: {i}, f: {f:?}");
         }
 
         for (i, tgt) in self.water.iter_mut().enumerate() {
@@ -450,9 +451,6 @@ impl MdState {
                             return None;
                         }
                         let scale_14 = scaled_set.contains(&key);
-
-                        // We skip LJ and coulomb interactions for the static-static case
-                        // by ommitting them from our neighbor list.
 
                         Some(NonBondedPair {
                             tgt: BodyRef::NonWater(i_tgt),
