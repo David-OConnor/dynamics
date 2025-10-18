@@ -52,8 +52,8 @@ impl MdState {
         let start = Instant::now();
 
         // We disable long range forces here, as they're slow and not required.
-        let prev_long_range = self.cfg.skip_long_range_forces;
-        self.cfg.skip_long_range_forces = true;
+        let prev_long_range = self.cfg.overrides.long_range_recip_disabled;
+        self.cfg.overrides.long_range_recip_disabled = true;
 
         const F_TOL: f32 = 1.0e-3; // stop when max |F| is below this (force units used in your accel pre-division)
         const STEP_INIT: f32 = 1.0e-4; // initial step along +F (Å per force-unit)
@@ -215,7 +215,7 @@ impl MdState {
         self.regen_pme();
 
         // Undo our config change.
-        self.cfg.skip_long_range_forces = prev_long_range;
+        self.cfg.overrides.long_range_recip_disabled = prev_long_range;
 
         let elapsed = start.elapsed().as_millis();
         println!("Complete in {elapsed} ms. Used {iters} of {max_iters} iters");

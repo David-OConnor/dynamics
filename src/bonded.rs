@@ -56,9 +56,7 @@ impl MdState {
             a_1.accel += f_1;
             a_2.accel += f_2;
 
-            let virial = a_0.posit.dot(f_0)
-                + a_1.posit.dot(f_1)
-                + a_2.posit.dot(f_2);
+            let virial = a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2);
             self.barostat.virial_bonded += virial as f64;
 
             self.potential_energy += energy as f64;
@@ -92,10 +90,8 @@ impl MdState {
             a_2.accel += f_2;
             a_3.accel += f_3;
 
-            let virial = a_0.posit.dot(f_0)
-                + a_1.posit.dot(f_1)
-                + a_2.posit.dot(f_2)
-                + a_3.posit.dot(f_3);
+            let virial =
+                a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2) + a_3.posit.dot(f_3);
             self.barostat.virial_bonded += virial as f64;
 
             self.potential_energy += energy as f64;

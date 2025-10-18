@@ -13,11 +13,10 @@ use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
     AtomDynamics, AtomDynamicsx8, AtomDynamicsx16, COMPUTATION_TIME_RATIO, ComputationDevice,
     MdState,
-    ambient::SimBox,
+    ambient::{AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT, SimBox},
     forces::force_e_lj,
     water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };
-use crate::ambient::AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT;
 
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.

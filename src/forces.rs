@@ -14,7 +14,7 @@ pub fn force_e_lj(dir: Vec3, inv_dist: f32, sigma: f32, eps: f32) -> (Vec3, f32)
     let sr6 = sr.powi(6);
     let sr12 = sr6.powi(2);
 
-    let mag = 24. * eps * 2.0f32.mul_add(sr12,  -sr6) * inv_dist;
+    let mag = 24. * eps * 2.0f32.mul_add(sr12, -sr6) * inv_dist;
 
     let energy = 4. * eps * (sr12 - sr6);
     (dir * mag, energy)

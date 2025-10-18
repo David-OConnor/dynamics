@@ -184,9 +184,8 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, _cell: &SimBox) {
 
     // Optional: compute KE (translation+rotation == sum ½ m v^2 now) and rescale to T_target
     let (ke_raw, dof) = kinetic_energy_and_dof(mols); // dof = 6*N - 3
-    let lambda = (t_target
-        / (2.0 * (ke_raw * ACCEL_CONVERSION_INV) / (dof as f32 * GAS_CONST_R)))
-        .sqrt();
+    let lambda =
+        (t_target / (2.0 * (ke_raw * ACCEL_CONVERSION_INV) / (dof as f32 * GAS_CONST_R))).sqrt();
     for a in atoms_mut(mols) {
         if a.mass > 0.0 {
             a.vel *= lambda;

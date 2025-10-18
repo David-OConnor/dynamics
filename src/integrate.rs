@@ -74,18 +74,23 @@ impl MdState {
         }
     }
 
-    /// For Langevin middle.
+    /// For Langevin middle. This is a rigid shift, with one shift for all sites on a given
+    /// molecule.
     fn water_drift(&mut self, dt: f32) {
-        for (i, w) in self.water.iter_mut().enumerate() {
+        for w in &mut self.water {
+            // Drift
             w.o.posit += w.o.vel * dt;
             w.h0.posit += w.h0.vel * dt;
             w.h1.posit += w.h1.vel * dt;
             w.m.posit += w.m.vel * dt;
 
-            w.o.posit = self.cell.wrap(w.o.posit);
-            w.h0.posit = self.cell.wrap(w.h0.posit);
-            w.h1.posit = self.cell.wrap(w.h1.posit);
-            w.m.posit = self.cell.wrap(w.m.posit);
+            // Compute a single wrap shift using O (or COM) and apply to all sites
+            let o_wrapped = self.cell.wrap(w.o.posit);
+            let shift = o_wrapped - w.o.posit; // translation to bring O into [0,L)
+            w.o.posit += shift;
+            w.h0.posit += shift;
+            w.h1.posit += shift;
+            w.m.posit += shift;
         }
     }
 
@@ -109,29 +114,28 @@ impl MdState {
 
         match self.cfg.integrator {
             Integrator::LangevinMiddle { gamma } => {
-                // See notes in the below branch.
-
                 if log_time {
                     start = Instant::now();
                 }
 
-                // Half-kick
+                // B: half-kick (atoms)
                 for a in &mut self.atoms {
-                    if a.static_ {
-                        continue;
+                    if !a.static_ {
+                        a.vel += a.accel * dt_half;
                     }
-                    a.vel += a.accel * dt_half;
                 }
-
+                // B: half-kick (water) — inline version; do NOT touch M here
                 for w in &mut self.water {
                     w.o.vel += w.o.accel * dt_half;
                     w.h0.vel += w.h0.accel * dt_half;
                     w.h1.vel += w.h1.accel * dt_half;
                 }
 
+                // A: half-drift
                 self.drift_atoms(dt_half);
                 self.water_drift(dt_half);
 
+                // Position constraints (only hydrogens available here)
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.shake_hydrogens();
                 }
@@ -141,45 +145,39 @@ impl MdState {
                     self.computation_time.integration_sum += elapsed;
                 }
 
+                // O: thermostat
                 if log_time {
                     start = Instant::now();
                 }
                 self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
+                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+                    self.rattle_hydrogens(dt);
+                }
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.ambient_sum += elapsed;
                 }
 
+                // A: second half-drift
                 if log_time {
                     start = Instant::now();
                 }
-
-                // (Optional but recommended) Velocity-constraint pass if your hydrogens/water need RATTLE after OU
-                // You can defer to the final RATTLE if you prefer, but best practice is to keep velocities on-constraint.
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens(dt);
-                }
-
                 self.drift_atoms(dt_half);
                 self.water_drift(dt_half);
-
-                // Enforce position constraints again after second half-drift
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.shake_hydrogens();
                 }
-
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
                 }
 
+                // Forces for final B
                 self.reset_accel_e();
-
                 if log_time {
                     start = Instant::now();
                 }
-
-                let p_inst_bar = measure_instantaneous_pressure(
+                let _p_inst_bar = measure_instantaneous_pressure(
                     &self.atoms,
                     &self.water,
                     &self.cell,
@@ -190,46 +188,27 @@ impl MdState {
                         + self.barostat.virial_nonbonded_long_range,
                 );
                 self.apply_all_forces(dev);
-
-                // todo: Troubleshooting; causes system to blow up.
-                // self.barostat.apply_isotropic(
-                //     dt as f64,
-                //     p_inst_bar,
-                //     &mut self.cell,
-                //     &mut self.atoms,
-                //     &mut self.water,
-                // );
-
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.ambient_sum += elapsed;
                 }
 
+                // Optional: only if your box changed elsewhere; otherwise skip.
                 self.regen_pme();
 
+                // B: final half-kick (atoms with mass/units conversion)
                 if log_time {
                     start = Instant::now();
                 }
-
                 for (i, a) in self.atoms.iter_mut().enumerate() {
-                    if a.static_ {
-                        continue;
+                    if !a.static_ {
+                        a.accel *= self.mass_accel_factor[i];
+                        a.vel += a.accel * dt_half;
                     }
-                    a.accel *= self.mass_accel_factor[i];
-                    a.vel += a.accel * dt_half;
                 }
-                for w in &mut self.water {
-                    // masses are per-site for accel conversion; M site may be massless -> its accel should be zero already
-                    w.o.accel *= ACCEL_CONV_WATER_O;
-                    w.h0.accel *= ACCEL_CONV_WATER_H;
-                    w.h1.accel *= ACCEL_CONV_WATER_H;
+                // B: final half-kick (water, with your existing helper that also handles any M back-prop)
+                self.water_vv_second_half(dt_half);
 
-                    w.o.vel += w.o.accel * dt_half;
-                    w.h0.vel += w.h0.accel * dt_half;
-                    w.h1.vel += w.h1.accel * dt_half;
-                }
-
-                // Final velocity constraint (RATTLE) after the last kick
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens(dt);
                 }
@@ -318,7 +297,7 @@ impl MdState {
                     &self.water,
                     &self.cell,
                     self.barostat.virial_coulomb
-                    +self.barostat.virial_lj
+                        + self.barostat.virial_lj
                         + self.barostat.virial_bonded
                         + self.barostat.virial_constraints
                         + self.barostat.virial_nonbonded_long_range,
@@ -559,7 +538,7 @@ impl MdState {
                 PMEIndex::WatH1(i) => {
                     self.water[i].h1.accel += f_recip[k];
                 }
-                PMEIndex::Static(_) => { /* contributes to field, no accel update */}
+                PMEIndex::Static(_) => { /* contributes to field, no accel update */ }
             }
 
             // todo: Debug
@@ -567,7 +546,6 @@ impl MdState {
             //     println!("F RECIP a0: {}", f_0);
             //     println!("F RECIP a1: {}", f_1);
             // }
-
 
             // todo: QC that you don't want the 1/2 factor.
             // virial_lr_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial

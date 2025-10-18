@@ -493,6 +493,20 @@ impl Default for SimBoxInit {
     }
 }
 
+#[derive(Clone, Default, Debug)]
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+/// These are primarily used for debugging and testing, but may be used
+/// for specific scenarios as well, e.g. if wishing to speed up computations for real-time use
+/// by removing long range forces.
+pub struct MdOverrides {
+    pub allow_missing_dihedral_params: bool,
+    pub skip_water: bool,
+    pub bonded_disabled: bool,
+    pub coulomb_disabled: bool,
+    pub lj_disabled: bool,
+    pub long_range_recip_disabled: bool,
+}
+
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone)]
 pub struct MdConfig {
@@ -518,12 +532,7 @@ pub struct MdConfig {
     /// 2-4Å are common values. Higher values rebuild less often, and have more computationally-intense
     /// rebuilds. Rebuild the list if an atom moved > skin/2.
     pub neighbor_skin: f32,
-    /// For special cases.
-    pub allow_missing_dihedral_params: bool,
-    /// For special cases.
-    pub skip_long_range_forces: bool,
-    /// For special cases.
-    pub skip_water: bool,
+    pub overrides: MdOverrides,
 }
 
 impl Default for MdConfig {
@@ -541,9 +550,7 @@ impl Default for MdConfig {
             sim_box: Default::default(),
             max_init_relaxation_iters: Some(300), // todo: A/R
             neighbor_skin: 4.0,
-            allow_missing_dihedral_params: false,
-            skip_long_range_forces: false,
-            skip_water: false,
+            overrides: Default::default(),
         }
     }
 }
@@ -769,7 +776,7 @@ impl MdState {
             &atoms_md,
             &adjacency_list,
             cfg.hydrogen_constraint,
-            cfg.allow_missing_dihedral_params,
+            cfg.overrides.allow_missing_dihedral_params,
         )?;
 
         let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());
@@ -802,7 +809,7 @@ impl MdState {
 
         result.barostat.pressure_target = cfg.pressure_target as f64;
 
-        result.water = if cfg.skip_water {
+        result.water = if cfg.overrides.skip_water {
             Vec::new()
         } else {
             make_water_mols(&result.cell, cfg.temp_target, &result.atoms)
@@ -914,7 +921,11 @@ impl MdState {
 
         // Note: We currently set to skip these on energy minimization, but this
         // check may fail at step 0 anyway?
-        if !self.cfg.skip_long_range_forces && self.step_count.is_multiple_of(SPME_RATIO) {
+        // todo: When skipping long range forces, you may wish to use naive coulomb instead
+        // todo of the short-range part of the recip. This depends on the application.
+        if !self.cfg.overrides.long_range_recip_disabled
+            && self.step_count.is_multiple_of(SPME_RATIO)
+        {
             // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
             // It will produce inaccurate results otherwise.
             if log_time {

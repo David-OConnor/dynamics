@@ -63,7 +63,6 @@ bio_files = { path = "../bio_files" }
 
 
 [features]
-# todo: Disable GPU on long range ewald for now
 cuda = ["cuda_setup", "cudarc", "lin_alg/cuda", "ewald/cufft"]
 #cuda = ["cuda_setup", "cudarc", "lin_alg/cuda"]
 encode = ["bincode"]

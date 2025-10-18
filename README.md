@@ -56,7 +56,7 @@ The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/
 [BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading molecular
 file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library 
 ([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them 
-directly. See examples below and in the examples folder, and the 
+directly. See examples below and in the [examples folder](https://github.com/David-OConnor/dynamics/tree/main/examples), and the 
 docs links above; those are structs of plain data that can be built from from arbitrary input sources. For example, if
 you're building an application, you might use a more complicated Atom format; you can create a function that converts 
 between yours, and `AtomGeneric`.
@@ -191,6 +191,17 @@ files as well, e.g. to load dihedral angles from *.frcmod* that aren't present i
 
 You can load (and save) combined atom and forcefield data from Amber PRMTOP files; these combine
 these two data types into one file.
+
+Use the code below, the [Examples folder on Github](https://github.com/David-OConnor/dynamics/tree/main/examples),
+and the [API documentation](https://docs.rs/dynamics) to learn how to use it. General workflow:
+
+-Create a [MdState struct](https://docs.rs/dynamics/latest/dynamics/struct.MdState.html) with `MdState::new()`.
+This accepts a [configuration](https://docs.rs/dynamics/latest/dynamics/struct.MdConfig.html), the molecules to simulate, 
+and force field parameters.
+
+Run a simulation step by calling `MdState::step()`. This accepts [an enum which defines the computation devices](https://docs.rs/dynamics/latest/dynamics/enum.ComputationDevice.html)
+(CPU/GPU), and the time step in picoseconds. This step can be called as required for your application. For example
+you can call it repeatedly in a loop, or as required, e.g. to not block a GUI, or for interactive MD.
 
 
 Example use (Python):
