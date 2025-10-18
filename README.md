@@ -490,8 +490,9 @@ Rust setup example with Cudarc. Pass this to the `step` function.
 ```rust
 let ctx = CudaContext::new(0).unwrap();
 let stream = ctx.default_stream();
-let module = ctx.load_module(Ptx::from_src(dynamics::PTX)).unwrap();
-let dev = ComputationDevice::Gpu((stream, module));
+let dynamics = ctx.load_module(Ptx::from_src(dynamics::PTX)).unwrap();
+let ewald = ctx.load_module(Ptx::from_src(ewald::PTX)).unwrap();
+let dev = ComputationDevice::Gpu(GpuModules { stream, dynamics, ewald });
 ```
 
 To use with an Nvidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions

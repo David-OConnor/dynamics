@@ -494,11 +494,11 @@ impl MdState {
             Some(pme_recip) => match dev {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
-                ComputationDevice::Gpu((stream, _module)) => {
+                ComputationDevice::Gpu(modules) => {
                     // todo for now
-                    pme_recip.forces(&pos_all, &q_all)
-                    // pme_recip.forces_gpu(stream, &pos_all, &q_all)
-                    // pme_recip.forces_gpu(&self.vkfft_ctx, stream, &pos_all, &q_all)
+                    // pme_recip.forces(&pos_all, &q_all)
+                    pme_recip.forces_gpu(&modules.stream, &modules.ewald, &pos_all, &q_all)
+                    // pme_recip.forces_gpu(&modules.stream, &modules.ewald, stream, &pos_all, &q_all)
                 }
             },
             None => {

@@ -4,7 +4,7 @@ use cudarc::driver::{
     CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
 };
 use lin_alg::{
-    f32::{Vec3, vec3s_from_dev, vec3s_to_dev},
+    f32::{Vec3, vec3s_from_dev},
     f64::Vec3 as Vec3F64,
 };
 

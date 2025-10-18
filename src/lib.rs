@@ -153,6 +153,8 @@ use crate::{
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
 #[cfg(feature = "cuda")]
 pub const PTX: &str = include_str!("../dynamics.ptx");
+#[cfg(feature = "cuda")]
+pub const PTX_EWALD: &str = ewald::PTX;
 
 /// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all
 /// accelerations by this. (Bonded, and nonbonded)
@@ -178,12 +180,19 @@ const SPME_RATIO: usize = 2;
 // Log computation time every this many steps. (Except for neighbor rebuild)
 const COMPUTATION_TIME_RATIO: usize = 20;
 
+#[derive(Clone, Debug)]
+pub struct GpuModules {
+    pub stream: Arc<CudaStream>,
+    pub dynamics: Arc<CudaModule>,
+    pub ewald: Arc<CudaModule>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum ComputationDevice {
     #[default]
     Cpu,
     #[cfg(feature = "cuda")]
-    Gpu((Arc<CudaStream>, Arc<CudaModule>)),
+    Gpu(GpuModules),
 }
 
 /// Represents problems loading parameters. For example, if an atom is missing a force field type
@@ -828,11 +837,11 @@ impl MdState {
         // Initialize the per-neighbor data as well; we will do this again every time
         // we compute neighbors.
         #[cfg(feature = "cuda")]
-        if let ComputationDevice::Gpu((stream, module)) = dev {
-            result.gpu_kernel = Some(module.load_function("nonbonded_force_kernel").unwrap());
+        if let ComputationDevice::Gpu(modules) = dev {
+            result.gpu_kernel = Some(modules.dynamics.load_function("nonbonded_force_kernel").unwrap());
 
             result.forces_posits_gpu = Some(ForcesPositsGpu::new(
-                stream,
+                &modules.stream,
                 result.atoms.len(),
                 result.water.len(),
                 LONG_RANGE_CUTOFF,
@@ -840,7 +849,7 @@ impl MdState {
             ));
 
             result.per_neighbor_gpu = Some(PerNeighborGpu::new(
-                stream,
+                &modules.stream,
                 &result.nb_pairs,
                 &result.atoms,
                 &result.water,

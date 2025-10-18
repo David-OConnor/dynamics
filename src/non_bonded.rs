@@ -380,9 +380,9 @@ impl MdState {
                 )
             }
             #[cfg(feature = "cuda")]
-            ComputationDevice::Gpu((stream, module)) => force_nonbonded_gpu(
-                stream,
-                module,
+            ComputationDevice::Gpu(modules) => force_nonbonded_gpu(
+                &modules.stream,
+                &modules.dynamics,
                 self.gpu_kernel.as_ref().unwrap(),
                 &self.nb_pairs,
                 &self.atoms,
