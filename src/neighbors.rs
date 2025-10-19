@@ -143,9 +143,9 @@ impl MdState {
         self.setup_pairs();
 
         #[cfg(feature = "cuda")]
-        if let ComputationDevice::Gpu((modules)) = dev {
+        if let ComputationDevice::Gpu(stream) = dev {
             self.per_neighbor_gpu = Some(PerNeighborGpu::new(
-                &modules.stream,
+                stream,
                 &self.nb_pairs,
                 &self.atoms,
                 &self.water,

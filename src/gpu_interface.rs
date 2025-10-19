@@ -313,8 +313,9 @@ fn upload_positions(
 /// Returns force, virial sum, and potential energy.
 pub fn force_nonbonded_gpu(
     stream: &Arc<CudaStream>,
-    module: &Arc<CudaModule>,
     kernel: &CudaFunction,
+    kernel_zero_f32: &CudaFunction,
+    kernel_zero_f64: &CudaFunction,
     pairs: &[NonBondedPair],
     atoms_dyn: &[AtomDynamics],
     water: &[WaterMol],
@@ -327,7 +328,7 @@ pub fn force_nonbonded_gpu(
 
     let n = pairs.len();
 
-    zero_forces_and_accums(stream, module, forces, atoms_dyn.len(), water.len());
+    zero_forces_and_accums(stream, kernel_zero_f32, kernel_zero_f64, forces, atoms_dyn.len(), water.len());
 
     // 1-4 scaling, and the symmetric case handled in the kernel.
     // Store immutable input arrays to the device.
@@ -411,15 +412,12 @@ pub fn force_nonbonded_gpu(
 /// Zero forces and accumulators on the device. Run this each step.
 fn zero_forces_and_accums(
     stream: &Arc<CudaStream>,
-    module: &Arc<CudaModule>,
+    zero_f32: &CudaFunction,
+    zero_f64: &CudaFunction,
     forces: &mut ForcesPositsGpu,
     n_non_water: usize,
     n_water: usize,
 ) {
-    // todo: Store these kernesl as you do the main one.
-    let zero_f32 = module.load_function("zero_f32").unwrap();
-    let zero_f64 = module.load_function("zero_f64").unwrap();
-
     // Non-water atoms: 3 floats per atom
     let std_len_u32 = (n_non_water * 3) as u32;
 

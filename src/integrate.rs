@@ -511,8 +511,8 @@ impl MdState {
                 ComputationDevice::Gpu(modules) => {
                     // todo for now
                     pme_recip.forces(&pos_all, &q_all)
-                    // pme_recip.forces_gpu(&modules.stream, &modules.ewald, &pos_all, &q_all)
-                    // pme_recip.forces_gpu(&modules.stream, &modules.ewald, stream, &pos_all, &q_all)
+                    // pme_recip.forces_gpu(&modules.stream, &pos_all, &q_all)
+                    // pme_recip.forces_gpu(&modules.stream, stream, &pos_all, &q_all)
                 }
             },
             None => {

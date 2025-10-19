@@ -373,10 +373,11 @@ impl MdState {
                 )
             }
             #[cfg(feature = "cuda")]
-            ComputationDevice::Gpu(modules) => force_nonbonded_gpu(
-                &modules.stream,
-                &modules.dynamics,
+            ComputationDevice::Gpu(stream) => force_nonbonded_gpu(
+                stream,
                 self.gpu_kernel.as_ref().unwrap(),
+                self.gpu_kernel_zero_f32.as_ref().unwrap(),
+                self.gpu_kernel_zero_f64.as_ref().unwrap(),
                 &self.nb_pairs,
                 &self.atoms,
                 &self.water,
@@ -595,7 +596,7 @@ pub fn f_nonbonded_cpu(
         )
     };
 
-    println!("Q: {:?}, dist: {:?}, inv_dist: {:?} f: {:?}", tgt.partial_charge, dist, inv_dist, f_coulomb);
+    // println!("Q: {:?}, dist: {:?}, inv_dist: {:?} f: {:?}", tgt.partial_charge, dist, inv_dist, f_coulomb);
 
     // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
     if scale14 {
@@ -605,7 +606,7 @@ pub fn f_nonbonded_cpu(
 
     // todo: How do we prevent accumulating energy on static atoms and water?
 
-    println!("F coulomb: {f_coulomb} LJ: {f_lj}");
+    // println!("F coulomb: {f_coulomb} LJ: {f_lj}");
 
     let force = f_lj + f_coulomb;
     let energy = energy_lj + energy_coulomb;

@@ -4,6 +4,68 @@
 
 #include "util.cu"
 
+// This assumes diff (and dir) is in order tgt - src.
+// Different API.
+__device__
+ForceEnergy lj_force(
+    float3 diff,
+    float r,
+    float inv_r,
+    float3 dir,
+    float sigma,
+    float eps
+) {
+    const float sr = sigma * inv_r;
+    const float sr2 = sr * sr;
+    const float sr4 = sr2 * sr2;
+    const float sr6 = sr4 * sr2;
+    const float sr12 = sr6 * sr6;
+
+    // Optimized mul_add.
+    const float mag = 24.0f * eps * fmaf(2.f, sr12, -sr6) * inv_r;
+
+    ForceEnergy result;
+    result.force = dir * mag;
+    result.energy = 4.f * eps * (sr12 - sr6);
+
+    return result;
+}
+
+// These params includes inv_r due to it being shared with LJ.
+__device__
+ForceEnergy coulomb_force_spme_short_range(
+    float r,
+    float inv_r,
+    float3 dir,
+    float q_0,
+    float q_1,
+    float cutoff_dist,
+    float alpha
+) {
+    ForceEnergy result;
+
+    // Outside cutoff: no short-range contribution
+    if (r >= cutoff_dist) {
+        result.force  = make_float3(0.f, 0.f, 0.f);
+        result.energy = 0.f;
+        return result;
+    }
+
+    const float alpha_r = alpha * r;
+    const float erfc_term = erfcf(alpha_r);
+    const float charge_term = q_0 * q_1;
+
+    const float exp_term  = __expf(-(alpha_r * alpha_r));
+
+    const float inv_r_sq = inv_r * inv_r;
+    const float coef = 2.0f * alpha * exp_term * INV_SQRT_PI;
+    // mul_add
+    const float force_mag = charge_term * fmaf(erfc_term, inv_r_sq, coef * inv_r);
+
+    result.force = dir * force_mag;
+    result.energy = charge_term * inv_r * erfc_term;
+    return result;
+}
 
 // Handles LJ and Coulomb force, pairwise.
 // This assumes inputs have already been organized and flattened. All inputs share the same index.
@@ -100,7 +162,7 @@ void nonbonded_force_kernel(
         f_lj.energy = 0.f;
 
         if (calc_ljs[i]) {
-            f_lj = lj_force_v2(diff, r, inv_r, dir, sigma, eps);
+            f_lj = lj_force(diff, r, inv_r, dir, sigma, eps);
         }
 
         const float q_tgt = qs_tgt[i];

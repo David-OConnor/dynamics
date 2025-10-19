@@ -122,9 +122,9 @@ use ambient::SimBox;
 use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
-use cudarc::driver::{CudaFunction, CudaModule, CudaStream};
-// #[cfg(feature = "cuda")]
-// use ewald::{vk_fft::VkContext};
+use cudarc::driver::{CudaFunction, CudaModule, CudaStream, CudaContext};
+#[cfg(feature = "cuda")]
+use cudarc::nvrtc::Ptx;
 use ewald::PmeRecip;
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -152,9 +152,7 @@ use crate::{
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
 #[cfg(feature = "cuda")]
-pub const PTX: &str = include_str!("../dynamics.ptx");
-#[cfg(feature = "cuda")]
-pub const PTX_EWALD: &str = ewald::PTX;
+const PTX: &str = include_str!("../dynamics.ptx");
 
 /// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all
 /// accelerations by this. (Bonded, and nonbonded)
@@ -180,20 +178,12 @@ const SPME_RATIO: usize = 2;
 // Log computation time every this many steps. (Except for neighbor rebuild)
 const COMPUTATION_TIME_RATIO: usize = 20;
 
-#[cfg(feature = "cuda")]
-#[derive(Clone, Debug)]
-pub struct GpuModules {
-    pub stream: Arc<CudaStream>,
-    pub dynamics: Arc<CudaModule>,
-    pub ewald: Arc<CudaModule>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub enum ComputationDevice {
     #[default]
     Cpu,
     #[cfg(feature = "cuda")]
-    Gpu(GpuModules),
+    Gpu(Arc<CudaStream>),
 }
 
 /// Represents problems loading parameters. For example, if an atom is missing a force field type
@@ -620,7 +610,12 @@ pub struct MdState {
     /// Every so many snapshots, write these to file, then clear from memory.
     snapshot_queue_for_file: Vec<Snapshot>,
     #[cfg(feature = "cuda")]
-    gpu_kernel: Option<CudaFunction>, // Option only due to not impling Deafult.
+    gpu_kernel: Option<CudaFunction>, // Option only due to not impling Default.
+    #[cfg(feature = "cuda")]
+    gpu_kernel_zero_f32: Option<CudaFunction>,
+    #[cfg(feature = "cuda")]
+    gpu_kernel_zero_f64: Option<CudaFunction>,
+
     #[cfg(feature = "cuda")]
     /// These store handles to data structures on the GPU. We pass them to the kernel each
     /// step, but don't transfer. Init to None. Populated during the run.
@@ -827,11 +822,15 @@ impl MdState {
         // Initialize the per-neighbor data as well; we will do this again every time
         // we compute neighbors.
         #[cfg(feature = "cuda")]
-        if let ComputationDevice::Gpu(modules) = dev {
-            result.gpu_kernel = Some(modules.dynamics.load_function("nonbonded_force_kernel").unwrap());
+        if let ComputationDevice::Gpu(stream) = dev {
+            let ctx = CudaContext::new(0).unwrap();
+            let module = ctx.load_module(Ptx::from_src(PTX)).unwrap();
+            result.gpu_kernel = Some(module.load_function("nonbonded_force_kernel").unwrap());
+            result.gpu_kernel_zero_f32 = Some(module.load_function("zero_f32").unwrap());
+            result.gpu_kernel_zero_f64 = Some(module.load_function("zero_f64").unwrap());
 
             result.forces_posits_gpu = Some(ForcesPositsGpu::new(
-                &modules.stream,
+                stream,
                 result.atoms.len(),
                 result.water.len(),
                 LONG_RANGE_CUTOFF,
@@ -839,15 +838,13 @@ impl MdState {
             ));
 
             result.per_neighbor_gpu = Some(PerNeighborGpu::new(
-                &modules.stream,
+                stream,
                 &result.nb_pairs,
                 &result.atoms,
                 &result.water,
                 &result.lj_tables,
             ));
 
-            // Set up the SPME vkFFT to use the stream.
-            // result.vkfft_ctx = Arc::new(VkContext::from_cudarc_stream(stream));
         }
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
