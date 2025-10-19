@@ -486,13 +486,12 @@ We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA
 We've exposed a slightly lower level API in rust, where you use setup a Stream and modules with Cudarc in your
 application, and pass them to the library.
 
-Rust setup example with Cudarc. Pass this to the `step` function.
+Rust setup example with Cudarc. Pass `dev`, defined below, to the `step` function.
 ```rust
 let ctx = CudaContext::new(0).unwrap();
 let stream = ctx.default_stream();
-let dynamics = ctx.load_module(Ptx::from_src(dynamics::PTX)).unwrap();
-let ewald = ctx.load_module(Ptx::from_src(ewald::PTX)).unwrap();
-let dev = ComputationDevice::Gpu(GpuModules { stream, dynamics, ewald });
+
+let dev = ComputationDevice::Gpu(GpuModules(stream);
 ```
 
 To use with an Nvidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions

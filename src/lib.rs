@@ -615,7 +615,6 @@ pub struct MdState {
     gpu_kernel_zero_f32: Option<CudaFunction>,
     #[cfg(feature = "cuda")]
     gpu_kernel_zero_f64: Option<CudaFunction>,
-
     #[cfg(feature = "cuda")]
     /// These store handles to data structures on the GPU. We pass them to the kernel each
     /// step, but don't transfer. Init to None. Populated during the run.
