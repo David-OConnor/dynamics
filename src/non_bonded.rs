@@ -10,13 +10,7 @@ use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::force_nonbonded_gpu;
-use crate::{
-    AtomDynamics, AtomDynamicsx8, AtomDynamicsx16, COMPUTATION_TIME_RATIO, ComputationDevice,
-    MdState,
-    ambient::{AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT, SimBox},
-    forces::force_e_lj,
-    water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
-};
+use crate::{AtomDynamics, AtomDynamicsx8, AtomDynamicsx16, COMPUTATION_TIME_RATIO, ComputationDevice, MdState, ambient::{AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT, SimBox}, forces::force_e_lj, water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite}, MdOverrides};
 
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.
@@ -36,10 +30,6 @@ pub const LONG_RANGE_CUTOFF: f32 = 10.0; // Å
 // reciprocal load.
 // Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
 pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff = 10.
-pub const PME_MESH_SPACING: f32 = 1.0;
-
-// // SPME order‑4 B‑spline interpolation
-// pub const SPME_N: usize = 64;
 
 // Å. Smaller uses a higher-resolution mesh. 1 is a good default.
 pub const SPME_MESH_SPACING: f32 = 1.;
@@ -247,6 +237,7 @@ fn calc_force_cpu(
     water: &[WaterMol],
     cell: &SimBox,
     lj_tables: &LjTables,
+    overrides: &MdOverrides,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
     let n_std = atoms_std.len();
     let n_wat = water.len();
@@ -277,6 +268,7 @@ fn calc_force_cpu(
                     lj_tables,
                     p.calc_lj,
                     p.calc_coulomb,
+                    overrides,
                 );
 
                 // Convert to f64 prior to summing.
@@ -377,6 +369,7 @@ impl MdState {
                     &self.water,
                     &self.cell,
                     &self.lj_tables,
+                    &self.cfg.overrides,
                 )
             }
             #[cfg(feature = "cuda")]
@@ -397,7 +390,6 @@ impl MdState {
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
             let f: Vec3 = f_on_std[i].into();
             tgt.accel += f;
-            // println!("SHORT. i: {i}, f: {f:?}");
         }
 
         for (i, tgt) in self.water.iter_mut().enumerate() {
@@ -556,6 +548,7 @@ pub fn f_nonbonded_cpu(
     // These flags are for use with forces on water.
     calc_lj: bool,
     calc_coulomb: bool,
+    overrides: &MdOverrides,
 ) -> (Vec3, f32) {
     let diff = cell.min_image(tgt.posit - src.posit);
 
@@ -571,7 +564,8 @@ pub fn f_nonbonded_cpu(
     let inv_dist = 1.0 / dist;
     let dir = diff * inv_dist;
 
-    let (f_lj, energy_lj) = if !calc_lj || dist > CUTOFF_VDW {
+
+    let (f_lj, energy_lj) = if !calc_lj || dist > CUTOFF_VDW || overrides.lj_disabled {
         (Vec3::new_zero(), 0.)
     } else {
         let (σ, ε) = lj_tables.lookup(lj_indices);
@@ -584,9 +578,10 @@ pub fn f_nonbonded_cpu(
         (f, e)
     };
 
+
     // We assume that in the AtomDynamics structs, charges are already scaled to Amber units.
     // (No longer in elementary charge)
-    let (mut f_coulomb, mut energy_coulomb) = if !calc_coulomb {
+    let (mut f_coulomb, mut energy_coulomb) = if !calc_coulomb || overrides.coulomb_disabled {
         (Vec3::new_zero(), 0.)
     } else {
         force_coulomb_short_range(
@@ -600,6 +595,8 @@ pub fn f_nonbonded_cpu(
         )
     };
 
+    println!("Q: {:?}, dist: {:?}, inv_dist: {:?} f: {:?}", tgt.partial_charge, dist, inv_dist, f_coulomb);
+
     // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
     if scale14 {
         f_coulomb *= SCALE_COUL_14;
@@ -607,6 +604,8 @@ pub fn f_nonbonded_cpu(
     }
 
     // todo: How do we prevent accumulating energy on static atoms and water?
+
+    println!("F coulomb: {f_coulomb} LJ: {f_lj}");
 
     let force = f_lj + f_coulomb;
     let energy = energy_lj + energy_coulomb;

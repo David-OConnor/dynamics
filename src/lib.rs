@@ -180,6 +180,7 @@ const SPME_RATIO: usize = 2;
 // Log computation time every this many steps. (Except for neighbor rebuild)
 const COMPUTATION_TIME_RATIO: usize = 20;
 
+#[cfg(feature = "cuda")]
 #[derive(Clone, Debug)]
 pub struct GpuModules {
     pub stream: Arc<CudaStream>,
@@ -387,7 +388,7 @@ impl AtomDynamics {
         };
 
         let partial_charge = match atom.partial_charge {
-            Some(p) => p,
+            Some(p) => p * CHARGE_UNIT_SCALER,
             None => return Err(ParamError::new("Missing partial charge on atom {i}")),
         };
 
@@ -407,17 +408,10 @@ impl AtomDynamics {
     pub(crate) fn assign_data_from_params(
         &mut self,
         ff_params: &ForceFieldParamsIndexed,
-        // ff_params: &ForceFieldParams,
         i: usize,
     ) {
-        // mass: ff_params.mass.get(&i).unwrap().mass as f64,
         self.mass = ff_params.mass[&i].mass;
-        // We get partial charge for ligands from (e.g. Amber-provided) Mol files, so we load it from the atom, vice
-        // the loaded FF params. They are not in the dat or frcmod files that angle, bond-length etc params are from.
-        self.partial_charge = CHARGE_UNIT_SCALER * self.partial_charge;
-        // lj_sigma: ff_params.lennard_jones.get(&i).unwrap().sigma as f64,
         self.lj_sigma = ff_params.lennard_jones[&i].sigma;
-        // lj_eps: ff_params.lennard_jones.get(&i).unwrap().eps as f64,
         self.lj_eps = ff_params.lennard_jones[&i].eps;
     }
 }
@@ -514,6 +508,8 @@ pub struct MdOverrides {
     pub coulomb_disabled: bool,
     pub lj_disabled: bool,
     pub long_range_recip_disabled: bool,
+    pub thermo_disabled: bool,
+    pub baro_disabled: bool,
 }
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -673,16 +669,10 @@ impl MdState {
             ));
         }
 
-        // todo: Sort this out. One set for all molecules now. Assumes unique FF names between
-        // todo different set types.
-        // let mut ff_params: ForceFieldParamsIndexed = Default::default();
-
         // We combine all molecule general and specific params into this set, then
         // create Indexed params from it.
         let mut params = ForceFieldParams::default();
 
-        // todo: Make sure you don't use atom SN anywhere in the MD pipeline.
-        // let mut last_mol_sn = 0;
 
         // Used for updating indices for tracking purposes.
         let mut total_atom_count = 0;
@@ -914,7 +904,9 @@ impl MdState {
             start = Instant::now();
         }
 
-        self.apply_bonded_forces();
+        if !self.cfg.overrides.bonded_disabled {
+            self.apply_bonded_forces();
+        }
 
         if log_time {
             let elapsed = start.elapsed().as_micros() as u64;
@@ -941,7 +933,6 @@ impl MdState {
                 start = Instant::now();
             }
 
-            // todo: Temp rm!!
             self.handle_spme_recip(dev);
 
             if log_time {

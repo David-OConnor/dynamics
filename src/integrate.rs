@@ -20,7 +20,6 @@ use crate::{
     ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_MESH_SPACING},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
-    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
 };
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
@@ -149,7 +148,10 @@ impl MdState {
                 if log_time {
                     start = Instant::now();
                 }
-                self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
+
+                if !self.cfg.overrides.thermo_disabled {
+                    self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
+                }
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens(dt);
                 }
@@ -177,6 +179,7 @@ impl MdState {
                 if log_time {
                     start = Instant::now();
                 }
+
                 let _p_inst_bar = measure_instantaneous_pressure(
                     &self.atoms,
                     &self.water,
@@ -187,7 +190,9 @@ impl MdState {
                         + self.barostat.virial_constraints
                         + self.barostat.virial_nonbonded_long_range,
                 );
+
                 self.apply_all_forces(dev);
+
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.ambient_sum += elapsed;
@@ -231,7 +236,9 @@ impl MdState {
                     if log_time {
                         start = Instant::now();
                     }
-                    self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
+                    if !self.cfg.overrides.thermo_disabled {
+                        self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
+                    }
 
                     if log_time {
                         let elapsed = start.elapsed().as_micros() as u64;
@@ -292,30 +299,33 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                let p_inst_bar = measure_instantaneous_pressure(
-                    &self.atoms,
-                    &self.water,
-                    &self.cell,
-                    self.barostat.virial_coulomb
-                        + self.barostat.virial_lj
-                        + self.barostat.virial_bonded
-                        + self.barostat.virial_constraints
-                        + self.barostat.virial_nonbonded_long_range,
-                );
+                if !self.cfg.overrides.baro_disabled {
+                    let p_inst_bar = measure_instantaneous_pressure(
+                        &self.atoms,
+                        &self.water,
+                        &self.cell,
+                        self.barostat.virial_coulomb
+                            + self.barostat.virial_lj
+                            + self.barostat.virial_bonded
+                            + self.barostat.virial_constraints
+                            + self.barostat.virial_nonbonded_long_range,
+                    );
 
-                if self.step_count.is_multiple_of(100) {
-                    self.print_ambient_data(p_inst_bar);
+                    if self.step_count.is_multiple_of(100) {
+                        self.print_ambient_data(p_inst_bar);
+                    }
+
+                    // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
+                    // todo is showing *much* to high.
+
+                    // self.barostat.apply_isotropic(
+                    //     dt as f64,
+                    //     p_inst_bar,
+                    //     &mut self.cell,
+                    //     &mut self.atoms,
+                    //     &mut self.water,
+                    // );
                 }
-
-                // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
-                // todo is showing *much* to high.
-                // self.barostat.apply_isotropic(
-                //     dt as f64,
-                //     p_inst_bar,
-                //     &mut self.cell,
-                //     &mut self.atoms,
-                //     &mut self.water,
-                // );
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -360,7 +370,9 @@ impl MdState {
 
                 // O(dt/2)
                 if let Integrator::Langevin { gamma } = self.cfg.integrator {
-                    self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
+                    if !self.cfg.overrides.thermo_disabled {
+                        self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
+                    }
                 }
 
                 if log_time {
@@ -395,7 +407,9 @@ impl MdState {
                 start = Instant::now();
             }
 
-            self.apply_thermostat_csvr(dt as f64, self.cfg.temp_target as f64);
+            if !self.cfg.overrides.thermo_disabled {
+                self.apply_thermostat_csvr(dt as f64, self.cfg.temp_target as f64);
+            }
 
             if log_time {
                 let elapsed = start.elapsed().as_micros() as u64;
@@ -496,8 +510,8 @@ impl MdState {
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu(modules) => {
                     // todo for now
-                    // pme_recip.forces(&pos_all, &q_all)
-                    pme_recip.forces_gpu(&modules.stream, &modules.ewald, &pos_all, &q_all)
+                    pme_recip.forces(&pos_all, &q_all)
+                    // pme_recip.forces_gpu(&modules.stream, &modules.ewald, &pos_all, &q_all)
                     // pme_recip.forces_gpu(&modules.stream, &modules.ewald, stream, &pos_all, &q_all)
                 }
             },
@@ -561,6 +575,7 @@ impl MdState {
             let diff = self
                 .cell
                 .min_image(self.atoms[i].posit - self.atoms[j].posit);
+
             let r = diff.magnitude();
             if r == 0.0 {
                 continue;
