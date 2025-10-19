@@ -7,6 +7,7 @@ use crate::{
     ambient::SimBox,
     water_opc::{H_MASS, O_MASS},
 };
+use crate::water_opc::WaterMol;
 
 /// Analytic SETTLE implementation for 3‑site rigid water (Miyamoto & Kollman, JCC 1992).
 /// Works for any bond length / HOH angle.
@@ -17,28 +18,26 @@ use crate::{
 /// of updating position by adding velocity x dt, but also maintains the rigid
 /// geometry of 3-atom molecules.
 pub fn settle_drift(
-    o: &mut AtomDynamics,
-    h0: &mut AtomDynamics,
-    h1: &mut AtomDynamics,
+    mol: &mut WaterMol,
     dt: f32,
     cell: &SimBox,
     virial_constr_kcal: &mut f64,
 ) {
     const MASS_MOL: f32 = O_MASS + 2.0 * H_MASS;
 
-    let o_pos = o.posit;
-    let h0_pos_local = o_pos + cell.min_image(h0.posit - o_pos);
-    let h1_pos_local = o_pos + cell.min_image(h1.posit - o_pos);
+    let o_pos = mol.o.posit;
+    let h0_pos_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
+    let h1_pos_local = o_pos + cell.min_image(mol.h1.posit - o_pos);
 
     // COM position & velocity at start of the drift/rotation substep
-    let r_com = (o.posit * O_MASS + h0_pos_local * H_MASS + h1_pos_local * H_MASS) / MASS_MOL;
-    let v_com = (o.vel * O_MASS + h0.vel * H_MASS + h1.vel * H_MASS) / MASS_MOL;
+    let r_com = (mol.o.posit * O_MASS + h0_pos_local * H_MASS + h1_pos_local * H_MASS) / MASS_MOL;
+    let v_com = (mol.o.vel * O_MASS + mol.h0.vel * H_MASS + mol.h1.vel * H_MASS) / MASS_MOL;
 
     // Shift to COM frame
     let (rO, rH0, rH1) = (o_pos - r_com, h0_pos_local - r_com, h1_pos_local - r_com);
-    let (vO, vH0, vH1) = (o.vel - v_com, h0.vel - v_com, h1.vel - v_com);
+    let (vO, vH0, vH1) = (mol.o.vel - v_com, mol.h0.vel - v_com, mol.h1.vel - v_com);
 
-    // angular momentum about COM
+    // Angular momentum about COM
     let L = rO.cross(vO) * O_MASS + rH0.cross(vH0) * H_MASS + rH1.cross(vH1) * H_MASS;
 
     // inertia tensor about COM (symmetric 3×3)
@@ -83,9 +82,10 @@ pub fn settle_drift(
     let new_h1 = r_com + Δ + rH12;
 
     // Wrap O, then pull each H next to O using min_image
-    o.posit = cell.wrap(new_o);
-    h0.posit = o.posit + cell.min_image(new_h0 - o.posit);
-    h1.posit = o.posit + cell.min_image(new_h1 - o.posit);
+    // todo: Should we be using our `wrap_water` fn here as well.
+    mol.o.posit = cell.wrap(new_o);
+    mol.h0.posit = mol.o.posit + cell.min_image(new_h0 - mol.o.posit);
+    mol.h1.posit = mol.o.posit + cell.min_image(new_h1 - mol.o.posit);
 
     // COM-frame velocities after rotation
     let vO2 = ω.cross(rO2);
@@ -117,9 +117,9 @@ pub fn settle_drift(
     // ---------------------------------------------------------
 
     // Final absolute velocities
-    o.vel = v_com + vO2;
-    h0.vel = v_com + vH02;
-    h1.vel = v_com + vH12;
+    mol.o.vel = v_com + vO2;
+    mol.h0.vel = v_com + vH02;
+    mol.h1.vel = v_com + vH12;
 }
 
 /// Solve I · x = b for a 3×3 *symmetric* matrix I.

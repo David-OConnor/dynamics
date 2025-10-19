@@ -36,6 +36,7 @@ use crate::{
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
+use crate::ambient::SimBox;
 
 // Constant parameters below are for the OPC water (JPCL, 2014, 5 (21), pp 3863-3871)
 // (Amber 2025, frcmod.opc) EP/M is the massless, 4th charge.
@@ -44,6 +45,10 @@ use crate::{AtomDynamicsx8, AtomDynamicsx16};
 // other than bond distances and the valence angle)
 pub(crate) const O_MASS: f32 = 16.;
 pub(crate) const H_MASS: f32 = 1.008;
+
+// We use this to convert from force to acceleration, in the appropriate units.
+pub(crate) const MASS_ACCEL_FACTOR_WATER_O: f32 = ACCEL_CONVERSION / O_MASS;
+pub(crate) const MASS_ACCEL_FACTOR_WATER_H: f32 = ACCEL_CONVERSION / H_MASS;
 
 // We have commented out flexible-bond parameters that are provided by Amber, but not
 // used in this rigid model.
@@ -207,23 +212,13 @@ impl WaterMol {
             h0,
         }
     }
-
-    /// Called twice each step, as part of the SETTLE algorithm, to update velocities. We don't apply velocity to M/EP,
-    /// because it's massless; we rigidly place it each step based on geometry.
-    /// For the second half-kick, the molecule's `accel` field must have been converted
-    /// from force by dividing by mass, and contain the unit conversion from AMBER's, to our natural units.
-    fn half_kick(&mut self, dt_half: f32) {
-        self.o.vel += self.o.accel * dt_half;
-        self.h0.vel += self.h0.accel * dt_half;
-        self.h1.vel += self.h1.accel * dt_half;
-    }
-
+    
     /// Part of the OPC algorithm; EP/M doesn't move directly and is massless. We take into account
     /// the Coulomb force on it by applying it instead to O and H atoms.
     ///
     /// We use the accel field as a stand-in for force. This means that these values must actually
     /// be force (Not scaled by ACCEL_SCALER or mass) when this function is called.
-    fn project_ep_force_to_real_sites(&mut self) {
+    pub(crate) fn project_ep_force_to_real_sites(&mut self) {
         // Geometry in O-centered frame
         let r_O_H0 = self.h0.posit - self.o.posit;
         let r_O_H1 = self.h1.posit - self.o.posit;
@@ -233,13 +228,11 @@ impl WaterMol {
 
         if s_norm < 1e-12 {
             // Degenerate geometry: drop EP force this step
-            self.m.accel = Vec3F32::new_zero();
+            self.m.force = Vec3F32::new_zero();
             return;
         }
 
-        // todo: If you use this approach, clarify what's force, and what's accel.
-
-        let f_m = self.m.accel;
+        let f_m = self.m.force;
 
         // Unit bisector and projection operator P = (I - uu^T)/|s|
         let u = s / s_norm;
@@ -253,29 +246,23 @@ impl WaterMol {
         let fo = f_m - fh * 2.0; // remaining force goes to O
 
         // Force on M/EP is now zero, and we've modified the forces on the other atoms from it.
-        self.m.accel = Vec3F32::new_zero();
-        self.o.accel += fo;
-        self.h0.accel += fh;
-        self.h1.accel += fh;
+        self.m.force = Vec3F32::new_zero();
+        self.o.force += fo;
+        self.h0.force += fh;
+        self.h1.force += fh;
     }
 }
 
 impl MdState {
-    /// Verlet velocity integration for water, part 1. Forces for this step must
+    /// Verlet velocity integration for water. Forces for this step must
     /// be pre-calculated. Accepts as mutable to allow projecting M/EP force onto the
     /// other atoms.
     ///
     /// In addition to the VV half-kick and drift, it handles force projection from M/EP,
     /// and applying SETTLE to main each molecul's rigid geometry.
     pub fn water_vv_first_half_and_drift(&mut self, dt: f32, dt_half: f32) {
-        let cell = self.cell;
-
-        for iw in 0..self.water.len() {
-            let w = &mut self.water[iw];
-
+        for w in &mut self.water {
             // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
-
-            // println!("Water accel: o: {} H0: {}, h1: {}", w.o.accel, w.h0.accel, w.h1.accel);
 
             // First half-kick. Don't apply conversions here, as they've already been applied in the
             // previous step.
@@ -283,9 +270,7 @@ impl MdState {
 
             // Drift the rigid molecule with SETTLE
             settle_drift(
-                &mut w.o,
-                &mut w.h0,
-                &mut w.h1,
+                w,
                 dt,
                 &self.cell,
                 &mut self.barostat.virial_coulomb,
@@ -298,40 +283,19 @@ impl MdState {
                 w.m.vel = (w.h0.vel + w.h1.vel) * 0.5;
             }
 
-            // Wrap molecule as a rigid unit (wrap O, translate H,H,EP)
-            let new_o = cell.wrap(w.o.posit);
-            let shift = new_o - w.o.posit;
-
-            w.o.posit = new_o;
-            w.h0.posit += shift;
-            w.h1.posit += shift;
-            w.m.posit += shift;
+            wrap_water(w, &self.cell);
         }
     }
+}
 
-    /// Velocity-Verlet integration for water, part 2.
-    /// Forces (as .accel) must be computed prior to this step.
-    pub fn water_vv_second_half(&mut self, dt_half: f32) {
-        // A cache.
-        let conv_o = ACCEL_CONVERSION / O_MASS;
-        let conv_h = ACCEL_CONVERSION / H_MASS;
+/// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
+/// side of the cell.
+pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
+    let new_o = cell.wrap(mol.o.posit);
+    let shift = new_o - mol.o.posit;
 
-        for iw in 0..self.water.len() {
-            let w = &mut self.water[iw];
-
-            // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
-            // This is the only place where we need it, since we only apply forces once per step; this
-            // will cover this step's second half-kick, and the first half-kick next step.
-            w.project_ep_force_to_real_sites();
-
-            // Convert forces to accel, in our native units.
-            w.o.accel *= conv_o;
-            w.h0.accel *= conv_h;
-            w.h1.accel *= conv_h;
-
-            // Second half-kick. Apply unit and mass conversions here, as they've
-            // been reset from the previous step, and re-calculated in this one.
-            w.half_kick(dt_half);
-        }
-    }
+    mol.o.posit = new_o;
+    mol.h0.posit += shift;
+    mol.h1.posit += shift;
+    mol.m.posit += shift;
 }

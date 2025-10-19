@@ -23,6 +23,7 @@ use crate::{
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_MESH_SPACING},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
 };
+use crate::water_opc::{wrap_water, ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O};
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -64,8 +65,9 @@ impl Display for Integrator {
 }
 
 impl MdState {
-    /// For Langevin middle.
-    fn drift_atoms(&mut self, dt: f32) {
+    /// Drifts all non-static atoms in the system. For Langevin middle. For water, this is a rigid shift, with
+    /// one shift for all sites on a given molecule.
+    fn drift(&mut self, dt: f32) {
         for a in &mut self.atoms {
             if a.static_ {
                 continue;
@@ -73,11 +75,7 @@ impl MdState {
 
             a.posit += a.vel * dt;
         }
-    }
 
-    /// For Langevin middle. This is a rigid shift, with one shift for all sites on a given
-    /// molecule.
-    fn water_drift(&mut self, dt: f32) {
         for w in &mut self.water {
             // Drift
             w.o.posit += w.o.vel * dt;
@@ -88,6 +86,7 @@ impl MdState {
             // Compute a single wrap shift using O (or COM) and apply to all sites
             let o_wrapped = self.cell.wrap(w.o.posit);
             let shift = o_wrapped - w.o.posit; // translation to bring O into [0,L)
+
             w.o.posit += shift;
             w.h0.posit += shift;
             w.h1.posit += shift;
@@ -95,13 +94,14 @@ impl MdState {
         }
     }
 
+    /// Perform one integration step. This is the entry point for running the simulation.
     /// One step of length `dt` is in picoseconds (10^-12),
     /// with typical values of 0.001, or 0.002ps (1 or 2fs).
     /// This method orchestrates the dynamics at each time step. Uses a Verlet Velocity base,
     /// with different thermostat approaches depending on configuration.
     pub fn step(&mut self, dev: &ComputationDevice, dt: f32) {
         let mut start_entire_step = Instant::now();
-        let mut start = Instant::now(); // Per-item
+        let mut start = Instant::now(); // Re-used for different items
 
         let log_time = self.step_count.is_multiple_of(COMPUTATION_TIME_RATIO);
 
@@ -119,26 +119,12 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                // B: half-kick (atoms)
-                for a in &mut self.atoms {
-                    if !a.static_ {
-                        a.vel += a.accel * dt_half;
-                    }
-                }
-                // B: half-kick (water) — inline version; do NOT touch M here
-                for w in &mut self.water {
-                    w.o.vel += w.o.accel * dt_half;
-                    w.h0.vel += w.h0.accel * dt_half;
-                    w.h1.vel += w.h1.accel * dt_half;
-                }
-
-                // A: half-drift
-                self.drift_atoms(dt_half);
-                self.water_drift(dt_half);
+                self.kick_and_drift(dt_half);
 
                 // Position constraints (only hydrogens available here)
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.shake_hydrogens();
+                    self.rattle_hydrogens(dt_half);
                 }
 
                 if log_time {
@@ -157,6 +143,7 @@ impl MdState {
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens(dt);
                 }
+
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.ambient_sum += elapsed;
@@ -166,18 +153,21 @@ impl MdState {
                 if log_time {
                     start = Instant::now();
                 }
-                self.drift_atoms(dt_half);
-                self.water_drift(dt_half);
+
+                self.drift(dt_half);
+
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.shake_hydrogens();
+                    self.rattle_hydrogens(dt_half);
                 }
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
                 }
 
-                // Forces for final B
+                // ------- Below: Compute new forces and accelerations.
                 self.reset_accel_e();
+
                 if log_time {
                     start = Instant::now();
                 }
@@ -200,17 +190,17 @@ impl MdState {
                     self.computation_time.ambient_sum += elapsed;
                 }
 
-                // B: final half-kick (atoms with mass/units conversion)
+                // Final half-kick (atoms with mass/units conversion)
                 if log_time {
                     start = Instant::now();
                 }
+
                 for (i, a) in self.atoms.iter_mut().enumerate() {
                     if !a.static_ {
-                        a.accel *= self.mass_accel_factor[i];
+                        a.accel = a.force * self.mass_accel_factor[i];
                         a.vel += a.accel * dt_half;
                     }
                 }
-                // B: final half-kick (water, with your existing helper that also handles any M back-prop)
                 self.water_vv_second_half(dt_half);
 
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -269,7 +259,7 @@ impl MdState {
                 for a in &mut self.atoms {
                     if a.static_ {
                         continue;
-                    }
+                    }asdf
 
                     a.vel += a.accel * dt_half; // Half-kick
                     a.posit += a.vel * dt; // Drift
@@ -344,11 +334,9 @@ impl MdState {
                     if a.static_ {
                         continue;
                     }
-                    // We divide by mass here, once accelerations have been computed in parts above; this
-                    // is an optimization to prevent dividing each accel component by it.
-                    // This is the step where we A: convert force to accel, and B: Convert units from the param
-                    // units to the ones we use in dynamics.
 
+                    // This is the step where we A: convert force to accel, and B: Convert units from the param
+                    // units to the ones we use in dynamics. (Both are contained in this factor)
                     a.accel *= self.mass_accel_factor[i];
                     a.vel += a.accel * dt_half;
                 }
@@ -444,6 +432,63 @@ impl MdState {
         if log_time {
             let elapsed = start_entire_step.elapsed().as_micros() as u64;
             self.computation_time.total += elapsed;
+        }
+    }
+
+    /// Half kick and drift for non-water and water. We call this one or more time
+    /// in the various integration approaches.
+    fn kick_and_drift(&mut self, dt: f32, accel_fm_force: bool) {
+        // Half-kick
+        for (i, a) in self.atoms.iter_mut().enumerate() {
+            if a.static_ {
+                continue;
+            }
+            if accel_fm_force {
+                a.accel = a.force * self.mass_accel_factor[i];
+            }
+
+            a.vel += a.accel * dt; // kick
+            a.posit += a.vel * dt; // drift
+        }
+
+        for w in &mut self.water {
+            if accel_fm_force {
+                // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
+                w.project_ep_force_to_real_sites();
+
+                w.o.accel = w.o.force * ACCEL_CONV_WATER_O;
+                w.h0.accel = w.h0.force * ACCEL_CONV_WATER_H;
+                w.o.accel = w.h1.force * ACCEL_CONV_WATER_H;
+            }
+
+            // Kick
+            w.o.vel += w.o.accel * dt;
+            w.h0.vel += w.h0.accel * dt;
+            w.h1.vel += w.h1.accel * dt;
+
+            // todo: Do we want this, or should we use our `settle_drift` fn?
+            // Drift
+            w.o.posit += w.o.vel * dt;
+            w.h0.posit += w.o.vel * dt;
+            w.h1.posit += w.o.vel * dt;
+
+            wrap_water(w, &self.cell);
+        }
+    }
+
+    /// Half kick for non-water and water. We call this one or more time
+    /// in the various integration approaches.
+    fn kick(&mut self, dt: f32) {
+        for a in &mut self.atoms {
+            if !a.static_ {
+                a.vel += a.accel * dt;
+            }
+        }
+
+        for w in &mut self.water {
+            w.o.vel += w.o.accel * dt;
+            w.h0.vel += w.h0.accel * dt;
+            w.h1.vel += w.h1.accel * dt;
         }
     }
 

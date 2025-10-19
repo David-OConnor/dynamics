@@ -25,8 +25,8 @@ impl MdState {
             let (f, energy) = bonded_forces::f_bond_stretching(a_0.posit, a_1.posit, params);
 
             // We divide by mass in `step`.
-            a_0.accel += f;
-            a_1.accel -= f;
+            a_0.force += f;
+            a_1.force -= f;
 
             // Local virial: Σ r_i · F_i  (convert accel→force_phys with mass and S)
             let virial = a_0.posit.dot(f) + a_1.posit.dot(-f);
@@ -52,9 +52,9 @@ impl MdState {
                 bonded_forces::f_angle_bending(a_0.posit, a_1.posit, a_2.posit, params);
 
             // We divide by mass in `step`.
-            a_0.accel += f_0;
-            a_1.accel += f_1;
-            a_2.accel += f_2;
+            a_0.force += f_0;
+            a_1.force += f_1;
+            a_2.force += f_2;
 
             let virial = a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2);
             self.barostat.virial_bonded += virial as f64;
@@ -85,10 +85,10 @@ impl MdState {
                 bonded_forces::f_dihedral(a_0.posit, a_1.posit, a_2.posit, a_3.posit, params);
 
             // We divide by mass in `step`.
-            a_0.accel += f_0;
-            a_1.accel += f_1;
-            a_2.accel += f_2;
-            a_3.accel += f_3;
+            a_0.force += f_0;
+            a_1.force += f_1;
+            a_2.force += f_2;
+            a_3.force += f_3;
 
             let virial =
                 a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2) + a_3.posit.dot(f_3);
