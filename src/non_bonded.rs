@@ -390,7 +390,7 @@ impl MdState {
         // `.into()` below converts accumulated forces to f32.
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
             let f: Vec3 = f_on_std[i].into();
-            tgt.accel += f;
+            tgt.force += f;
         }
 
         for (i, tgt) in self.water.iter_mut().enumerate() {
@@ -400,10 +400,10 @@ impl MdState {
             let f_h0: Vec3 = f.f_h0.into();
             let f_h1: Vec3 = f.f_h1.into();
 
-            tgt.o.accel += f_0;
-            tgt.m.accel += f_m;
-            tgt.h0.accel += f_h0;
-            tgt.h1.accel += f_h1;
+            tgt.o.force += f_0;
+            tgt.m.force += f_m;
+            tgt.h0.force += f_h0;
+            tgt.h1.force += f_h1;
         }
 
         self.barostat.virial_coulomb += virial;

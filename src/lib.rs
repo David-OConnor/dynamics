@@ -328,6 +328,8 @@ pub struct AtomDynamics {
     pub vel: Vec3,
     /// Å / ps²
     pub accel: Vec3,
+    /// We confirm this to acceleration prior to updating velocities.
+    pub force: Vec3,
     /// Daltons
     /// todo: Move these 4 out of this to save memory; use from the params struct directly.
     pub mass: f32,
@@ -875,12 +877,18 @@ impl MdState {
     fn reset_accel_e(&mut self) {
         for a in &mut self.atoms {
             a.accel = Vec3::new_zero();
+            a.force = Vec3::new_zero();
         }
         for mol in &mut self.water {
             mol.o.accel = Vec3::new_zero();
             mol.m.accel = Vec3::new_zero();
             mol.h0.accel = Vec3::new_zero();
             mol.h1.accel = Vec3::new_zero();
+
+            mol.o.force = Vec3::new_zero();
+            mol.m.force = Vec3::new_zero();
+            mol.h0.force = Vec3::new_zero();
+            mol.h1.force = Vec3::new_zero();
         }
 
         self.barostat.virial_coulomb = 0.0;
