@@ -8,6 +8,8 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
+#[cfg(feature = "cuda")]
+use cudarc::driver::CudaContext;
 use ewald::PmeRecip;
 use lin_alg::f32::Vec3;
 
@@ -198,9 +200,6 @@ impl MdState {
                     self.computation_time.ambient_sum += elapsed;
                 }
 
-                // Optional: only if your box changed elsewhere; otherwise skip.
-                self.regen_pme();
-
                 // B: final half-kick (atoms with mass/units conversion)
                 if log_time {
                     start = Instant::now();
@@ -332,8 +331,6 @@ impl MdState {
                     self.computation_time.ambient_sum += elapsed;
                 }
 
-                self.regen_pme();
-
                 // Forces (bonded and nonbonded, to non-water and water atoms) have been applied; perform other
                 // steps required for integration; second half-kick, RATTLE for hydrogens; SETTLE for water. -----
 
@@ -433,7 +430,7 @@ impl MdState {
         if self.step_count.is_multiple_of(CENTER_SIMBOX_RATIO) {
             self.cell.recenter(&self.atoms);
             // todo: Will this interfere with carrying over state from the previous step?
-            self.regen_pme();
+            self.regen_pme(dev);
         }
 
         let start = Instant::now(); // Not sure how else to handle. (Option would work)
@@ -508,11 +505,10 @@ impl MdState {
             Some(pme_recip) => match dev {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
-                ComputationDevice::Gpu(modules) => {
+                ComputationDevice::Gpu(stream) => {
                     // todo for now
                     pme_recip.forces(&pos_all, &q_all)
-                    // pme_recip.forces_gpu(&modules.stream, &pos_all, &q_all)
-                    // pme_recip.forces_gpu(&modules.stream, stream, &pos_all, &q_all)
+                    // pme_recip.forces_gpu(stream, &pos_all, &q_all)
                 }
             },
             None => {
@@ -644,7 +640,7 @@ impl MdState {
 
     /// Re-initializes the SPME based on sim box dimensions. Run this at init, and whenever you
     /// update the sim box. Sets FFT planner dimensions.
-    pub(crate) fn regen_pme(&mut self) {
+    pub(crate) fn regen_pme(&mut self, dev: &ComputationDevice) {
         let [lx, ly, lz] = self.cell.extent.to_arr();
 
         // todo: This is awkward.
@@ -677,7 +673,22 @@ impl MdState {
             nz = next_planner_n(nz + 1);
         }
 
-        self.pme_recip = Some(PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA));
+        self.pme_recip = Some(match dev {
+            ComputationDevice::Cpu => {
+                #[cfg(feature = "cuda")]
+                {
+                    // todo: This isn't ideal.
+                    eprintln!("Running a CPU device when Ewald is configured for GPU; passing in the default context.");
+                    let ctx = CudaContext::new(0).unwrap();
+                    let stream = ctx.default_stream();
+                    PmeRecip::new(&stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
+                }
+                #[cfg(not(feature = "cuda"))]
+                PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
+            },
+            #[cfg(feature = "cuda")]
+            ComputationDevice::Gpu(stream) => PmeRecip::new(stream,(nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
+        });
     }
 
     /// Print ambient parameters, as a sanity check.

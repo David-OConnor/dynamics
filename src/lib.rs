@@ -622,8 +622,6 @@ pub struct MdState {
     forces_posits_gpu: Option<ForcesPositsGpu>,
     #[cfg(feature = "cuda")]
     per_neighbor_gpu: Option<PerNeighborGpu>,
-    // #[cfg(feature = "cuda")]
-    // vkfft_ctx: Arc<VkContext>,
     pub neighbor_rebuild_count: usize,
     /// A cache of accel_factor / mass, per atom. Built once, at init.
     mass_accel_factor: Vec<f32>,
@@ -816,7 +814,7 @@ impl MdState {
         result.build_all_neighbors(dev);
 
         // Initializes the FFT planner[s], among other things.
-        result.regen_pme();
+        result.regen_pme(dev);
 
         // Allocate force buffers on the GPU, and store a handle. Used for the entire run.
         // Initialize the per-neighbor data as well; we will do this again every time

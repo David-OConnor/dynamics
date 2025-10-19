@@ -212,7 +212,7 @@ impl MdState {
 
         // Keep consistent with the normal cadence.
         self.cell.recenter(&self.atoms);
-        self.regen_pme();
+        self.regen_pme(dev);
 
         // Undo our config change.
         self.cfg.overrides.long_range_recip_disabled = prev_long_range;
