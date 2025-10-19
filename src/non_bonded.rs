@@ -10,7 +10,13 @@ use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::force_nonbonded_gpu;
-use crate::{AtomDynamics, AtomDynamicsx8, AtomDynamicsx16, COMPUTATION_TIME_RATIO, ComputationDevice, MdState, ambient::{AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT, SimBox}, forces::force_e_lj, water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite}, MdOverrides};
+use crate::{
+    AtomDynamics, AtomDynamicsx8, AtomDynamicsx16, COMPUTATION_TIME_RATIO, ComputationDevice,
+    MdOverrides, MdState,
+    ambient::{AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT, SimBox},
+    forces::force_e_lj,
+    water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
+};
 
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.
@@ -565,7 +571,6 @@ pub fn f_nonbonded_cpu(
     let inv_dist = 1.0 / dist;
     let dir = diff * inv_dist;
 
-
     let (f_lj, energy_lj) = if !calc_lj || dist > CUTOFF_VDW || overrides.lj_disabled {
         (Vec3::new_zero(), 0.)
     } else {
@@ -578,7 +583,6 @@ pub fn f_nonbonded_cpu(
         }
         (f, e)
     };
-
 
     // We assume that in the AtomDynamics structs, charges are already scaled to Amber units.
     // (No longer in elementary charge)

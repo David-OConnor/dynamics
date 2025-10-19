@@ -3,26 +3,22 @@
 use lin_alg::f32::Vec3 as Vec3F32;
 
 use crate::{
-    ACCEL_CONVERSION, AtomDynamics,
+    ACCEL_CONVERSION,
     ambient::SimBox,
-    water_opc::{H_MASS, O_MASS},
+    water_opc::{H_MASS, O_MASS, WaterMol},
 };
-use crate::water_opc::WaterMol;
+use crate::water_opc::wrap_water;
 
 /// Analytic SETTLE implementation for 3‑site rigid water (Miyamoto & Kollman, JCC 1992).
-/// Works for any bond length / HOH angle.
+/// Works for any bond length / HOH angle. This handles the drift (position updates) for water
+/// molecules. It also places M on the bisector, and performs a rigid wrap.
 ///
 /// All distances & masses are in MD internal units (Å, ps, amu, kcal/mol).
 ///
 /// This is handles the Verlet "drift" for a rigid molecule. It is the equivalent
 /// of updating position by adding velocity x dt, but also maintains the rigid
 /// geometry of 3-atom molecules.
-pub fn settle_drift(
-    mol: &mut WaterMol,
-    dt: f32,
-    cell: &SimBox,
-    virial_constr_kcal: &mut f64,
-) {
+pub fn settle_drift(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial_constr_kcal: &mut f64) {
     const MASS_MOL: f32 = O_MASS + 2.0 * H_MASS;
 
     let o_pos = mol.o.posit;
@@ -120,6 +116,15 @@ pub fn settle_drift(
     mol.o.vel = v_com + vO2;
     mol.h0.vel = v_com + vH02;
     mol.h1.vel = v_com + vH12;
+
+    // Place EP on the HOH bisector
+    {
+        let bisector = (mol.h0.posit - mol.o.posit) + (mol.h1.posit - mol.o.posit);
+        mol.m.posit = mol.o.posit + bisector.to_normalized() * crate::water_opc::O_EP_R_0;
+        mol.m.vel = (mol.h0.vel + mol.h1.vel) * 0.5;
+    }
+
+    // wrap_water(mol, cell);
 }
 
 /// Solve I · x = b for a 3×3 *symmetric* matrix I.

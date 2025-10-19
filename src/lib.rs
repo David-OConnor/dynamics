@@ -122,7 +122,7 @@ use ambient::SimBox;
 use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
-use cudarc::driver::{CudaFunction, CudaModule, CudaStream, CudaContext};
+use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
 use ewald::PmeRecip;
@@ -667,7 +667,6 @@ impl MdState {
         // create Indexed params from it.
         let mut params = ForceFieldParams::default();
 
-
         // Used for updating indices for tracking purposes.
         let mut total_atom_count = 0;
 
@@ -843,7 +842,6 @@ impl MdState {
                 &result.water,
                 &result.lj_tables,
             ));
-
         }
 
         println!("Init pair count: {:?}", result.nb_pairs.len());
@@ -946,6 +944,55 @@ impl MdState {
         if self.step_count == 1 {
             let elapsed = start.elapsed();
             println!("SPME recip time: {:?} μs", elapsed.as_micros());
+        }
+    }
+
+    pub(crate) fn take_snapshot_if_required(&mut self) {
+        let mut updated_ke = false;
+        let mut take_ss = false;
+        let mut take_ss_file = false;
+
+        for handler in &self.cfg.snapshot_handlers {
+            if self.step_count % handler.ratio != 0 {
+                continue;
+            }
+
+            // We currently only use kinetic energy in snapshots, so update it only when
+            // calling a handler.
+            if !updated_ke {
+                updated_ke = true;
+                self.kinetic_energy = self.current_kinetic_energy();
+            }
+
+            match &handler.save_type {
+                // No action if multiple Memory savetypes are specified.
+                SaveType::Memory => {
+                    take_ss = true;
+                }
+                SaveType::Dcd(path) => {
+                    take_ss_file = true;
+
+                    // todo: Handle the case of the final step!
+                    if self.step_count % FILE_SAVE_INTERVAL == 0 {
+                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, &path) {
+                            eprintln!("Error saving snapshot as DCD: {e:?}");
+                        }
+                        self.snapshot_queue_for_file = Vec::new();
+                    }
+                }
+            }
+        }
+
+        if take_ss || take_ss_file {
+            let snapshot = self.take_snapshot();
+
+            if take_ss {
+                // todo: DOn't clone.
+                self.snapshots.push(snapshot.clone());
+            }
+            if take_ss_file {
+                self.snapshot_queue_for_file.push(snapshot);
+            }
         }
     }
 

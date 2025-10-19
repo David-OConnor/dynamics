@@ -21,36 +21,32 @@ use crate::{
     PMEIndex, SPME_RATIO,
     ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_MESH_SPACING},
-    snapshot::{FILE_SAVE_INTERVAL, SaveType, append_dcd},
+    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O, wrap_water},
+    water_settle::settle_drift,
 };
-use crate::water_opc::{wrap_water, ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O};
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Integrator {
     VerletVelocity,
+    /// Deprecated
+    Langevin {
+        gamma: f32,
+    },
     /// Velocity-verlet with a Langevin thermometer. Good temperature control
     /// and ergodicity, but the friction parameter damps real dynamics as it grows.
     /// γ is friction in 1/ps. Typical values are 1–5. for proteins in implicit/weak solvent.
     /// With explicit solvents, we can often go lower to 0.1 – 1.
     /// A higher value has strong damping and is rougher. A lower value is gentler.
-    Langevin {
-        gamma: f32,
-    },
-    /// See notes on Langevin. This version splits drift into two halves, and is likely more accurate.
     LangevinMiddle {
         gamma: f32,
     },
 }
 
 impl Default for Integrator {
-    // fn default() -> Self {
-    //     Self::LangevinMiddle { gamma: 1. }
-    // }
-    // todo: Until we fix both Langevin integrators/thermostats.
     fn default() -> Self {
-        Self::VerletVelocity
+        Self::LangevinMiddle { gamma: 1. }
     }
 }
 
@@ -65,35 +61,6 @@ impl Display for Integrator {
 }
 
 impl MdState {
-    /// Drifts all non-static atoms in the system. For Langevin middle. For water, this is a rigid shift, with
-    /// one shift for all sites on a given molecule.
-    fn drift(&mut self, dt: f32) {
-        for a in &mut self.atoms {
-            if a.static_ {
-                continue;
-            }
-
-            a.posit += a.vel * dt;
-        }
-
-        for w in &mut self.water {
-            // Drift
-            w.o.posit += w.o.vel * dt;
-            w.h0.posit += w.h0.vel * dt;
-            w.h1.posit += w.h1.vel * dt;
-            w.m.posit += w.m.vel * dt;
-
-            // Compute a single wrap shift using O (or COM) and apply to all sites
-            let o_wrapped = self.cell.wrap(w.o.posit);
-            let shift = o_wrapped - w.o.posit; // translation to bring O into [0,L)
-
-            w.o.posit += shift;
-            w.h0.posit += shift;
-            w.h1.posit += shift;
-            w.m.posit += shift;
-        }
-    }
-
     /// Perform one integration step. This is the entry point for running the simulation.
     /// One step of length `dt` is in picoseconds (10^-12),
     /// with typical values of 0.001, or 0.002ps (1 or 2fs).
@@ -121,18 +88,11 @@ impl MdState {
 
                 self.kick_and_drift(dt_half);
 
-                // Position constraints (only hydrogens available here)
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.shake_hydrogens();
-                    self.rattle_hydrogens(dt_half);
-                }
-
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
                 }
 
-                // O: thermostat
                 if log_time {
                     start = Instant::now();
                 }
@@ -140,6 +100,7 @@ impl MdState {
                 if !self.cfg.overrides.thermo_disabled {
                     self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
                 }
+                // Rattle after the thermostat run.
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens(dt);
                 }
@@ -149,17 +110,12 @@ impl MdState {
                     self.computation_time.ambient_sum += elapsed;
                 }
 
-                // A: second half-drift
                 if log_time {
                     start = Instant::now();
                 }
 
                 self.drift(dt_half);
 
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.shake_hydrogens();
-                    self.rattle_hydrogens(dt_half);
-                }
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
@@ -195,14 +151,10 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                for (i, a) in self.atoms.iter_mut().enumerate() {
-                    if !a.static_ {
-                        a.accel = a.force * self.mass_accel_factor[i];
-                        a.vel += a.accel * dt_half;
-                    }
-                }
-                self.water_vv_second_half(dt_half);
+                self.kick_and_calc_accel(dt_half);
 
+                // Rattle to project velocities back onto the the constraint manifold after
+                // the velocity change.
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens(dt);
                 }
@@ -238,8 +190,9 @@ impl MdState {
                         start = Instant::now();
                     }
 
+                    // Rattle after application of thermostat.
                     if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
-                        self.rattle_hydrogens(dt);
+                        self.rattle_hydrogens(dt_half);
                     }
 
                     if log_time {
@@ -252,29 +205,7 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                // First half-kick (v += a dt/2) and drift (x += v dt)
-                // Note: We do not apply the accel unit conversion, nor mass division here; they're already
-                // included in this values from the previous step.
-                // for (i, a) in self.atoms.iter_mut().enumerate() {
-                for a in &mut self.atoms {
-                    if a.static_ {
-                        continue;
-                    }asdf
-
-                    a.vel += a.accel * dt_half; // Half-kick
-                    a.posit += a.vel * dt; // Drift
-                }
-
-                // todo: Consider applying the thermostat between the first half-kick and drift.
-                // todo: e.g. half-kick, then shake H and settle velocity water (?), then thermostat, then drift. (?) ,
-                // todo then settle positions?
-
-                self.water_vv_first_half_and_drift(dt, dt_half);
-
-                // The order we perform these steps is important.
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.shake_hydrogens();
-                }
+                self.kick_and_drift(dt_half);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -330,19 +261,8 @@ impl MdState {
                 if log_time {
                     start = Instant::now();
                 }
-                for (i, a) in self.atoms.iter_mut().enumerate() {
-                    if a.static_ {
-                        continue;
-                    }
 
-                    // This is the step where we A: convert force to accel, and B: Convert units from the param
-                    // units to the ones we use in dynamics. (Both are contained in this factor)
-                    a.accel *= self.mass_accel_factor[i];
-                    a.vel += a.accel * dt_half;
-                }
-
-                // self.water_vv_second_half(&mut self.forces_on_water, dt_half);
-                self.water_vv_second_half(dt_half);
+                self.kick_and_calc_accel(dt_half);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -369,8 +289,9 @@ impl MdState {
                     start = Instant::now();
                 }
 
+                // Rattle after applying the thermostat.
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens(dt);
+                    self.rattle_hydrogens(dt_half);
                 }
 
                 if log_time {
@@ -394,6 +315,9 @@ impl MdState {
 
             if !self.cfg.overrides.thermo_disabled {
                 self.apply_thermostat_csvr(dt as f64, self.cfg.temp_target as f64);
+            }
+            if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+                self.rattle_hydrogens(dt);
             }
 
             if log_time {
@@ -422,7 +346,7 @@ impl MdState {
         }
 
         let start = Instant::now(); // Not sure how else to handle. (Option would work)
-        self.handle_snapshots();
+        self.take_snapshot_if_required();
 
         if log_time {
             let elapsed = start.elapsed().as_micros() as u64;
@@ -436,15 +360,14 @@ impl MdState {
     }
 
     /// Half kick and drift for non-water and water. We call this one or more time
-    /// in the various integration approaches.
-    fn kick_and_drift(&mut self, dt: f32, accel_fm_force: bool) {
+    /// in the various integration approaches. Includes the SETTLE application for water,
+    /// and SHAKE + RATTLE for hydrogens, if applicable.
+    fn kick_and_drift(&mut self, dt: f32) {
         // Half-kick
-        for (i, a) in self.atoms.iter_mut().enumerate() {
+        // for (i, a) in self.atoms.iter_mut().enumerate() {
+        for a in &mut self.atoms {
             if a.static_ {
                 continue;
-            }
-            if accel_fm_force {
-                a.accel = a.force * self.mass_accel_factor[i];
             }
 
             a.vel += a.accel * dt; // kick
@@ -452,92 +375,63 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            if accel_fm_force {
-                // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
-                w.project_ep_force_to_real_sites();
-
-                w.o.accel = w.o.force * ACCEL_CONV_WATER_O;
-                w.h0.accel = w.h0.force * ACCEL_CONV_WATER_H;
-                w.o.accel = w.h1.force * ACCEL_CONV_WATER_H;
-            }
-
             // Kick
             w.o.vel += w.o.accel * dt;
             w.h0.vel += w.h0.accel * dt;
             w.h1.vel += w.h1.accel * dt;
 
-            // todo: Do we want this, or should we use our `settle_drift` fn?
-            // Drift
-            w.o.posit += w.o.vel * dt;
-            w.h0.posit += w.o.vel * dt;
-            w.h1.posit += w.o.vel * dt;
+            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_coulomb);
+        }
 
-            wrap_water(w, &self.cell);
+        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+            self.shake_hydrogens();
+            self.rattle_hydrogens(dt);
         }
     }
 
     /// Half kick for non-water and water. We call this one or more time
     /// in the various integration approaches.
-    fn kick(&mut self, dt: f32) {
-        for a in &mut self.atoms {
-            if !a.static_ {
-                a.vel += a.accel * dt;
+    fn kick_and_calc_accel(&mut self, dt: f32) {
+        for (i, a) in self.atoms.iter_mut().enumerate() {
+            if a.static_ {
+                continue;
             }
+
+            a.accel = a.force * self.mass_accel_factor[i];
+            a.vel += a.accel * dt;
         }
 
         for w in &mut self.water {
+            // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
+            w.project_ep_force_to_real_sites();
+
+            w.o.accel = w.o.force * ACCEL_CONV_WATER_O;
+            w.h0.accel = w.h0.force * ACCEL_CONV_WATER_H;
+            w.h1.accel = w.h1.force * ACCEL_CONV_WATER_H;
+
             w.o.vel += w.o.accel * dt;
             w.h0.vel += w.h0.accel * dt;
             w.h1.vel += w.h1.accel * dt;
         }
     }
 
-    fn handle_snapshots(&mut self) {
-        let mut updated_ke = false;
-        let mut take_ss = false;
-        let mut take_ss_file = false;
-
-        for handler in &self.cfg.snapshot_handlers {
-            if self.step_count % handler.ratio != 0 {
+    /// Drifts all non-static atoms in the system.  Includes the SETTLE application for water,
+    /// and SHAKE + RATTLE for hydrogens, if applicable.
+    fn drift(&mut self, dt: f32) {
+        for a in &mut self.atoms {
+            if a.static_ {
                 continue;
             }
-
-            // We currently only use kinetic energy in snapshots, so update it only when
-            // calling a handler.
-            if !updated_ke {
-                updated_ke = true;
-                self.kinetic_energy = self.current_kinetic_energy();
-            }
-
-            match &handler.save_type {
-                // No action if multiple Memory savetypes are specified.
-                SaveType::Memory => {
-                    take_ss = true;
-                }
-                SaveType::Dcd(path) => {
-                    take_ss_file = true;
-
-                    // todo: Handle the case of the final step!
-                    if self.step_count % FILE_SAVE_INTERVAL == 0 {
-                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, &path) {
-                            eprintln!("Error saving snapshot as DCD: {e:?}");
-                        }
-                        self.snapshot_queue_for_file = Vec::new();
-                    }
-                }
-            }
+            a.posit += a.vel * dt;
         }
 
-        if take_ss || take_ss_file {
-            let snapshot = self.take_snapshot();
+        for w in &mut self.water {
+            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_coulomb);
+        }
 
-            if take_ss {
-                // todo: DOn't clone.
-                self.snapshots.push(snapshot.clone());
-            }
-            if take_ss_file {
-                self.snapshot_queue_for_file.push(snapshot);
-            }
+        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+            self.shake_hydrogens();
+            self.rattle_hydrogens(dt);
         }
     }
 
@@ -723,16 +617,20 @@ impl MdState {
                 #[cfg(feature = "cuda")]
                 {
                     // todo: This isn't ideal.
-                    eprintln!("Running a CPU device when Ewald is configured for GPU; passing in the default context.");
+                    eprintln!(
+                        "Running a CPU device when Ewald is configured for GPU; passing in the default context."
+                    );
                     let ctx = CudaContext::new(0).unwrap();
                     let stream = ctx.default_stream();
                     PmeRecip::new(&stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
                 }
                 #[cfg(not(feature = "cuda"))]
                 PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
-            },
+            }
             #[cfg(feature = "cuda")]
-            ComputationDevice::Gpu(stream) => PmeRecip::new(stream,(nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
+            ComputationDevice::Gpu(stream) => {
+                PmeRecip::new(stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
+            }
         });
     }
 

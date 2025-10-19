@@ -328,7 +328,14 @@ pub fn force_nonbonded_gpu(
 
     let n = pairs.len();
 
-    zero_forces_and_accums(stream, kernel_zero_f32, kernel_zero_f64, forces, atoms_dyn.len(), water.len());
+    zero_forces_and_accums(
+        stream,
+        kernel_zero_f32,
+        kernel_zero_f64,
+        forces,
+        atoms_dyn.len(),
+        water.len(),
+    );
 
     // 1-4 scaling, and the symmetric case handled in the kernel.
     // Store immutable input arrays to the device.

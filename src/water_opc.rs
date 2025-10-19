@@ -31,12 +31,11 @@ use lin_alg::{
 use na_seq::Element;
 
 use crate::{
-    ACCEL_CONVERSION, AtomDynamics, MdState, non_bonded::CHARGE_UNIT_SCALER,
+    ACCEL_CONVERSION, AtomDynamics, MdState, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER,
     water_settle::settle_drift,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
-use crate::ambient::SimBox;
 
 // Constant parameters below are for the OPC water (JPCL, 2014, 5 (21), pp 3863-3871)
 // (Amber 2025, frcmod.opc) EP/M is the massless, 4th charge.
@@ -54,7 +53,7 @@ pub(crate) const MASS_ACCEL_FACTOR_WATER_H: f32 = ACCEL_CONVERSION / H_MASS;
 // used in this rigid model.
 
 // Å; bond distance. (frcmod.opc, or Table 2.)
-const O_EP_R_0: f32 = 0.159_398_33;
+pub(crate) const O_EP_R_0: f32 = 0.159_398_33;
 const O_H_R: f32 = 0.872_433_13;
 
 // Angle bending angle, radians.
@@ -212,7 +211,7 @@ impl WaterMol {
             h0,
         }
     }
-    
+
     /// Part of the OPC algorithm; EP/M doesn't move directly and is massless. We take into account
     /// the Coulomb force on it by applying it instead to O and H atoms.
     ///
@@ -250,41 +249,6 @@ impl WaterMol {
         self.o.force += fo;
         self.h0.force += fh;
         self.h1.force += fh;
-    }
-}
-
-impl MdState {
-    /// Verlet velocity integration for water. Forces for this step must
-    /// be pre-calculated. Accepts as mutable to allow projecting M/EP force onto the
-    /// other atoms.
-    ///
-    /// In addition to the VV half-kick and drift, it handles force projection from M/EP,
-    /// and applying SETTLE to main each molecul's rigid geometry.
-    pub fn water_vv_first_half_and_drift(&mut self, dt: f32, dt_half: f32) {
-        for w in &mut self.water {
-            // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
-
-            // First half-kick. Don't apply conversions here, as they've already been applied in the
-            // previous step.
-            w.half_kick(dt_half);
-
-            // Drift the rigid molecule with SETTLE
-            settle_drift(
-                w,
-                dt,
-                &self.cell,
-                &mut self.barostat.virial_coulomb,
-            );
-
-            // Place EP on the HOH bisector
-            {
-                let bisector = (w.h0.posit - w.o.posit) + (w.h1.posit - w.o.posit);
-                w.m.posit = w.o.posit + bisector.to_normalized() * O_EP_R_0;
-                w.m.vel = (w.h0.vel + w.h1.vel) * 0.5;
-            }
-
-            wrap_water(w, &self.cell);
-        }
     }
 }
 
