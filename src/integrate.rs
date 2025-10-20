@@ -446,8 +446,12 @@ impl MdState {
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu(stream) => {
                     // todo for now
-                    pme_recip.forces(&pos_all, &q_all)
-                    // pme_recip.forces_gpu(stream, &pos_all, &q_all)
+                    #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
+                    let v = pme_recip.forces(&pos_all, &q_all);
+                    #[cfg(any(feature = "cufft", feature = "vkfft"))]
+                    let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
+
+                    v
                 }
             },
             None => {

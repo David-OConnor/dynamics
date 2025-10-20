@@ -498,6 +498,11 @@ impl MdState {
         self.inner.computation_time().to_string()
     }
 
+    fn minimize_energy(&mut self, max_iters: usize) {
+        let dev = get_dev();
+        self.inner.minimize_energy(&dev, max_iters);
+    }
+
     fn __str__(&self) -> String {
         format!("{}", self.inner)
     }

@@ -5,7 +5,7 @@ use lin_alg::f32::Vec3 as Vec3F32;
 use crate::{
     ACCEL_CONVERSION,
     ambient::SimBox,
-    water_opc::{H_MASS, O_MASS, WaterMol},
+    water_opc::{H_MASS, O_MASS, WaterMol, wrap_water},
 };
 
 /// Analytic SETTLE implementation for 3‑site rigid water (Miyamoto & Kollman, JCC 1992).

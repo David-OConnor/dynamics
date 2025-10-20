@@ -38,16 +38,6 @@ const SP2_PLANAR_ANGLE: f64 = TAU / 3.;
 
 struct BondError {}
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Hybridization {
-    /// Linear geometry. E.g. carbon bonded to 2 atoms.
-    Sp,
-    /// Planar geometry. E.g. carbon bonded to 3 atoms.
-    Sp2,
-    /// Tetrahedral geometry. E.g. carbon bonded to 4 atoms.
-    Sp3,
-}
-
 /// An amino acid in a protein structure, including all dihedral angles required to determine
 /// the conformation. Includes backbone and side chain dihedral angles. Doesn't store coordinates,
 /// but coordinates can be generated using forward kinematics from the angles.
