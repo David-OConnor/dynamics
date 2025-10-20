@@ -13,10 +13,7 @@ use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::PerNeighborGpu;
-use crate::{
-    COMPUTATION_TIME_RATIO, ComputationDevice, MdState, ambient::SimBox,
-    non_bonded::LONG_RANGE_CUTOFF,
-};
+use crate::{ComputationDevice, MdState, ambient::SimBox, non_bonded::LONG_RANGE_CUTOFF};
 
 /// By index for fast lookups; separate fields, as these indices are applied differently for non-water atoms
 /// and water.

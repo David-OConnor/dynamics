@@ -1,4 +1,5 @@
 #![allow(non_snake_case)]
+#![allow(confusable_idents)]
 
 //! See the [https://github.com/David-OConnor/dynamics/blob/main/README.md](Readme) for a general overview.
 //! The textual information here is informal, and aimed at code maintenance; not library use.
@@ -289,8 +290,9 @@ impl MolDynamics {
     /// You may wish to modify the `atom_posits` field after to position this relative to
     /// other molecules.
     pub fn from_amber_geostd(ident: &str) -> io::Result<Self> {
-        let data = bio_apis::amber_geostd::load_mol_files(ident)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, "Error loading data"))?;
+        let data = bio_apis::amber_geostd::load_mol_files(ident).map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("Error loading data: {e:?}"))
+        })?;
 
         let mol = Mol2::new(&data.mol2)?;
         let params = ForceFieldParams::from_frcmod(&data.frcmod.unwrap())?;
@@ -571,7 +573,7 @@ pub struct MdState {
     // todo: Make this a vec. For each dynamic atom.
     // todo: We don't need it for static, as they use partial charge and LJ data, which
     // todo are assigned to each atom.
-    pub force_field_params: ForceFieldParamsIndexed,
+    pub(crate) force_field_params: ForceFieldParamsIndexed,
     // /// `lj_lut`, `lj_sigma`, and `lj_eps` are Lennard Jones parameters. Flat here, with outer loop receptor.
     // /// Flattened. Separate single-value array facilitate use in CUDA and SIMD, vice a tuple.
     // pub lj_sigma: Vec<f64>,

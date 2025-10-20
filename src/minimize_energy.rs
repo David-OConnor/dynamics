@@ -96,7 +96,7 @@ impl MdState {
         // Per-atom last step for backtracking
         let n_atoms = self.atoms.len();
         let mut last_step: Vec<Vec3> = vec![Vec3::new_zero(); n_atoms];
-        let mut water_last_steps: Vec<[Vec3; 4]> = vec![[Vec3::new_zero(); 4]; self.water.len()];
+        // let mut water_last_steps: Vec<[Vec3; 4]> = vec![[Vec3::new_zero(); 4]; self.water.len()];
 
         let mut iters = 0_u32;
         'outer: for iter in 0..max_iters {

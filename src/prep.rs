@@ -50,17 +50,6 @@ pub fn merge_params(baseline: &ForceFieldParams, add_this: &ForceFieldParams) ->
     merged
 }
 
-#[derive(Clone, Default, Debug)]
-pub(crate) struct HydrogenRigidConstraint {
-    /// Atom indices, of the dynamic set.
-    pub atom_0: usize,
-    pub atom_1: usize,
-    /// A cache vs storing r_0. This is the target distance to maintain.
-    pub r0_sq: f64,
-    /// 1.0 / ai.mass + 1.0 / aj.mass; a cache. Set on the first step.
-    pub inv_mass: Option<f64>,
-}
-
 /// We use this variant in the configuration API. Deferrs to `HydrogenConstraintInner` for holding
 /// constraints.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -238,7 +227,7 @@ impl ForceFieldParamsIndexed {
                     .or_else(|| params.bond.get(&(type_1.clone(), type_0.clone())))
                     .cloned();
 
-                let Some(mut data) = data else {
+                let Some(data) = data else {
                     // todo: We get this sometimes with glitched mmCIF files that have duplicate atoms
                     // todo in slightly different positions.
                     eprintln!(
