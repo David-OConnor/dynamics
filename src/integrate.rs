@@ -21,7 +21,7 @@ use crate::{
     PMEIndex, SPME_RATIO,
     ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
     non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_MESH_SPACING},
-    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O, wrap_water},
+    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
     water_settle::settle_drift,
 };
 
@@ -403,7 +403,7 @@ impl MdState {
 
         for w in &mut self.water {
             // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
-            w.project_ep_force_to_real_sites();
+            w.project_ep_force_to_real_sites(&self.cell);
 
             w.o.accel = w.o.force * ACCEL_CONV_WATER_O;
             w.h0.accel = w.h0.force * ACCEL_CONV_WATER_H;

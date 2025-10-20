@@ -7,7 +7,6 @@ use crate::{
     ambient::SimBox,
     water_opc::{H_MASS, O_MASS, WaterMol},
 };
-use crate::water_opc::wrap_water;
 
 /// Analytic SETTLE implementation for 3‑site rigid water (Miyamoto & Kollman, JCC 1992).
 /// Works for any bond length / HOH angle. This handles the drift (position updates) for water

@@ -31,8 +31,7 @@ use lin_alg::{
 use na_seq::Element;
 
 use crate::{
-    ACCEL_CONVERSION, AtomDynamics, MdState, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER,
-    water_settle::settle_drift,
+    ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
@@ -214,19 +213,17 @@ impl WaterMol {
 
     /// Part of the OPC algorithm; EP/M doesn't move directly and is massless. We take into account
     /// the Coulomb force on it by applying it instead to O and H atoms.
-    ///
-    /// We use the accel field as a stand-in for force. This means that these values must actually
-    /// be force (Not scaled by ACCEL_SCALER or mass) when this function is called.
-    pub(crate) fn project_ep_force_to_real_sites(&mut self) {
+    pub(crate) fn project_ep_force_to_real_sites(&mut self, cell: &SimBox) {
         // Geometry in O-centered frame
-        let r_O_H0 = self.h0.posit - self.o.posit;
-        let r_O_H1 = self.h1.posit - self.o.posit;
+        let r_O_H0 = self.o.posit + cell.min_image(self.h0.posit - self.o.posit) - self.o.posit;
+        let r_O_H1 = self.o.posit + cell.min_image(self.h1.posit - self.o.posit) - self.o.posit;
 
         let s = r_O_H0 + r_O_H1;
         let s_norm = s.magnitude();
 
         if s_norm < 1e-12 {
             // Degenerate geometry: drop EP force this step
+            self.o.force += self.m.force;
             self.m.force = Vec3F32::new_zero();
             return;
         }
@@ -252,14 +249,14 @@ impl WaterMol {
     }
 }
 
-/// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
-/// side of the cell.
-pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
-    let new_o = cell.wrap(mol.o.posit);
-    let shift = new_o - mol.o.posit;
-
-    mol.o.posit = new_o;
-    mol.h0.posit += shift;
-    mol.h1.posit += shift;
-    mol.m.posit += shift;
-}
+// /// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
+// /// side of the cell.
+// pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
+//     let new_o = cell.wrap(mol.o.posit);
+//     let shift = new_o - mol.o.posit;
+//
+//     mol.o.posit = new_o;
+//     mol.h0.posit += shift;
+//     mol.h1.posit += shift;
+//     mol.m.posit += shift;
+// }
