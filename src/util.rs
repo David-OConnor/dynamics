@@ -36,9 +36,10 @@ pub(crate) fn build_adjacency_list(
             if atom.serial_number == bond.atom_1_sn {
                 atom_1 = Some(i);
             }
-            if atom_0.is_some() && atom_1.is_some() {
-                result[atom_0.unwrap()].push(atom_1.unwrap());
-                result[atom_1.unwrap()].push(atom_0.unwrap());
+
+            if let (Some(a0), Some(a1)) = (atom_0, atom_1) {
+                result[a0].push(a1);
+                result[a1].push(a0);
 
                 found = true;
                 break;

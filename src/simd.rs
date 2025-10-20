@@ -22,8 +22,7 @@ impl MdState {
                         .map(|a| a.force_field_type.clone())
                         .unwrap_or_default()
                 });
-                let element =
-                    from_fn(|i| chunk.get(i).map(|a| a.element.clone()).unwrap_or_default());
+                let element = from_fn(|i| chunk.get(i).map(|a| a.element).unwrap_or_default());
 
                 let px = from_fn(|i| chunk.get(i).map(|a| a.posit.x).unwrap_or(0.0));
                 let py = from_fn(|i| chunk.get(i).map(|a| a.posit.y).unwrap_or(0.0));
@@ -83,8 +82,7 @@ impl MdState {
                         .map(|a| a.force_field_type.clone())
                         .unwrap_or_default()
                 });
-                let element =
-                    from_fn(|i| chunk.get(i).map(|a| a.element.clone()).unwrap_or_default());
+                let element = from_fn(|i| chunk.get(i).map(|a| a.element).unwrap_or_default());
 
                 let px = from_fn(|i| chunk.get(i).map(|a| a.posit.x).unwrap_or(0.0));
                 let py = from_fn(|i| chunk.get(i).map(|a| a.posit.y).unwrap_or(0.0));

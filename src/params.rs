@@ -242,7 +242,7 @@ pub fn populate_peptide_ff_and_q(
 
     for res in residues {
         for sn in &res.atom_sns {
-            let atom = match atoms.get_mut(index_map[&sn]) {
+            let atom = match atoms.get_mut(index_map[sn]) {
                 Some(a) => a,
                 None => {
                     return Err(ParamError::new(&format!(
@@ -322,8 +322,8 @@ pub fn populate_peptide_ff_and_q(
                         );
 
                         for charge in charges {
-                            if &charge.type_in_res == &AtomTypeInRes::H("H".to_string())
-                                || &charge.type_in_res == &AtomTypeInRes::H("HA".to_string())
+                            if charge.type_in_res == AtomTypeInRes::H("H".to_string())
+                                || charge.type_in_res == AtomTypeInRes::H("HA".to_string())
                             {
                                 atom.force_field_type = Some("HB2".to_string());
                                 atom.partial_charge = Some(charge.charge);

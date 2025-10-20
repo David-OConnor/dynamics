@@ -290,9 +290,8 @@ impl MolDynamics {
     /// You may wish to modify the `atom_posits` field after to position this relative to
     /// other molecules.
     pub fn from_amber_geostd(ident: &str) -> io::Result<Self> {
-        let data = bio_apis::amber_geostd::load_mol_files(ident).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Error loading data: {e:?}"))
-        })?;
+        let data = bio_apis::amber_geostd::load_mol_files(ident)
+            .map_err(|e| io::Error::other(format!("Error loading data: {e:?}")))?;
 
         let mol = Mol2::new(&data.mol2)?;
         let params = ForceFieldParams::from_frcmod(&data.frcmod.unwrap())?;
@@ -677,12 +676,7 @@ impl MdState {
             // not wish to model.
             // We must perform this filter prior to most of the other steps in this function.
             let atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
-                FfMolType::Peptide => mol
-                    .atoms
-                    .iter()
-                    .filter(|a| !a.hetero)
-                    .map(|a| a.clone())
-                    .collect(),
+                FfMolType::Peptide => mol.atoms.iter().filter(|a| !a.hetero).cloned().collect(),
                 _ => mol.atoms.to_vec(),
             };
 
@@ -718,10 +712,10 @@ impl MdState {
                 // todo: If there are multiple molecules of a given type, this is unnecessary.
                 // todo: Make sure overrides from one individual molecule don't affect others, todo,
                 // todo and don't affect general params.
-                params = merge_params(&params, &params_general);
+                params = merge_params(&params, params_general);
 
                 if let Some(p) = &mol.mol_specific_params {
-                    params = merge_params(&params, &p);
+                    params = merge_params(&params, p);
                 }
             }
 
@@ -738,7 +732,7 @@ impl MdState {
             };
 
             for (i, atom) in atoms.iter().enumerate() {
-                atoms_md.push(AtomDynamics::new(&atom, atom_posits, i, mol.static_)?);
+                atoms_md.push(AtomDynamics::new(atom, atom_posits, i, mol.static_)?);
             }
 
             // Use the included adjacency list if available. If not, construct it.
@@ -955,7 +949,7 @@ impl MdState {
         let mut take_ss_file = false;
 
         for handler in &self.cfg.snapshot_handlers {
-            if self.step_count % handler.ratio != 0 {
+            if !self.step_count.is_multiple_of(handler.ratio) {
                 continue;
             }
 
@@ -975,8 +969,8 @@ impl MdState {
                     take_ss_file = true;
 
                     // todo: Handle the case of the final step!
-                    if self.step_count % FILE_SAVE_INTERVAL == 0 {
-                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, &path) {
+                    if self.step_count.is_multiple_of(FILE_SAVE_INTERVAL) {
+                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, path) {
                             eprintln!("Error saving snapshot as DCD: {e:?}");
                         }
                         self.snapshot_queue_for_file = Vec::new();
@@ -1001,8 +995,8 @@ impl MdState {
     // todo: For calling by user at the end (temp), don't force it to append the path.
     //todo: DRY with in the main step path (Doesn't call this) to avoid a dbl borrow.
     pub fn save_snapshots_to_file(&mut self, path: &Path) {
-        if self.step_count % FILE_SAVE_INTERVAL == 0 {
-            if let Err(e) = append_dcd(&self.snapshot_queue_for_file, &path) {
+        if self.step_count.is_multiple_of(FILE_SAVE_INTERVAL) {
+            if let Err(e) = append_dcd(&self.snapshot_queue_for_file, path) {
                 eprintln!("Error saving snapshot as DCD: {e:?}");
             }
             self.snapshot_queue_for_file = Vec::new();

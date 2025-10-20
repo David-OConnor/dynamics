@@ -62,8 +62,8 @@ impl SimBox {
                 }
             }
             SimBoxInit::Fixed((bounds_low, bounds_high)) => {
-                let bounds_low: Vec3 = (*bounds_low).into();
-                let bounds_high: Vec3 = (*bounds_high).into();
+                let bounds_low: Vec3 = *bounds_low;
+                let bounds_high: Vec3 = *bounds_high;
                 Self {
                     bounds_low,
                     bounds_high,

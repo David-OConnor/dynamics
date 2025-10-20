@@ -209,10 +209,11 @@ pub fn build_neighbors(
                     // ways to prevent the actual NB computations between static-static.
                     let mut st_st = false;
 
-                    if let Some(st) = is_static {
-                        if st[i_outer] && st[i_inner] {
-                            st_st = true;
-                        }
+                    if let Some(st) = is_static
+                        && st[i_outer]
+                        && st[i_inner]
+                    {
+                        st_st = true;
                     }
 
                     if !st_st {
@@ -256,10 +257,11 @@ pub fn build_neighbors(
                     // ways to prevent the actual NB computations between static-static.
                     let mut st_st = false;
 
-                    if let Some(st) = is_static {
-                        if st[i_outer] && st[i_inner] {
-                            st_st = true;
-                        }
+                    if let Some(st) = is_static
+                        && st[i_outer]
+                        && st[i_inner]
+                    {
+                        st_st = true;
                     }
 
                     if !st_st {

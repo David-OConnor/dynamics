@@ -159,10 +159,10 @@ impl MdState {
                     self.rattle_hydrogens(dt);
                 }
 
-                if self.step_count % COM_REMOVAL_RATIO_LINEAR == 0 {
+                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
                     self.zero_linear_momentum_atoms();
                 }
-                if self.step_count % COM_REMOVAL_RATIO_ANGULAR == 0 {
+                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
                     self.zero_angular_momentum_atoms();
                 }
 
@@ -299,10 +299,10 @@ impl MdState {
                     self.computation_time.integration_sum += elapsed;
                 }
 
-                if self.step_count % COM_REMOVAL_RATIO_LINEAR == 0 {
+                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
                     self.zero_linear_momentum_atoms();
                 }
-                if self.step_count % COM_REMOVAL_RATIO_ANGULAR == 0 {
+                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
                     self.zero_angular_momentum_atoms();
                 }
             }
@@ -590,7 +590,7 @@ impl MdState {
         fn next_planner_n(mut n: usize) -> usize {
             fn good(mut x: usize) -> bool {
                 for p in [2, 3, 5, 7] {
-                    while x % p == 0 {
+                    while x.is_multiple_of(p) {
                         x /= p;
                     }
                 }

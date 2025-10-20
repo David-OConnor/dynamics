@@ -248,22 +248,21 @@ impl ForceFieldParamsIndexed {
 
                 // If using fixed hydrogens, don't add these to our bond stretching params;
                 // add to a separate hydrogen rigid param variable.
-                if h_constraint == HydrogenConstraint::Constrained {
-                    if atoms[i0].element == Element::Hydrogen
-                        || atoms[i0].element == Element::Hydrogen
-                    {
-                        // `bonds_topology` exists separately from `bond_params` specifically so we can
-                        // account for bonds to H in exclusions.
-                        // We will populate inverse mass in a second loop.
+                if h_constraint == HydrogenConstraint::Constrained
+                    && (atoms[i0].element == Element::Hydrogen
+                        || atoms[i0].element == Element::Hydrogen)
+                {
+                    // `bonds_topology` exists separately from `bond_params` specifically so we can
+                    // account for bonds to H in exclusions.
+                    // We will populate inverse mass in a second loop.
 
-                        let inv_mass = 1. / atoms[i0].mass + 1. / atoms[i0].mass;
+                    let inv_mass = 1. / atoms[i0].mass + 1. / atoms[i0].mass;
 
-                        result
-                            .bond_rigid_constraints
-                            .insert((i0, i1), (data.r_0.powi(2), inv_mass));
-                        result.bonds_topology.insert((i0, i1));
-                        continue;
-                    }
+                    result
+                        .bond_rigid_constraints
+                        .insert((i0, i1), (data.r_0.powi(2), inv_mass));
+                    result.bonds_topology.insert((i0, i1));
+                    continue;
                 }
 
                 result.bond_stretching.insert((i0, i1), data);
@@ -479,12 +478,12 @@ impl MdState {
         }
 
         // 1-3
-        for (indices, _) in &self.force_field_params.angle {
+        for indices in self.force_field_params.angle.keys() {
             push(&mut self.pairs_excluded_12_13, indices.0, indices.2);
         }
 
         // 1-4. We do not count improper dihedrals here.
-        for (indices, _) in &self.force_field_params.dihedral {
+        for indices in self.force_field_params.dihedral.keys() {
             push(&mut self.pairs_14_scaled, indices.0, indices.3);
         }
 

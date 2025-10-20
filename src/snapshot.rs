@@ -1,14 +1,15 @@
 //! Related to storing snapshots (also known as trajectories) of MD runs.
 
 use std::{
+    collections::HashMap,
     fs::{File, OpenOptions},
-    io::{self, BufReader, Read, Seek, SeekFrom, Write},
+    io::{self, BufReader, ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, MmCif, Mol2};
+use bio_files::{AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType};
 use lin_alg::f32::Vec3;
 use na_seq::Element;
 
@@ -64,7 +65,7 @@ pub struct Snapshot {
 impl Snapshot {
     /// The element indices must match the atom posits.
     pub fn populate_hydrogen_bonds(&mut self, els: &[Element]) {
-        let mut result = Vec::new();
+        let result = Vec::new();
         // todo
 
         self.hydrogen_bonds = result;
@@ -112,56 +113,56 @@ impl Snapshot {
         i += 4;
 
         for pos in &self.atom_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
+            copy_le!(result, pos.x, i..i + 4);
             i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
+            copy_le!(result, pos.y, i..i + 4);
             i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
+            copy_le!(result, pos.z, i..i + 4);
             i += 4;
         }
 
         for v in &self.atom_velocities {
-            copy_le!(result, v.x as f32, i..i + 4);
+            copy_le!(result, v.x, i..i + 4);
             i += 4;
-            copy_le!(result, v.y as f32, i..i + 4);
+            copy_le!(result, v.y, i..i + 4);
             i += 4;
-            copy_le!(result, v.z as f32, i..i + 4);
+            copy_le!(result, v.z, i..i + 4);
             i += 4;
         }
 
         for pos in &self.water_o_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
+            copy_le!(result, pos.x, i..i + 4);
             i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
+            copy_le!(result, pos.y, i..i + 4);
             i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
+            copy_le!(result, pos.z, i..i + 4);
             i += 4;
         }
 
         for pos in &self.water_h0_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
+            copy_le!(result, pos.x, i..i + 4);
             i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
+            copy_le!(result, pos.y, i..i + 4);
             i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
+            copy_le!(result, pos.z, i..i + 4);
             i += 4;
         }
 
         for pos in &self.water_h1_posits {
-            copy_le!(result, pos.x as f32, i..i + 4);
+            copy_le!(result, pos.x, i..i + 4);
             i += 4;
-            copy_le!(result, pos.y as f32, i..i + 4);
+            copy_le!(result, pos.y, i..i + 4);
             i += 4;
-            copy_le!(result, pos.z as f32, i..i + 4);
+            copy_le!(result, pos.z, i..i + 4);
             i += 4;
         }
 
         for v in &self.water_velocities {
-            copy_le!(result, v.x as f32, i..i + 4);
+            copy_le!(result, v.x, i..i + 4);
             i += 4;
-            copy_le!(result, v.y as f32, i..i + 4);
+            copy_le!(result, v.y, i..i + 4);
             i += 4;
-            copy_le!(result, v.z as f32, i..i + 4);
+            copy_le!(result, v.z, i..i + 4);
             i += 4;
         }
 
@@ -223,12 +224,52 @@ impl Snapshot {
         })
     }
 
-    pub fn make_mol2(&self, atoms: &[AtomGeneric]) -> Mol2 {
-        unimplemented!()
+    pub fn make_mol2(&self, atoms_: &[AtomGeneric], bonds: &[BondGeneric]) -> io::Result<Mol2> {
+        if atoms_.len() != self.atom_posits.len() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "Atom position mismatch",
+            ));
+        }
+
+        let mut atoms = atoms_.to_vec();
+        for (i, atom) in atoms.iter_mut().enumerate() {
+            atom.posit = self.atom_posits[i].into();
+        }
+
+        Ok(Mol2 {
+            ident: "MD run".to_string(),
+            metadata: HashMap::new(),
+            atoms,
+            bonds: bonds.to_vec(),
+            mol_type: MolType::Small,
+            charge_type: ChargeType::User,
+            comment: None,
+        })
     }
 
-    pub fn make_mmcif(&self, atoms: &[AtomGeneric]) -> MmCif {
-        unimplemented!()
+    pub fn make_mmcif(&self, atoms_: &[AtomGeneric], bonds: &[BondGeneric]) -> io::Result<MmCif> {
+        if atoms_.len() != self.atom_posits.len() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "Atom position mismatch",
+            ));
+        }
+
+        let mut atoms = atoms_.to_vec();
+        for (i, atom) in atoms.iter_mut().enumerate() {
+            atom.posit = self.atom_posits[i].into();
+        }
+
+        Ok(MmCif {
+            ident: "MD run".to_string(),
+            metadata: HashMap::new(),
+            atoms,
+            chains: Vec::new(),
+            residues: Vec::new(),
+            secondary_structure: Vec::new(),
+            experimental_method: None,
+        })
     }
 }
 
@@ -276,6 +317,7 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(true) // todo: QC this.
         .open(path)?;
 
     let file_len = f.metadata()?.len();
@@ -336,9 +378,9 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
 
         // Current NSET and flags
         let mut icntrl = [0i32; 20];
-        for i in 0..20 {
+        for (i, item) in icntrl.iter_mut().enumerate() {
             let off = 4 + i * 4;
-            icntrl[i] = i32::from_le_bytes(hdr[off..off + 4].try_into().unwrap());
+            *item = i32::from_le_bytes(hdr[off..off + 4].try_into().unwrap());
         }
         let cur_nset = icntrl[0];
 
@@ -390,9 +432,9 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
             let mut i = 0usize;
             let mut push = |v: &Vec<Vec3>| {
                 for p in v {
-                    xs[i] = p.x as f32;
-                    ys[i] = p.y as f32;
-                    zs[i] = p.z as f32;
+                    xs[i] = p.x;
+                    ys[i] = p.y;
+                    zs[i] = p.z;
                     i += 1;
                 }
             };
@@ -430,9 +472,9 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
         let mut i = 0usize;
         let mut push = |v: &Vec<Vec3>| {
             for p in v {
-                xs[i] = p.x as f32;
-                ys[i] = p.y as f32;
-                zs[i] = p.z as f32;
+                xs[i] = p.x;
+                ys[i] = p.y;
+                zs[i] = p.z;
                 i += 1;
             }
         };
@@ -475,7 +517,7 @@ pub fn load_dcd(path: &Path) -> io::Result<Vec<Snapshot>> {
     }
 
     fn f32s_from_le_bytes(b: &[u8]) -> io::Result<Vec<f32>> {
-        if b.len() % 4 != 0 {
+        if !b.len().is_multiple_of(4) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "float block not multiple of 4",
@@ -502,9 +544,9 @@ pub fn load_dcd(path: &Path) -> io::Result<Vec<Snapshot>> {
         ));
     }
     let mut icntrl = [0i32; 20];
-    for i in 0..20 {
+    for (i, item) in icntrl.iter_mut().enumerate() {
         let off = 4 + i * 4;
-        icntrl[i] = i32::from_le_bytes(hdr[off..off + 4].try_into().unwrap());
+        *item = i32::from_le_bytes(hdr[off..off + 4].try_into().unwrap());
     }
     let nset_total = icntrl[0] as usize;
 
@@ -542,19 +584,20 @@ pub fn load_dcd(path: &Path) -> io::Result<Vec<Snapshot>> {
         let ys = f32s_from_le_bytes(&yb)?;
         let zs = f32s_from_le_bytes(&zb)?;
 
-        let mut pos = Vec::with_capacity(n_atoms);
+        let mut atom_posits = Vec::with_capacity(n_atoms);
         for k in 0..n_atoms {
-            pos.push(Vec3 {
+            atom_posits.push(Vec3 {
                 x: xs[k],
                 y: ys[k],
                 z: zs[k],
             });
         }
 
-        let mut snap = Snapshot::default();
-        snap.time = (i as f64) * delta;
-        snap.atom_posits = pos;
-        out.push(snap);
+        out.push(Snapshot {
+            time: (i as f64) * delta,
+            atom_posits,
+            ..Default::default()
+        });
     }
 
     Ok(out)

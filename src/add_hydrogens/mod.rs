@@ -275,22 +275,18 @@ pub(crate) fn h_type_in_res_sidechain(
     // todo: See teh pattern here? Put in a mechanism to add the 2 prefix.
     match aa {
         AminoAcid::Thr => {
-            match parent_tir {
-                AtomTypeInRes::CG2 => {
-                    // HG21, 22, 23
-                    let digit = h_num_this_parent + 21;
-                    return Ok(Some(AtomTypeInRes::H(format!("HG{digit}"))));
-                }
-                _ => (),
+            if *parent_tir == AtomTypeInRes::CG2 {
+                // HG21, 22, 23
+                let digit = h_num_this_parent + 21;
+                return Ok(Some(AtomTypeInRes::H(format!("HG{digit}"))));
             }
         }
-        AminoAcid::Arg => match parent_tir {
-            AtomTypeInRes::NH2 => {
+        AminoAcid::Arg => {
+            if *parent_tir == AtomTypeInRes::NH2 {
                 let digit = h_num_this_parent + 21;
                 return Ok(Some(AtomTypeInRes::H(format!("HH{digit}"))));
             }
-            _ => (),
-        },
+        }
         AminoAcid::Phe => match parent_tir {
             AtomTypeInRes::CD2 => {
                 let digit = h_num_this_parent + 2;
@@ -302,20 +298,18 @@ pub(crate) fn h_type_in_res_sidechain(
             }
             _ => (),
         },
-        AminoAcid::Leu => match parent_tir {
-            AtomTypeInRes::CD2 => {
+        AminoAcid::Leu => {
+            if *parent_tir == AtomTypeInRes::CD2 {
                 let digit = h_num_this_parent + 21;
                 return Ok(Some(AtomTypeInRes::H(format!("HD{digit}"))));
             }
-            _ => (),
-        },
-        AminoAcid::Ile => match parent_tir {
-            AtomTypeInRes::CG2 => {
+        }
+        AminoAcid::Ile => {
+            if *parent_tir == AtomTypeInRes::CG2 {
                 let digit = h_num_this_parent + 21;
                 return Ok(Some(AtomTypeInRes::H(format!("HG{digit}"))));
             }
-            _ => (),
-        },
+        }
         _ => (),
     }
 

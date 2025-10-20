@@ -1,4 +1,5 @@
 #![allow(non_upper_case_globals)]
+#![allow(clippy::excessive_precision)]
 
 //! We use the [OPC model](https://pubs.acs.org/doi/10.1021/jz501780a) for water.
 //! See also, the Amber Reference Manual.
@@ -30,9 +31,7 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{
-    ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER,
-};
+use crate::{ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER};
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 

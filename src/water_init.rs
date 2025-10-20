@@ -1,3 +1,5 @@
+#![allow(clippy::excessive_precision)]
+
 //! Code for initializing water molecules, including assigning quantity, initial positions, and
 //! velocities. Set up to meet density, pressure, and or temperature targets. Not specific to the
 //! water model used.
