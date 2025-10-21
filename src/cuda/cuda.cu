@@ -103,6 +103,7 @@ void nonbonded_force_kernel(
     // For symmetric application
     const uint8_t* atom_types_src,
     const uint8_t* water_types_src,
+    // These are bools.
     const uint8_t* scale_14s,
     const uint8_t* calc_ljs,
     const uint8_t* calc_coulombs,
@@ -111,7 +112,9 @@ void nonbonded_force_kernel(
     float3 cell_extent,
     float cutoff_ewald,
     float alpha_ewald,
-    uint32_t N
+    uint32_t N,
+    uint8_t coulomb_disabled, // bool
+    uint8_t lj_disabled
 ) {
     size_t index = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
@@ -161,7 +164,7 @@ void nonbonded_force_kernel(
         f_lj.force = make_float3(0.f, 0.f, 0.f);
         f_lj.energy = 0.f;
 
-        if (calc_ljs[i]) {
+        if (calc_ljs[i] && !lj_disabled) {
             f_lj = lj_force(diff, r, inv_r, dir, sigma, eps);
         }
 
@@ -172,7 +175,7 @@ void nonbonded_force_kernel(
         f_coulomb.force = make_float3(0.f, 0.f, 0.f);
         f_coulomb.energy = 0.f;
 
-        if (calc_coulombs[i]) {
+        if (calc_coulombs[i] && !coulomb_disabled) {
             f_coulomb = coulomb_force_spme_short_range(
                 r,
                 inv_r,

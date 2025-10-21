@@ -8,11 +8,7 @@ use lin_alg::{
     f64::Vec3 as Vec3F64,
 };
 
-use crate::{
-    AtomDynamics, ForcesOnWaterMol,
-    non_bonded::{BodyRef, LjTables, NonBondedPair},
-    water_opc::{WaterMol, WaterSite},
-};
+use crate::{AtomDynamics, ForcesOnWaterMol, non_bonded::{BodyRef, LjTables, NonBondedPair}, water_opc::{WaterMol, WaterSite}, MdOverrides};
 
 /// Device buffers that persist across all steps. Mutated on the GPU.
 /// We initialize these once at the start. These are all flattened.
@@ -99,6 +95,7 @@ pub(crate) struct PerNeighborGpu {
     pub water_types_tgt: CudaSlice<u8>,
     pub atom_types_src: CudaSlice<u8>,
     pub water_types_src: CudaSlice<u8>,
+    // These are booleans for potentially safer FFI.
     pub scale_14: CudaSlice<u8>,
     pub calc_ljs: CudaSlice<u8>,
     pub calc_coulombs: CudaSlice<u8>,
@@ -225,7 +222,6 @@ impl PerNeighborGpu {
             assert_eq!(symmetric.len(), n);
         }
 
-        // May be safer for the GPU to pass u8 instead of bool??
         let scale_14: Vec<_> = scale_14s.iter().map(|v| *v as u8).collect();
         let calc_ljs: Vec<_> = calc_ljs.iter().map(|v| *v as u8).collect();
         let calc_coulombs: Vec<_> = calc_coulombs.iter().map(|v| *v as u8).collect();
@@ -306,7 +302,7 @@ fn upload_positions(
     stream.memcpy_htod(&h_pos_h1, &mut forces.pos_w_h1).unwrap();
 }
 
-/// Handles both LJ, and Coulomb (SPME short range) force. Run this every step.
+/// Handles both LJ, and Coulomb (SPME short range) force using a shared kernel. Run this every step.
 /// Inputs are structured differently here from our other one; uses pre-paired inputs and outputs, and
 /// a common index. Exclusions (e.g. Amber-style 1-2 adn 1-3) are handled upstream.
 ///
@@ -323,6 +319,7 @@ pub fn force_nonbonded_gpu(
     cell_extent: Vec3,
     forces: &mut ForcesPositsGpu,
     per_neighbor: &PerNeighborGpu,
+    overrides: &MdOverrides,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
     upload_positions(stream, forces, atoms_dyn, water);
 
@@ -341,6 +338,9 @@ pub fn force_nonbonded_gpu(
     // Store immutable input arrays to the device.
 
     let n_u32 = n as u32;
+    let coulomb_disabled = overrides.coulomb_disabled as u8;
+    let lj_disabled = overrides.lj_disabled as u8;
+
 
     let cfg = LaunchConfig::for_num_elems(n_u32);
     let mut launch_args = stream.launch_builder(kernel);
@@ -382,6 +382,8 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&forces.cutoff_ewald);
     launch_args.arg(&forces.alpha_ewald);
     launch_args.arg(&n_u32);
+    launch_args.arg(&coulomb_disabled);
+    launch_args.arg(&lj_disabled);
 
     unsafe { launch_args.launch(cfg) }.unwrap();
 

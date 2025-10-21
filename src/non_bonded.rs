@@ -1,6 +1,6 @@
 //! For VDW and Coulomb forces
 
-use std::{ops::AddAssign, time::Instant};
+use std::ops::AddAssign;
 
 use ewald::force_coulomb_short_range;
 #[cfg(target_arch = "x86_64")]
@@ -28,6 +28,8 @@ pub const CUTOFF_VDW: f32 = 12.0;
 // parameters control a smooth taper.
 // Our neighbor list must use the same cutoff as this, so we use it directly.
 
+// The distance beyond which we truncate the real-space erfc-screened interaction.
+// This is not used for the reciprical part.
 // We don't use a taper, for now.
 // const LONG_RANGE_SWITCH_START: f64 = 8.0; // start switching (Å)
 pub const LONG_RANGE_CUTOFF: f32 = 10.0; // Å
@@ -390,6 +392,7 @@ impl MdState {
                 self.cell.extent,
                 self.forces_posits_gpu.as_mut().unwrap(),
                 self.per_neighbor_gpu.as_ref().unwrap(),
+                &self.cfg.overrides,
             ),
         };
 
@@ -600,7 +603,7 @@ pub fn f_nonbonded_cpu(
         )
     };
 
-    // println!("Q: {:?}, dist: {:?}, inv_dist: {:?} f: {:?}", tgt.partial_charge, dist, inv_dist, f_coulomb);
+    // println!("\nQ: {:?}, dist: {:?}, f: {:?}", tgt.partial_charge, dist, f_coulomb.x);
 
     // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
     if scale14 {

@@ -239,7 +239,7 @@ impl ForceFieldParamsIndexed {
                         BondStretchingParams {
                             atom_types: (String::new(), String::new()),
                             k_b: 300.,
-                            r_0: (atoms[i0].posit - atoms[i1].posit).magnitude() as f32,
+                            r_0: (atoms[i0].posit - atoms[i1].posit).magnitude(),
                             comment: None,
                         },
                     );
@@ -250,7 +250,7 @@ impl ForceFieldParamsIndexed {
                 // add to a separate hydrogen rigid param variable.
                 if h_constraint == HydrogenConstraint::Constrained
                     && (atoms[i0].element == Element::Hydrogen
-                        || atoms[i0].element == Element::Hydrogen)
+                        || atoms[i1].element == Element::Hydrogen)
                 {
                     // `bonds_topology` exists separately from `bond_params` specifically so we can
                     // account for bonds to H in exclusions.

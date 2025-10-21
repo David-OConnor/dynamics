@@ -82,10 +82,7 @@ impl MdState {
         compute_forces_and_energy(self, dev);
 
         // Helper to measure convergence
-        let mut max_f = 0.0f32;
-        let mut _rms_f = 0.0f32;
-
-        (max_f, _rms_f) = force_stats(self);
+        let (max_f, _rms_f) = force_stats(self);
         if max_f <= F_TOL {
             return;
         }
@@ -99,7 +96,7 @@ impl MdState {
         // let mut water_last_steps: Vec<[Vec3; 4]> = vec![[Vec3::new_zero(); 4]; self.water.len()];
 
         let mut iters = 0_u32;
-        'outer: for iter in 0..max_iters {
+        'outer: for _iter in 0..max_iters {
             iters += 1;
 
             for (i, a) in self.atoms.iter_mut().enumerate() {
@@ -168,7 +165,7 @@ impl MdState {
                 e_prev = e_new;
                 alpha = (alpha * GROW).min(ALPHA_MAX);
 
-                (max_f, _rms_f) = force_stats(self);
+                let (max_f, _rms_f) = force_stats(self);
                 if max_f <= F_TOL {
                     break 'outer;
                 }

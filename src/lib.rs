@@ -102,6 +102,9 @@ mod com_zero;
 mod gpu_interface;
 pub mod minimize_energy;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 use std::{
@@ -123,7 +126,7 @@ use ambient::SimBox;
 use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
 #[cfg(feature = "cuda")]
-use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream};
+use cudarc::driver::{CudaContext, CudaFunction, CudaStream};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
 use ewald::PmeRecip;
@@ -134,7 +137,6 @@ use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
-use rand::Rng;
 pub use util::{load_snapshots, save_snapshots};
 pub use water_opc::ForcesOnWaterMol;
 
@@ -142,13 +144,15 @@ pub use water_opc::ForcesOnWaterMol;
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 use crate::{
     ambient::BerendsenBarostat,
-    non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
+    non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
     water_init::make_water_mols,
     water_opc::WaterMol,
 };
+use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
+use crate::water_opc::{WaterMolx16, WaterMolx8};
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
@@ -172,7 +176,8 @@ const CENTER_SIMBOX_RATIO: usize = 30;
 
 // Run SPME once every these steps. It's the slowest computation, and is comparatively
 // smooth over time compared to Coulomb and LJ.
-const SPME_RATIO: usize = 2;
+// const SPME_RATIO: usize = 2; // todo: A/R
+const SPME_RATIO: usize = 1;
 
 // todo: This may not be necessary, other than having it be a multiple of SPME_RATIO.
 // todo: This is because the recording is very fast. (ns order)
@@ -560,9 +565,14 @@ pub struct MdState {
     pub cfg: MdConfig,
     pub atoms: Vec<AtomDynamics>,
     #[cfg(target_arch = "x86_64")]
-    pub atoms_x8: Vec<AtomDynamicsx8>,
+    pub(crate) atoms_x8: Vec<AtomDynamicsx8>,
     #[cfg(target_arch = "x86_64")]
-    pub atoms_x16: Vec<AtomDynamicsx16>,
+    pub(crate) atoms_x16: Vec<AtomDynamicsx16>,
+    pub water: Vec<WaterMol>,
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) water_x8: Vec<WaterMolx8>,
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) water_x16: Vec<WaterMolx16>,
     pub adjacency_list: Vec<Vec<usize>>,
     // h_constraints: Vec<HydrogenConstraintInner>,
     // /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
@@ -602,7 +612,6 @@ pub struct MdState {
     /// See Amber RM, sectcion 15, "1-4 Non-Bonded Interaction Scaling"
     /// These are indices of atoms separated by three consecutive bonds
     pairs_14_scaled: HashSet<(usize, usize)>,
-    water: Vec<WaterMol>,
     lj_tables: LjTables,
     // todo: Hmm... Is this DRY with forces_on_water? Investigate.
     pub water_pme_sites_forces: Vec<[Vec3F64; 3]>, // todo: A/R

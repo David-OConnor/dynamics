@@ -2,7 +2,6 @@
 
 use std::array::from_fn;
 
-use itertools::Itertools;
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 
 use crate::{AtomDynamicsx8, AtomDynamicsx16, MdState};

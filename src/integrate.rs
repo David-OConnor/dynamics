@@ -274,10 +274,10 @@ impl MdState {
                 }
 
                 // O(dt/2)
-                if let Integrator::Langevin { gamma } = self.cfg.integrator {
-                    if !self.cfg.overrides.thermo_disabled {
+                if let Integrator::Langevin { gamma } = self.cfg.integrator &&
+                   !self.cfg.overrides.thermo_disabled {
                         self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
-                    }
+
                 }
 
                 if log_time {
@@ -459,6 +459,8 @@ impl MdState {
             }
         };
 
+        println!("F Recip: {}", f_recip[0].x);
+
         self.potential_energy += e_recip as f64;
 
         // todo: QC this.
@@ -612,13 +614,14 @@ impl MdState {
         let nx = next_planner_n(nx0);
         let ny = next_planner_n(ny0);
         let mut nz = next_planner_n(nz0);
-        if nz % 2 != 0 {
+
+        if !nz.is_multiple_of(2) {
             nz = next_planner_n(nz + 1);
         }
 
         self.pme_recip = Some(match dev {
             ComputationDevice::Cpu => {
-                #[cfg(feature = "cuda")]
+                #[cfg(any(feature = "vkfft", feature = "cufft"))]
                 {
                     // todo: This isn't ideal.
                     eprintln!(
@@ -628,12 +631,18 @@ impl MdState {
                     let stream = ctx.default_stream();
                     PmeRecip::new(&stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
                 }
-                #[cfg(not(feature = "cuda"))]
+                #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
                 PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
             }
             #[cfg(feature = "cuda")]
             ComputationDevice::Gpu(stream) => {
-                PmeRecip::new(stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
+                #[cfg(any(feature = "vkfft", feature = "cufft"))]
+                let v = PmeRecip::new(stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA);
+
+                #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
+                let v= PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA);
+
+                v
             }
         });
     }

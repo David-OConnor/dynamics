@@ -21,7 +21,7 @@
 // - Cys missing H on S. ("HS")
 // - Leucine sometimes missing one of its Methyl groups
 
-use std::{collections::HashMap, time::Instant};
+use std::collections::HashMap;
 
 use bio_files::{AtomGeneric, ChainGeneric, ResidueGeneric};
 use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes};
