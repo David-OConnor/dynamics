@@ -43,19 +43,15 @@ use crate::{AtomDynamicsx8, AtomDynamicsx16};
 pub(crate) const O_MASS: f32 = 16.;
 pub(crate) const H_MASS: f32 = 1.008;
 
-// We use this to convert from force to acceleration, in the appropriate units.
-pub(crate) const MASS_ACCEL_FACTOR_WATER_O: f32 = ACCEL_CONVERSION / O_MASS;
-pub(crate) const MASS_ACCEL_FACTOR_WATER_H: f32 = ACCEL_CONVERSION / H_MASS;
-
 // We have commented out flexible-bond parameters that are provided by Amber, but not
 // used in this rigid model.
 
 // Å; bond distance. (frcmod.opc, or Table 2.)
 pub(crate) const O_EP_R_0: f32 = 0.159_398_33;
-const O_H_R: f32 = 0.872_433_13;
+pub(crate) const O_H_R: f32 = 0.872_433_13;
 
 // Angle bending angle, radians.
-const H_O_H_θ: f32 = 1.808_161_105_066; // (103.6 degrees in frcmod.opc)
+pub(crate) const H_O_H_θ: f32 = 1.808_161_105_066; // (103.6 degrees in frcmod.opc)
 const H_O_H_θ_HALF: f32 = 0.5 * H_O_H_θ;
 
 // For converting from R_star to eps. See notes in bio_files's `LjParams`.
@@ -70,6 +66,7 @@ pub const O_EPS: f32 = 0.212_800_813_0;
 const Q_H: f32 = 0.6791 * CHARGE_UNIT_SCALER;
 const Q_EP: f32 = -2. * Q_H;
 
+// We use this to convert from force to acceleration, in the appropriate units.
 pub(crate) const ACCEL_CONV_WATER_O: f32 = ACCEL_CONVERSION / O_MASS;
 pub(crate) const ACCEL_CONV_WATER_H: f32 = ACCEL_CONVERSION / H_MASS;
 
@@ -248,14 +245,14 @@ impl WaterMol {
     }
 }
 
-// /// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
-// /// side of the cell.
-// pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
-//     let new_o = cell.wrap(mol.o.posit);
-//     let shift = new_o - mol.o.posit;
-//
-//     mol.o.posit = new_o;
-//     mol.h0.posit += shift;
-//     mol.h1.posit += shift;
-//     mol.m.posit += shift;
-// }
+/// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
+/// side of the cell.
+pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
+    let new_o = cell.wrap(mol.o.posit);
+    let shift = new_o - mol.o.posit;
+
+    mol.o.posit = new_o;
+    mol.h0.posit += shift;
+    mol.h1.posit += shift;
+    mol.m.posit += shift;
+}

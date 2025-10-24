@@ -54,7 +54,7 @@ cudarc = { version = "0.17.2", default-features = false, features = ["std", "dri
 
 
 [build-dependencies]
-cuda_setup = { version = "0.1.7", optional = true }
+cuda_setup = { version = "0.1.9", optional = true }
 
 
 [patch.crates-io]

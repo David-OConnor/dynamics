@@ -19,7 +19,6 @@ fn setup_test_pair(dist: f32) -> [AtomGeneric; 2] {
     [atom_0, atom_1]
 }
 
-
 /// Test that forces are approximately correct for a pair at various distances.
 #[test]
 fn test_forces_on_pair() {
@@ -30,7 +29,7 @@ fn test_forces_on_pair() {
     for dist in dists {
         let atoms = setup_test_pair(dist);
 
-        let mol  = MolDynamics {
+        let mol = MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
             atoms: atoms.to_vec(),
             atom_posits: None,
@@ -68,5 +67,4 @@ fn test_forces_on_pair() {
 
         results.push(0);
     }
-
 }

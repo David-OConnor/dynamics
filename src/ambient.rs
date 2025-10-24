@@ -270,7 +270,6 @@ impl BerendsenBarostat {
 impl MdState {
     /// Computes total kinetic energy in kcal.
     pub(crate) fn kinetic_energy_kcal(&self) -> f64 {
-        // dynamic atoms + waters (skip massless EP)
         let mut ke = 0.0;
         for a in &self.atoms {
             if !a.static_ {
@@ -298,13 +297,13 @@ impl MdState {
     fn num_constraints_estimate(&self) -> usize {
         let mut c = 0;
 
-        // (1) Rigid waters (O,H0,H1 rigid; EP is massless/virtual)
+        // Rigid waters (O,H0,H1 rigid; EP is massless/virtual)
         // 3 constraints per water triad.
         c += 3 * self.water.len();
 
         // (2) SHAKE/RATTLE on X–H bonds among *dynamic* atoms (not counting waters here)
-        // If hydrogens are constrained (your code calls shake_hydrogens() when HydrogenMdType::Fixed),
-        // count ≈ number of H atoms among self.atoms (each has one constrained bond).
+        // If hydrogens are constrained,
+        // count is number of H atoms among self.atoms (Each has one constrained bond).
         if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
             c += self
                 .atoms
@@ -312,9 +311,6 @@ impl MdState {
                 .filter(|a| a.element == Element::Hydrogen)
                 .count();
         }
-
-        // (3) If you have any extra explicit constraints elsewhere, add them here.
-        // e.g., c += self.extra_constraints.len();
 
         c
     }

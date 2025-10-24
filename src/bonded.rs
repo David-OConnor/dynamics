@@ -25,7 +25,7 @@ impl MdState {
             a_0.force += f;
             a_1.force -= f;
 
-            // Local virial: Σ r_i · F_i  (convert accel→force_phys with mass and S)
+            // Local virial: Σ r_i · F_i
             let virial = a_0.posit.dot(f) + a_1.posit.dot(-f);
             self.barostat.virial_bonded += virial as f64;
 
@@ -97,6 +97,7 @@ impl MdState {
 
     // todo: Energy from constrained H?
 
+    /// This makes the position constraint difference 0; run after drifting positions.
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
     pub(crate) fn shake_hydrogens(&mut self) {
         for _ in 0..SHAKE_MAX_IT {
@@ -130,11 +131,11 @@ impl MdState {
         }
     }
 
+    /// This makes the velocity constraint difference 0; run after updating velocities.
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
     pub(crate) fn rattle_hydrogens(&mut self, dt: f32) {
         // RATTLE on velocities so that d/dt(|r|²)=0  ⇒  v_ij · r_ij = 0
         for (indices, (_r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
-            // println!("RATTLE: {:?}", (i, j, _r0));
             let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
 
             let r_meas = aj.posit - ai.posit;

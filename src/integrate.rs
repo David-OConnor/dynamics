@@ -8,21 +8,16 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-#[cfg(feature = "cuda")]
-use cudarc::driver::CudaContext;
-use ewald::PmeRecip;
-use lin_alg::f32::Vec3;
 
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
 use crate::{
     CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
-    PMEIndex, SPME_RATIO,
     ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
-    non_bonded::{EWALD_ALPHA, SCALE_COUL_14, SPME_MESH_SPACING},
     water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
-    water_settle::settle_drift,
+    water_settle,
+    water_settle::{RESET_ANGLE_RATIO, settle_drift},
 };
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
@@ -153,12 +148,6 @@ impl MdState {
 
                 self.kick_and_calc_accel(dt_half);
 
-                // Rattle to project velocities back onto the the constraint manifold after
-                // the velocity change.
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens(dt);
-                }
-
                 if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
                     self.zero_linear_momentum_atoms();
                 }
@@ -231,7 +220,7 @@ impl MdState {
                             + self.barostat.virial_nonbonded_long_range,
                     );
 
-                    if self.step_count.is_multiple_of(100) {
+                    if self.step_count.is_multiple_of(1_000) {
                         self.print_ambient_data(p_inst_bar);
                     }
 
@@ -274,10 +263,10 @@ impl MdState {
                 }
 
                 // O(dt/2)
-                if let Integrator::Langevin { gamma } = self.cfg.integrator &&
-                   !self.cfg.overrides.thermo_disabled {
-                        self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
-
+                if let Integrator::Langevin { gamma } = self.cfg.integrator
+                    && !self.cfg.overrides.thermo_disabled
+                {
+                    self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
                 }
 
                 if log_time {
@@ -343,6 +332,12 @@ impl MdState {
             self.cell.recenter(&self.atoms);
             // todo: Will this interfere with carrying over state from the previous step?
             self.regen_pme(dev);
+        }
+
+        if self.step_count.is_multiple_of(RESET_ANGLE_RATIO) && self.step_count != 0 {
+            for mol in &mut self.water {
+                water_settle::reset_angle(mol, &self.cell);
+            }
         }
 
         let start = Instant::now(); // Not sure how else to handle. (Option would work)
@@ -413,6 +408,10 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt;
             w.h1.vel += w.h1.accel * dt;
         }
+
+        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+            self.rattle_hydrogens(dt);
+        }
     }
 
     /// Drifts all non-static atoms in the system.  Includes the SETTLE application for water,
@@ -431,220 +430,7 @@ impl MdState {
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
             self.shake_hydrogens();
-            self.rattle_hydrogens(dt);
         }
-    }
-
-    pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
-        const K_COUL: f32 = 1.; // todo: ChatGPT really wants this, but I don't think I need it.
-
-        let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();
-
-        let (mut f_recip, e_recip) = match &mut self.pme_recip {
-            Some(pme_recip) => match dev {
-                ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
-                #[cfg(feature = "cuda")]
-                ComputationDevice::Gpu(stream) => {
-                    // todo for now
-                    #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
-                    let v = pme_recip.forces(&pos_all, &q_all);
-                    #[cfg(any(feature = "cufft", feature = "vkfft"))]
-                    let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
-
-                    v
-                }
-            },
-            None => {
-                panic!("No PME recip available; not computing SPME recip.");
-            }
-        };
-
-        println!("F Recip: {}", f_recip[0].x);
-
-        self.potential_energy += e_recip as f64;
-
-        // todo: QC this.
-        // Scale to Amber force units
-        for f in f_recip.iter_mut() {
-            *f *= K_COUL;
-        }
-
-        // println!("F prior accel a0: {}",  self.atoms[1].accel);
-
-        let mut virial_lr_recip = 0.0;
-        for (k, tag) in map.iter().enumerate() {
-            match *tag {
-                PMEIndex::NonWat(i) => {
-                    self.atoms[i].accel += f_recip[k];
-                    if i == 0 {
-                        // f_0 = f_recip[k];
-                    }
-                }
-                PMEIndex::WatO(i) => {
-                    self.water[i].o.accel += f_recip[k];
-                }
-                PMEIndex::WatM(i) => {
-                    let fM = f_recip[k];
-                    self.water[i].m.accel += fM; // stash PME M force; back-prop happens later
-                }
-                PMEIndex::WatH0(i) => {
-                    self.water[i].h0.accel += f_recip[k];
-                }
-                PMEIndex::WatH1(i) => {
-                    self.water[i].h1.accel += f_recip[k];
-                }
-                PMEIndex::Static(_) => { /* contributes to field, no accel update */ }
-            }
-
-            // todo: Debug
-            // if self.step_count.is_multiple_of(20) {
-            //     println!("F RECIP a0: {}", f_0);
-            //     println!("F RECIP a1: {}", f_1);
-            // }
-
-            // todo: QC that you don't want the 1/2 factor.
-            // virial_lr_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial
-            virial_lr_recip += pos_all[k].dot(f_recip[k]); // tin-foil virial
-
-            // println!("LR. i: {k}, f: {:?}", f_recip[k]);
-        }
-
-        self.barostat.virial_nonbonded_long_range += virial_lr_recip as f64;
-
-        // 1–4 Coulomb scaling correction (vacuum correction)
-        for &(i, j) in &self.pairs_14_scaled {
-            let diff = self
-                .cell
-                .min_image(self.atoms[i].posit - self.atoms[j].posit);
-
-            let r = diff.magnitude();
-            if r == 0.0 {
-                continue;
-            } // guard
-            let dir = diff / r;
-
-            let qi = self.atoms[i].partial_charge;
-            let qj = self.atoms[j].partial_charge;
-
-            // Vacuum Coulomb force (K=1 if charges are Amber-scaled)
-            let inv_r = 1.0 / r;
-            let inv_r2 = inv_r * inv_r;
-            let f_vac = dir * (qi * qj * inv_r2);
-
-            // We run this once every `SPME_RATIO` steps, so multiply the force by it.
-            let df = f_vac * (SCALE_COUL_14 - 1.0) * SPME_RATIO as f32;
-
-            self.atoms[i].accel += df;
-            self.atoms[j].accel -= df;
-
-            self.barostat.virial_nonbonded_long_range += (dir * r).dot(df) as f64; // r·F
-        }
-    }
-
-    // todo: QC, and simplify as required.
-    /// Gather all particles that contribute to PME (non-water atoms, water sites).
-    /// Returns positions wrapped to the primary box, their charges, and a map telling
-    /// us which original DOF each entry corresponds to.
-    fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3>, Vec<f32>, Vec<PMEIndex>) {
-        let n_std = self.atoms.len();
-        let n_wat = self.water.len();
-
-        // Capacity hint: std + 4*water + statics
-        let mut pos = Vec::with_capacity(n_std + 4 * n_wat);
-        let mut q = Vec::with_capacity(pos.capacity());
-        let mut map = Vec::with_capacity(pos.capacity());
-
-        // Non-water atoms.
-        for (i, a) in self.atoms.iter().enumerate() {
-            pos.push(self.cell.wrap(a.posit)); // [0,L) per axis
-            q.push(a.partial_charge); // already scaled to Amber units
-            map.push(PMEIndex::NonWat(i));
-        }
-
-        // Water sites (OPC: O usually has 0 charge; include anyway—cost is negligible)
-        for (i, w) in self.water.iter().enumerate() {
-            pos.push(self.cell.wrap(w.o.posit));
-            q.push(w.o.partial_charge);
-            map.push(PMEIndex::WatO(i));
-
-            pos.push(self.cell.wrap(w.m.posit));
-            q.push(w.m.partial_charge);
-            map.push(PMEIndex::WatM(i));
-
-            pos.push(self.cell.wrap(w.h0.posit));
-            q.push(w.h0.partial_charge);
-            map.push(PMEIndex::WatH0(i));
-
-            pos.push(self.cell.wrap(w.h1.posit));
-            q.push(w.h1.partial_charge);
-            map.push(PMEIndex::WatH1(i));
-        }
-
-        (pos, q, map)
-    }
-
-    /// Re-initializes the SPME based on sim box dimensions. Run this at init, and whenever you
-    /// update the sim box. Sets FFT planner dimensions.
-    pub(crate) fn regen_pme(&mut self, dev: &ComputationDevice) {
-        let [lx, ly, lz] = self.cell.extent.to_arr();
-
-        // todo: This is awkward.
-        fn next_planner_n(mut n: usize) -> usize {
-            fn good(mut x: usize) -> bool {
-                for p in [2, 3, 5, 7] {
-                    while x.is_multiple_of(p) {
-                        x /= p;
-                    }
-                }
-                x == 1
-            }
-            if n < 2 {
-                n = 2;
-            }
-            while !good(n) {
-                n += 1;
-            }
-            n
-        }
-
-        let nx0 = (lx / SPME_MESH_SPACING).round().max(2.0) as usize;
-        let ny0 = (ly / SPME_MESH_SPACING).round().max(2.0) as usize;
-        let nz0 = (lz / SPME_MESH_SPACING).round().max(2.0) as usize;
-
-        let nx = next_planner_n(nx0);
-        let ny = next_planner_n(ny0);
-        let mut nz = next_planner_n(nz0);
-
-        if !nz.is_multiple_of(2) {
-            nz = next_planner_n(nz + 1);
-        }
-
-        self.pme_recip = Some(match dev {
-            ComputationDevice::Cpu => {
-                #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                {
-                    // todo: This isn't ideal.
-                    eprintln!(
-                        "Running a CPU device when Ewald is configured for GPU; passing in the default context."
-                    );
-                    let ctx = CudaContext::new(0).unwrap();
-                    let stream = ctx.default_stream();
-                    PmeRecip::new(&stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
-                }
-                #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
-                PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA)
-            }
-            #[cfg(feature = "cuda")]
-            ComputationDevice::Gpu(stream) => {
-                #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                let v = PmeRecip::new(stream, (nx, ny, nz), (lx, ly, lz), EWALD_ALPHA);
-
-                #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
-                let v= PmeRecip::new((nx, ny, nz), (lx, ly, lz), EWALD_ALPHA);
-
-                v
-            }
-        });
     }
 
     /// Print ambient parameters, as a sanity check.

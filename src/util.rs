@@ -90,7 +90,7 @@ pub fn load_snapshots(path: &Path) -> io::Result<Vec<Snapshot>> {
                 let s = Snapshot::from_bytes(&buf)?;
                 out.push(s);
             }
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e),
         }
     }

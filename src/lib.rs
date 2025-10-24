@@ -144,15 +144,13 @@ pub use water_opc::ForcesOnWaterMol;
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 use crate::{
     ambient::BerendsenBarostat,
-    non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
+    non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
     water_init::make_water_mols,
-    water_opc::WaterMol,
+    water_opc::{WaterMol, WaterMolx8, WaterMolx16},
 };
-use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
-use crate::water_opc::{WaterMolx16, WaterMolx8};
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
@@ -176,8 +174,7 @@ const CENTER_SIMBOX_RATIO: usize = 30;
 
 // Run SPME once every these steps. It's the slowest computation, and is comparatively
 // smooth over time compared to Coulomb and LJ.
-// const SPME_RATIO: usize = 2; // todo: A/R
-const SPME_RATIO: usize = 1;
+const SPME_RATIO: usize = 2; // todo: A/R
 
 // todo: This may not be necessary, other than having it be a multiple of SPME_RATIO.
 // todo: This is because the recording is very fast. (ns order)
@@ -551,7 +548,7 @@ impl Default for MdConfig {
                 ratio: 1,
             }],
             sim_box: Default::default(),
-            max_init_relaxation_iters: Some(300), // todo: A/R
+            max_init_relaxation_iters: Some(1_000), // todo: A/R
             neighbor_skin: 4.0,
             overrides: Default::default(),
         }
@@ -916,6 +913,7 @@ impl MdState {
         if log_time {
             let elapsed = start.elapsed().as_micros() as u64;
             self.computation_time.bonded_sum += elapsed;
+            start = Instant::now();
         }
 
         self.apply_nonbonded_forces(dev);

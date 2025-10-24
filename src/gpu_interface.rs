@@ -8,7 +8,11 @@ use lin_alg::{
     f64::Vec3 as Vec3F64,
 };
 
-use crate::{AtomDynamics, ForcesOnWaterMol, non_bonded::{BodyRef, LjTables, NonBondedPair}, water_opc::{WaterMol, WaterSite}, MdOverrides};
+use crate::{
+    AtomDynamics, ForcesOnWaterMol, MdOverrides,
+    non_bonded::{BodyRef, LjTables, NonBondedPair},
+    water_opc::{WaterMol, WaterSite},
+};
 
 /// Device buffers that persist across all steps. Mutated on the GPU.
 /// We initialize these once at the start. These are all flattened.
@@ -340,7 +344,6 @@ pub fn force_nonbonded_gpu(
     let n_u32 = n as u32;
     let coulomb_disabled = overrides.coulomb_disabled as u8;
     let lj_disabled = overrides.lj_disabled as u8;
-
 
     let cfg = LaunchConfig::for_num_elems(n_u32);
     let mut launch_args = stream.launch_builder(kernel);

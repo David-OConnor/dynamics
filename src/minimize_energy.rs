@@ -2,9 +2,12 @@ use std::time::Instant;
 
 use lin_alg::f32::Vec3;
 
-use crate::{ComputationDevice, HydrogenConstraint, MdState};
+use crate::{
+    ComputationDevice, MdState,
+    water_settle::{settle_no_dt},
+};
 
-// Force/E at current geometry
+/// Force/E at current geometry
 fn compute_forces_and_energy(state: &mut MdState, dev: &ComputationDevice) {
     state.reset_accel_e();
     state.potential_energy = 0.0;
@@ -21,9 +24,10 @@ fn force_stats(state: &MdState) -> (f32, f32) {
         if a.static_ {
             continue;
         }
-        let f = a.accel; // pre-mass, pre-unit-conversion accumulator is your net force vector
-        let m = f.magnitude();
+
+        let m = a.force.magnitude();
         max_f_loc = max_f_loc.max(m);
+
         sum += m * m;
         n += 1;
     }
@@ -31,9 +35,10 @@ fn force_stats(state: &MdState) -> (f32, f32) {
     // Sum water too, as long as we are including it in the simulation; can stall out otherwise.
     for w in &state.water {
         for p in [&w.o, &w.h0, &w.h1, &w.m] {
-            let m = p.accel.magnitude();
-            max_f_loc = max_f_loc.max(m);
-            sum += m * m;
+            let f_mag = p.force.magnitude();
+
+            max_f_loc = max_f_loc.max(f_mag);
+            sum += f_mag * f_mag;
             n += 1;
         }
     }
@@ -46,7 +51,10 @@ fn force_stats(state: &MdState) -> (f32, f32) {
 impl MdState {
     /// Relaxes the molecules. Use this at the start of the simulation to control kinetic energy that
     /// arrises from differences between atom positions, and bonded parameters. It can also be called
-    /// externally.
+    /// externally. It also stabilizes the water molecules, so that their hydrogen bond
+    /// structure is correct at initialization.
+    ///
+    /// Uses flexible bonds to hydrogen. (Not Shake/Rattle constraints)
     pub fn minimize_energy(&mut self, dev: &ComputationDevice, max_iters: usize) {
         println!("Minimizing energy...");
         let start = Instant::now();
@@ -63,20 +71,16 @@ impl MdState {
         const ALPHA_MIN: f32 = 1.0e-8;
         const ALPHA_MAX: f32 = 1.0e-2;
 
-        // Zero velocities; we’re minimizing, not integrating.
+        // Zero velocities; we’re minimizing, not integrating. Note that accel and force are
+        // zeroed downstream.
         for a in &mut self.atoms {
             a.vel = Vec3::new_zero();
-            a.accel = Vec3::new_zero();
         }
         for w in &mut self.water {
             w.o.vel = Vec3::new_zero();
             w.h0.vel = Vec3::new_zero();
             w.h1.vel = Vec3::new_zero();
             w.m.vel = Vec3::new_zero();
-            w.o.accel = Vec3::new_zero();
-            w.h0.accel = Vec3::new_zero();
-            w.h1.accel = Vec3::new_zero();
-            w.m.accel = Vec3::new_zero();
         }
 
         compute_forces_and_energy(self, dev);
@@ -84,6 +88,12 @@ impl MdState {
         // Helper to measure convergence
         let (max_f, _rms_f) = force_stats(self);
         if max_f <= F_TOL {
+            // Undo our config change.
+            self.cfg.overrides.long_range_recip_disabled = prev_long_range;
+
+            let elapsed = start.elapsed().as_millis();
+            println!("Complete in {elapsed} ms. (early return)");
+
             return;
         }
 
@@ -92,10 +102,10 @@ impl MdState {
 
         // Per-atom last step for backtracking
         let n_atoms = self.atoms.len();
-        let mut last_step: Vec<Vec3> = vec![Vec3::new_zero(); n_atoms];
-        // let mut water_last_steps: Vec<[Vec3; 4]> = vec![[Vec3::new_zero(); 4]; self.water.len()];
+        let mut last_step: Vec<_> = vec![Vec3::new_zero(); n_atoms];
+        let mut water_last_steps: Vec<_> = vec![Vec3::new_zero(); self.water.len()];
 
-        let mut iters = 0_u32;
+        let mut iters = 0;
         'outer: for _iter in 0..max_iters {
             iters += 1;
 
@@ -104,14 +114,15 @@ impl MdState {
                 if a.static_ {
                     continue;
                 }
-                let f = a.accel;
-                let fm = f.magnitude();
-                if !fm.is_finite() || fm == 0.0 {
+
+                let f_mag = a.force.magnitude();
+                if !f_mag.is_finite() || f_mag == 0.0 {
                     continue;
                 }
-                let step_mag = (alpha * fm).min(STEP_MAX);
-                let s = f * (step_mag / fm);
+                let step_mag = (alpha * f_mag).min(STEP_MAX);
+                let s = a.force * (step_mag / f_mag);
                 a.posit += s;
+
                 last_step[i] = s;
                 self.neighbors_nb.max_displacement_sq = self
                     .neighbors_nb
@@ -119,42 +130,38 @@ impl MdState {
                     .max(s.magnitude_squared());
             }
 
-            // for (wi, w) in self.water.iter_mut().enumerate() {
-            //     let mut s_o = Vec3::new_zero();
-            //     let mut s_h0 = Vec3::new_zero();
-            //     let mut s_h1 = Vec3::new_zero();
-            //     let mut s_m = Vec3::new_zero();
-            //
-            //     for (site, s_ref) in [
-            //         (&mut w.o, &mut s_o),
-            //         (&mut w.h0, &mut s_h0),
-            //         (&mut w.h1, &mut s_h1),
-            //         (&mut w.m, &mut s_m),
-            //     ] {
-            //         if site.static_ { continue; }
-            //         let f = site.accel;
-            //         let fm = f.magnitude();
-            //         if !fm.is_finite() || fm == 0.0 { continue; }
-            //         let step_mag = (alpha * fm).min(STEP_MAX);
-            //         let s = f * (step_mag / fm);
-            //         site.posit += s;
-            //         *s_ref = s;
-            //         self.neighbors_nb.max_displacement_sq =
-            //             self.neighbors_nb.max_displacement_sq.max(s.magnitude_squared());
-            //     }
-            //     water_last_steps[wi] = [s_o, s_h0, s_h1, s_m];
-            // }
+            for (wi, w) in self.water.iter_mut().enumerate() {
+                w.project_ep_force_to_real_sites(&self.cell);
 
-            if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                self.shake_hydrogens();
+                let mut s_o = Vec3::new_zero();
+                let mut s_h0 = Vec3::new_zero();
+                let mut s_h1 = Vec3::new_zero();
+                let mut s_m = Vec3::new_zero();
+
+                for (site, s_ref) in [
+                    (&mut w.o, &mut s_o),
+                    (&mut w.h0, &mut s_h0),
+                    (&mut w.h1, &mut s_h1),
+                    (&mut w.m, &mut s_m),
+                ] {
+                    let f_mag = site.force.magnitude();
+
+                    if !f_mag.is_finite() || f_mag == 0.0 {
+                        continue;
+                    }
+                    let step_mag = (alpha * f_mag).min(STEP_MAX);
+                    let s = site.force * (step_mag / f_mag);
+
+                    self.neighbors_nb.max_displacement_sq = self
+                        .neighbors_nb
+                        .max_displacement_sq
+                        .max(s.magnitude_squared());
+                }
+
+                settle_no_dt(w, &self.cell);
+
+                water_last_steps[wi] = s_o;
             }
-
-            // for w in &mut self.water {
-            //     w.o.posit = self.cell.wrap(w.o.posit);
-            //     w.h0.posit = self.cell.wrap(w.h0.posit);
-            //     w.h1.posit = self.cell.wrap(w.h1.posit);
-            //     w.m.posit = self.cell.wrap(w.m.posit);
-            // }
 
             self.build_neighbors_if_needed(dev);
 
@@ -178,13 +185,15 @@ impl MdState {
                     }
                 }
 
-                // for (wi, w) in self.water.iter_mut().enumerate() {
-                //     let [s_o, s_h0, s_h1, s_m] = water_last_steps[wi];
-                //     if s_o.magnitude_squared() > 0.0 { w.o.posit -= s_o; }
-                //     if s_h0.magnitude_squared() > 0.0 { w.h0.posit -= s_h0; }
-                //     if s_h1.magnitude_squared() > 0.0 { w.h1.posit -= s_h1; }
-                //     if s_m.magnitude_squared() > 0.0 { w.m.posit -= s_m; }
-                // }
+                for (wi, w) in self.water.iter_mut().enumerate() {
+                    let s_o = water_last_steps[wi];
+                    if s_o.magnitude_squared() > 0.0 {
+                        w.o.posit -= s_o;
+                        w.m.posit -= s_o;
+                        w.h0.posit -= s_o;
+                        w.h1.posit -= s_o;
+                    }
+                }
 
                 compute_forces_and_energy(self, dev);
 
@@ -196,16 +205,18 @@ impl MdState {
             }
         }
 
-        // Final cleanups: zero velocities, recenter, and refresh PME grid if you do this routinely elsewhere.
+        // Cleanup: zero velocities, recenter, and refresh PME grid if you do this routinely elsewhere.
         for a in &mut self.atoms {
             a.vel = Vec3::new_zero();
         }
-        // for w in &mut self.water {
-        //     w.o.vel = Vec3::new_zero();
-        //     w.h0.vel = Vec3::new_zero();
-        //     w.h1.vel = Vec3::new_zero();
-        //     w.m.vel = Vec3::new_zero();
-        // }
+        for mol in &mut self.water {
+            mol.o.vel = Vec3::new_zero();
+            mol.h0.vel = Vec3::new_zero();
+            mol.h1.vel = Vec3::new_zero();
+            mol.m.vel = Vec3::new_zero();
+        }
+
+        self.reset_accel_e();
 
         // Keep consistent with the normal cadence.
         self.cell.recenter(&self.atoms);

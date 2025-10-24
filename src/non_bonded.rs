@@ -2,7 +2,9 @@
 
 use std::ops::AddAssign;
 
-use ewald::force_coulomb_short_range;
+#[cfg(feature = "cuda")]
+use cudarc::driver::CudaContext;
+use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
@@ -11,12 +13,13 @@ use rayon::prelude::*;
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
-    AtomDynamics, AtomDynamicsx8, AtomDynamicsx16, COMPUTATION_TIME_RATIO, ComputationDevice,
-    MdOverrides, MdState,
-    ambient::{AMU_A2_PS2_TO_KCAL_PER_MOL_EXACT, SimBox},
+    AtomDynamics, ComputationDevice, MdOverrides, MdState, PMEIndex, SPME_RATIO,
+    ambient::SimBox,
     forces::force_e_lj,
     water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };
+#[cfg(target_arch = "x86_64")]
+use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 // Å. 9-12 should be fine; there is very little VDW force > this range due to
 // the ^-7 falloff.
@@ -540,6 +543,185 @@ impl MdState {
 
         self.nb_pairs = pairs;
     }
+
+    pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
+        let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();
+
+        let (mut f_recip, e_recip) = match &mut self.pme_recip {
+            Some(pme_recip) => match dev {
+                ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
+                #[cfg(feature = "cuda")]
+                ComputationDevice::Gpu(stream) => {
+                    #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
+                    let v = pme_recip.forces(&pos_all, &q_all);
+                    #[cfg(any(feature = "cufft", feature = "vkfft"))]
+                    let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
+
+                    v
+                }
+            },
+            None => {
+                panic!("No PME recip available; not computing SPME recip.");
+            }
+        };
+
+        // println!("F Recip: {}", f_recip[0].x);
+
+        self.potential_energy += e_recip as f64;
+
+        // todo: QC this.
+        for f in f_recip.iter_mut() {
+            *f *= SPME_RATIO as f32;
+        }
+
+        // println!("F prior accel a0: {}",  self.atoms[1].accel);
+
+        let mut virial_lr_recip = 0.0;
+        for (k, tag) in map.iter().enumerate() {
+            match *tag {
+                PMEIndex::NonWat(i) => {
+                    self.atoms[i].force += f_recip[k];
+                    // if i == 0 {
+                    // f_0 = f_recip[k];
+                    // }
+                }
+                PMEIndex::WatO(i) => {
+                    self.water[i].o.force += f_recip[k];
+                }
+                PMEIndex::WatM(i) => {
+                    let fM = f_recip[k];
+                    self.water[i].m.force += fM; // stash PME M force; back-prop happens later
+                }
+                PMEIndex::WatH0(i) => {
+                    self.water[i].h0.force += f_recip[k];
+                }
+                PMEIndex::WatH1(i) => {
+                    self.water[i].h1.force += f_recip[k];
+                }
+                PMEIndex::Static(_) => { /* contributes to field, no force update */ }
+            }
+
+            // todo: Debug
+            // if self.step_count.is_multiple_of(20) {
+            //     println!("F RECIP a0: {}", f_0);
+            //     println!("F RECIP a1: {}", f_1);
+            // }
+
+            // todo: QC that you don't want the 1/2 factor.
+            // virial_lr_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial
+            virial_lr_recip += pos_all[k].dot(f_recip[k]); // tin-foil virial
+
+            // println!("LR. i: {k}, f: {:?}", f_recip[k]);
+        }
+
+        self.barostat.virial_nonbonded_long_range += virial_lr_recip as f64;
+
+        // 1–4 Coulomb scaling correction (vacuum correction)
+        for &(i, j) in &self.pairs_14_scaled {
+            let diff = self
+                .cell
+                .min_image(self.atoms[i].posit - self.atoms[j].posit);
+
+            let r = diff.magnitude();
+            if r.abs() < 1e-6 {
+                continue;
+            }
+
+            let dir = diff / r;
+
+            let qi = self.atoms[i].partial_charge;
+            let qj = self.atoms[j].partial_charge;
+
+            // Vacuum Coulomb force (K=1 if charges are Amber-scaled)
+            let inv_r = 1.0 / r;
+            let inv_r2 = inv_r * inv_r;
+            let f_vac = dir * (qi * qj * inv_r2);
+
+            // todo: DO we need to run this once every `SPME_RATIO` steps?
+            let df = f_vac * (SCALE_COUL_14 - 1.0);
+
+            self.atoms[i].force += df;
+            self.atoms[j].force -= df;
+
+            self.barostat.virial_nonbonded_long_range += (dir * r).dot(df) as f64; // r·F
+        }
+    }
+
+    // todo: QC, and simplify as required.
+    /// Gather all particles that contribute to PME (non-water atoms, water sites).
+    /// Returns positions wrapped to the primary box, their charges, and a map telling
+    /// us which original DOF each entry corresponds to.
+    fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3>, Vec<f32>, Vec<PMEIndex>) {
+        let n_std = self.atoms.len();
+        let n_wat = self.water.len();
+
+        let mut pos = Vec::with_capacity(n_std + 4 * n_wat);
+        let mut q = Vec::with_capacity(pos.capacity());
+        let mut map = Vec::with_capacity(pos.capacity());
+
+        // Non-water atoms.
+        for (i, a) in self.atoms.iter().enumerate() {
+            pos.push(self.cell.wrap(a.posit)); // [0,L) per axis
+            q.push(a.partial_charge); // already scaled to Amber units
+            map.push(PMEIndex::NonWat(i));
+        }
+
+        // Water sites (OPC: O has 0 charge; include anyway—cost is negligible)
+        for (i, w) in self.water.iter().enumerate() {
+            pos.push(self.cell.wrap(w.o.posit));
+            q.push(w.o.partial_charge);
+            map.push(PMEIndex::WatO(i));
+
+            pos.push(self.cell.wrap(w.m.posit));
+            q.push(w.m.partial_charge);
+            map.push(PMEIndex::WatM(i));
+
+            pos.push(self.cell.wrap(w.h0.posit));
+            q.push(w.h0.partial_charge);
+            map.push(PMEIndex::WatH0(i));
+
+            pos.push(self.cell.wrap(w.h1.posit));
+            q.push(w.h1.partial_charge);
+            map.push(PMEIndex::WatH1(i));
+        }
+
+        (pos, q, map)
+    }
+
+    /// Re-initializes the SPME based on sim box dimensions. Run this at init, and whenever you
+    /// update the sim box. Sets FFT planner dimensions.
+    pub(crate) fn regen_pme(&mut self, dev: &ComputationDevice) {
+        let [lx, ly, lz] = self.cell.extent.to_arr();
+        let l = (lx, ly, lz);
+        let n = get_grid_n(l, SPME_MESH_SPACING);
+
+        self.pme_recip = Some(match dev {
+            ComputationDevice::Cpu => {
+                #[cfg(any(feature = "vkfft", feature = "cufft"))]
+                {
+                    // todo: This isn't ideal.
+                    eprintln!(
+                        "Running a CPU device when Ewald is configured for GPU; passing in the default context."
+                    );
+                    let ctx = CudaContext::new(0).unwrap();
+                    let stream = ctx.default_stream();
+                    PmeRecip::new(&stream, n, l, EWALD_ALPHA)
+                }
+                #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
+                PmeRecip::new(n, l, EWALD_ALPHA)
+            }
+            #[cfg(feature = "cuda")]
+            ComputationDevice::Gpu(stream) => {
+                #[cfg(any(feature = "vkfft", feature = "cufft"))]
+                let v = PmeRecip::new(stream, n, l, EWALD_ALPHA);
+
+                #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
+                let v = PmeRecip::new(n, l, EWALD_ALPHA);
+
+                v
+            }
+        });
+    }
 }
 
 /// Lennard Jones and (short-range) Coulomb forces. Used by water and non-water.
@@ -613,7 +795,7 @@ pub fn f_nonbonded_cpu(
 
     // todo: How do we prevent accumulating energy on static atoms and water?
 
-    // println!("F coulomb: {f_coulomb} LJ: {f_lj}");
+    // println!("F coulomb (CPU): {f_coulomb} LJ: {f_lj}");
 
     let force = f_lj + f_coulomb;
     let energy = energy_lj + energy_coulomb;
