@@ -13,7 +13,7 @@ use rayon::prelude::*;
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
-    AtomDynamics, ComputationDevice, MdOverrides, MdState, PMEIndex, SPME_RATIO,
+    AtomDynamics, ComputationDevice, MdOverrides, MdState,
     ambient::SimBox,
     forces::force_e_lj,
     water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
@@ -399,6 +399,8 @@ impl MdState {
             ),
         };
 
+        // println!("\nF short-range: {}", f_on_std[0]);
+
         // `.into()` below converts accumulated forces to f32.
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
             let f: Vec3 = f_on_std[i].into();
@@ -544,8 +546,10 @@ impl MdState {
         self.nb_pairs = pairs;
     }
 
-    pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) {
-        let (pos_all, q_all, map) = self.gather_pme_particles_wrapped();
+    /// We return the values for the case of not running SPME every step; store them for application
+    /// in future steps.
+    pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) -> (Vec<Vec3>, f64, f64) {
+        let (pos_all, q_all) = self.pack_pme_pos_q();
 
         let (mut f_recip, e_recip) = match &mut self.pme_recip {
             Some(pme_recip) => match dev {
@@ -565,56 +569,10 @@ impl MdState {
             }
         };
 
-        // println!("F Recip: {}", f_recip[0].x);
+        // println!("F Recip: {}", f_recip[0]);
 
         self.potential_energy += e_recip as f64;
-
-        // todo: QC this.
-        for f in f_recip.iter_mut() {
-            *f *= SPME_RATIO as f32;
-        }
-
-        // println!("F prior accel a0: {}",  self.atoms[1].accel);
-
-        let mut virial_lr_recip = 0.0;
-        for (k, tag) in map.iter().enumerate() {
-            match *tag {
-                PMEIndex::NonWat(i) => {
-                    self.atoms[i].force += f_recip[k];
-                    // if i == 0 {
-                    // f_0 = f_recip[k];
-                    // }
-                }
-                PMEIndex::WatO(i) => {
-                    self.water[i].o.force += f_recip[k];
-                }
-                PMEIndex::WatM(i) => {
-                    let fM = f_recip[k];
-                    self.water[i].m.force += fM; // stash PME M force; back-prop happens later
-                }
-                PMEIndex::WatH0(i) => {
-                    self.water[i].h0.force += f_recip[k];
-                }
-                PMEIndex::WatH1(i) => {
-                    self.water[i].h1.force += f_recip[k];
-                }
-                PMEIndex::Static(_) => { /* contributes to field, no force update */ }
-            }
-
-            // todo: Debug
-            // if self.step_count.is_multiple_of(20) {
-            //     println!("F RECIP a0: {}", f_0);
-            //     println!("F RECIP a1: {}", f_1);
-            // }
-
-            // todo: QC that you don't want the 1/2 factor.
-            // virial_lr_recip += 0.5 * pos_all[k].dot(f_recip[k]); // tin-foil virial
-            virial_lr_recip += pos_all[k].dot(f_recip[k]); // tin-foil virial
-
-            // println!("LR. i: {k}, f: {:?}", f_recip[k]);
-        }
-
-        self.barostat.virial_nonbonded_long_range += virial_lr_recip as f64;
+        let mut virial_lr_recip = self.unpack_apply_pme_forces(&f_recip, &pos_all);
 
         // 1–4 Coulomb scaling correction (vacuum correction)
         for &(i, j) in &self.pairs_14_scaled {
@@ -637,55 +595,72 @@ impl MdState {
             let inv_r2 = inv_r * inv_r;
             let f_vac = dir * (qi * qj * inv_r2);
 
-            // todo: DO we need to run this once every `SPME_RATIO` steps?
             let df = f_vac * (SCALE_COUL_14 - 1.0);
 
             self.atoms[i].force += df;
             self.atoms[j].force -= df;
 
-            self.barostat.virial_nonbonded_long_range += (dir * r).dot(df) as f64; // r·F
+            virial_lr_recip += (dir * r).dot(df) as f64; // r·F
         }
+
+        self.barostat.virial_nonbonded_long_range += virial_lr_recip;
+
+        (f_recip, e_recip as f64, virial_lr_recip)
     }
 
-    // todo: QC, and simplify as required.
     /// Gather all particles that contribute to PME (non-water atoms, water sites).
-    /// Returns positions wrapped to the primary box, their charges, and a map telling
-    /// us which original DOF each entry corresponds to.
-    fn gather_pme_particles_wrapped(&self) -> (Vec<Vec3>, Vec<f32>, Vec<PMEIndex>) {
+    /// Returns positions wrapped to the primary box, and their charges. We pack (and unpack)
+    /// in a predictable way: non-water atoms, then water, with order as defined below.
+    fn pack_pme_pos_q(&self) -> (Vec<Vec3>, Vec<f32>) {
         let n_std = self.atoms.len();
         let n_wat = self.water.len();
 
-        let mut pos = Vec::with_capacity(n_std + 4 * n_wat);
+        let mut pos = Vec::with_capacity(n_std + 3 * n_wat);
         let mut q = Vec::with_capacity(pos.capacity());
-        let mut map = Vec::with_capacity(pos.capacity());
 
         // Non-water atoms.
-        for (i, a) in self.atoms.iter().enumerate() {
+        for a in &self.atoms {
             pos.push(self.cell.wrap(a.posit)); // [0,L) per axis
             q.push(a.partial_charge); // already scaled to Amber units
-            map.push(PMEIndex::NonWat(i));
         }
 
-        // Water sites (OPC: O has 0 charge; include anyway—cost is negligible)
-        for (i, w) in self.water.iter().enumerate() {
-            pos.push(self.cell.wrap(w.o.posit));
-            q.push(w.o.partial_charge);
-            map.push(PMEIndex::WatO(i));
-
+        // Water sites. We omit O, as it has no charge.
+        for w in &self.water {
             pos.push(self.cell.wrap(w.m.posit));
             q.push(w.m.partial_charge);
-            map.push(PMEIndex::WatM(i));
 
             pos.push(self.cell.wrap(w.h0.posit));
             q.push(w.h0.partial_charge);
-            map.push(PMEIndex::WatH0(i));
 
             pos.push(self.cell.wrap(w.h1.posit));
             q.push(w.h1.partial_charge);
-            map.push(PMEIndex::WatH1(i));
         }
 
-        (pos, q, map)
+        (pos, q)
+    }
+
+    /// In the same order we pack above. Returns the tin-foil virial component of the recip force.
+    pub(crate) fn unpack_apply_pme_forces(&mut self, forces: &[Vec3], posits: &[Vec3]) -> f64 {
+        let mut virial: f64 = 0.;
+        let water_start = self.atoms.len();
+
+        for (i, f) in forces.iter().enumerate() {
+            if i < water_start {
+                self.atoms[i].force += *f;
+            } else {
+                let i_wat = i - water_start;
+                let i_wat_mol = i_wat / 3;
+                match i_wat % 3 {
+                    0 => self.water[i_wat_mol].m.force += *f,
+                    1 => self.water[i_wat_mol].h0.force += *f,
+                    _ => self.water[i_wat_mol].h1.force += *f,
+                }
+            }
+
+            virial += 0.5 * posits[i].dot(*f) as f64; // tin-foil virial
+        }
+
+        virial
     }
 
     /// Re-initializes the SPME based on sim box dimensions. Run this at init, and whenever you

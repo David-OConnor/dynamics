@@ -13,7 +13,7 @@ use rand::{Rng, prelude::ThreadRng};
 use rand_distr::StandardNormal;
 
 use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
+    AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
     water_opc::{H_MASS, O_MASS, WaterMol},
 };
 

@@ -174,7 +174,7 @@ const CENTER_SIMBOX_RATIO: usize = 30;
 
 // Run SPME once every these steps. It's the slowest computation, and is comparatively
 // smooth over time compared to Coulomb and LJ.
-const SPME_RATIO: usize = 2; // todo: A/R
+const SPME_RATIO: usize = 2;
 
 // todo: This may not be necessary, other than having it be a multiple of SPME_RATIO.
 // todo: This is because the recording is very fast. (ns order)
@@ -487,7 +487,7 @@ pub enum SimBoxInit {
 
 impl Default for SimBoxInit {
     fn default() -> Self {
-        Self::Pad(10.)
+        Self::Pad(12.)
     }
 }
 
@@ -634,6 +634,10 @@ pub struct MdState {
     /// A cache of accel_factor / mass, per atom. Built once, at init.
     mass_accel_factor: Vec<f32>,
     pub computation_time: ComputationTimeSums,
+    /// A cache. We don't run SPME every step; store the previous step's per-atom
+    /// force values (Flattened; non-water, then water M, H0, H1), and apply them
+    /// on the steps where we don't re-calculate. (Force, potential energy, virial energy)
+    spme_force_prev: Option<(Vec<Vec3>, f64, f64)>,
 }
 
 impl Display for MdState {
@@ -927,26 +931,57 @@ impl MdState {
         // check may fail at step 0 anyway?
         // todo: When skipping long range forces, you may wish to use naive coulomb instead
         // todo of the short-range part of the recip. This depends on the application.
-        if !self.cfg.overrides.long_range_recip_disabled
-            && self.step_count.is_multiple_of(SPME_RATIO)
-        {
-            // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
-            // It will produce inaccurate results otherwise.
-            if log_time {
-                start = Instant::now();
+        if !self.cfg.overrides.long_range_recip_disabled {
+            if self.step_count.is_multiple_of(SPME_RATIO) {
+                {
+                    // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
+                    // It will produce inaccurate results otherwise.
+                    if log_time {
+                        start = Instant::now();
+                    }
+
+                    let data = self.handle_spme_recip(dev);
+
+                    if SPME_RATIO != 1 {
+                        self.spme_force_prev = Some(data);
+                    }
+
+                    if log_time {
+                        let elapsed = start.elapsed().as_micros() as u64;
+                        self.computation_time.ewald_long_range_sum += elapsed;
+                    }
+                }
+            } else {
+                match &self.spme_force_prev {
+                    Some((forces, potential_e, virial_e)) => {
+                        // self.unpack_apply_pme_forces(forces, &[]);
+                        // todo: This is a C+P from the unpack fn! We are getting a borrow error otherwise.
+                        let water_start = self.atoms.len();
+
+                        for (i, f) in forces.iter().enumerate() {
+                            if i < water_start {
+                                self.atoms[i].force += *f;
+                            } else {
+                                let i_wat = i - water_start;
+                                let i_wat_mol = i_wat / 3;
+                                match i_wat % 3 {
+                                    0 => self.water[i_wat_mol].m.force += *f,
+                                    1 => self.water[i_wat_mol].h0.force += *f,
+                                    _ => self.water[i_wat_mol].h1.force += *f,
+                                }
+                            }
+                        }
+
+                        self.potential_energy += potential_e;
+                        self.barostat.virial_nonbonded_long_range += virial_e;
+                    }
+                    None => {
+                        eprintln!(
+                            "Error! Attempting to use cached previous SPME forces, but it's not set"
+                        );
+                    }
+                }
             }
-
-            self.handle_spme_recip(dev);
-
-            if log_time {
-                let elapsed = start.elapsed().as_micros() as u64;
-                self.computation_time.ewald_long_range_sum += elapsed;
-            }
-        }
-
-        if self.step_count == 1 {
-            let elapsed = start.elapsed();
-            println!("SPME recip time: {:?} μs", elapsed.as_micros());
         }
     }
 
@@ -1097,20 +1132,4 @@ pub(crate) fn split4_mut<T>(
             &mut *base.add(i3),
         )
     }
-}
-
-// todo: Move this somewhere apt
-#[derive(Clone, Copy, Debug)]
-pub enum PMEIndex {
-    // Dynamic atoms (protein, ligand, ions, etc.)
-    NonWat(usize),
-
-    // Water sites (by molecule index)
-    WatO(usize),
-    WatM(usize),
-    WatH0(usize),
-    WatH1(usize),
-
-    // Static atoms (included in the field, but you won't update their accel)
-    Static(usize),
 }

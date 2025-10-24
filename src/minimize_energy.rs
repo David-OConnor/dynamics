@@ -2,10 +2,7 @@ use std::time::Instant;
 
 use lin_alg::f32::Vec3;
 
-use crate::{
-    ComputationDevice, MdState,
-    water_settle::{settle_no_dt},
-};
+use crate::{ComputationDevice, MdState, water_settle::settle_no_dt};
 
 /// Force/E at current geometry
 fn compute_forces_and_energy(state: &mut MdState, dev: &ComputationDevice) {
