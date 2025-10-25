@@ -477,7 +477,7 @@ pub(crate) struct AtomDynamicsx16 {
 /// Note: The shortest edge should be > 2(r_cutoff + r_skin), to prevent atoms
 /// from interacting with their own image in the real-space component.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SimBoxInit {
     /// Distance in Å from the edge to the molecule, at init.
     Pad(f32),
@@ -491,7 +491,7 @@ impl Default for SimBoxInit {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq)]
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 /// These are primarily used for debugging and testing, but may be used
 /// for specific scenarios as well, e.g. if wishing to speed up computations for real-time use
@@ -508,7 +508,7 @@ pub struct MdOverrides {
 }
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq,)]
 pub struct MdConfig {
     /// Defaults to Velocity Verlet.
     pub integrator: Integrator,

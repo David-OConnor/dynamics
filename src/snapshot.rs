@@ -26,7 +26,7 @@ pub enum SaveType {
 }
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SnapshotHandler {
     pub save_type: SaveType,
     /// Save every this many steps.

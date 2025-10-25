@@ -33,7 +33,7 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for water atoms. Its size and position should be such as to keep the system
 /// solvated. We may move it around during the sim.
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct SimBox {
     pub bounds_low: Vec3,
     pub bounds_high: Vec3,
