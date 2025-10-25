@@ -673,22 +673,16 @@ impl MdState {
         self.pme_recip = Some(match dev {
             ComputationDevice::Cpu => {
                 #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                {
-                    // todo: This isn't ideal.
-                    eprintln!(
-                        "Running a CPU device when Ewald is configured for GPU; passing in the default context."
-                    );
-                    let ctx = CudaContext::new(0).unwrap();
-                    let stream = ctx.default_stream();
-                    PmeRecip::new(&stream, n, l, EWALD_ALPHA)
-                }
+                let v = PmeRecip::new(None, n, l, EWALD_ALPHA);
                 #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
-                PmeRecip::new(n, l, EWALD_ALPHA)
+                let v = PmeRecip::new(n, l, EWALD_ALPHA);
+
+                v
             }
             #[cfg(feature = "cuda")]
             ComputationDevice::Gpu(stream) => {
                 #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                let v = PmeRecip::new(stream, n, l, EWALD_ALPHA);
+                let v = PmeRecip::new(Some(stream), n, l, EWALD_ALPHA);
 
                 #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
                 let v = PmeRecip::new(n, l, EWALD_ALPHA);

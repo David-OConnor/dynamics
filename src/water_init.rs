@@ -28,7 +28,7 @@ const MASS_WATER: f32 = 18.015_28;
 // Avogadro's constant. mol^-1.
 const N_A: f32 = 6.022_140_76e23;
 
-// This is ~0.0333 mol/Å⁻³
+// This is ~0.0333 mol/Å³
 // Multiplying this by volume in Angstrom^3 gives us AMU g cm^-3 Å^3 mol^-1
 const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 
@@ -171,7 +171,8 @@ fn build_free_mask(cell: &SimBox, atoms: &[AtomDynamics], voxel_size: f32) -> Fr
                     low.y + (iy as f32 + 0.5) * voxel_size,
                     low.z + (iz as f32 + 0.5) * voxel_size,
                 );
-                // quick reject using neighbors
+
+                // Quick reject using neighbors
                 let mut ok = true;
                 for j in cl_atoms.neighbors(c) {
                     let d = cell.min_image(atoms[j].posit - c).magnitude();
@@ -205,32 +206,40 @@ pub fn make_water_mols(
     println!("Initializing water molecules...");
     let start = Instant::now();
 
-    // 1) Build free-volume mask (excludes voxels too close to solute)
+    // Build free-volume mask (excludes voxels too close to solute)
     let voxel_size = 2.8_f32.max(MIN_WATER_OO_DIST); // coarse but safe
     let mask = build_free_mask(cell, atoms, voxel_size);
 
-    // 2) Estimate free volume & n_mols from it
+    // Estimate free volume & n_mols from it
     let free_vol = (mask.centers.len() as f32) * (voxel_size.powi(3));
     let n_mols = (WATER_MOLS_PER_VOL * free_vol).round() as usize;
 
-    // 3) Shuffle candidates and greedily accept with fast O–O checks
+    println!("Solvent free volume: {:.2} / {:.2} Å³ / 1000", free_vol / 1_000., cell.volume() / 1_000.);
+
+    // Shuffle candidates and greedily accept with fast O–O checks
     let mut rng = rand::rng();
     let mut candidates = mask.centers.clone();
     candidates.shuffle(&mut rng);
 
-    // Water O–O neighbor list with cell size = MIN_OO_DIST
+    // Build once: solute cell list for quick recheck (used after jitter)
+    let mut cl_atoms = CellList::new(cell, MIN_NONWATER_DIST, atoms.len());
+    cl_atoms.clear();
+    for (i, a) in atoms.iter().enumerate() {
+        cl_atoms.insert(i, a.posit);
+    }
+
     let mut cl_wat = CellList::new(cell, MIN_WATER_OO_DIST, n_mols);
     cl_wat.clear();
 
     let uni01 = Uniform::<f32>::new(0.0, 1.0).unwrap();
     let mut result: Vec<WaterMol> = Vec::with_capacity(n_mols);
 
-    for (i, mut c) in candidates.into_iter().enumerate() {
+    for mut c in candidates.into_iter() {
         if result.len() >= n_mols {
             break;
         }
 
-        // Optional tiny jitter to avoid perfect grid artifacts (≤ 0.3 Å)
+        // Tiny jitter to avoid perfect grid artifacts (≤ 0.3 Å)
         let jitter = 0.3_f32.min(0.1 * MIN_WATER_OO_DIST);
         if jitter > 0.0 {
             c.x += (rng.sample(uni01) - 0.5) * 2.0 * jitter;
@@ -239,7 +248,21 @@ pub fn make_water_mols(
             c = cell.wrap(c);
         }
 
-        // Fast O–O check via water cell list
+        // Check for conflicts with non-water atoms.
+        let mut ok = true;
+        for j in cl_atoms.neighbors(c) {
+            let d = cell.min_image(atoms[j].posit - c).magnitude();
+            if d < MIN_NONWATER_DIST {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+
+        // Check for conflicts with other waters.
+
         let mut ok = true;
         for j in cl_wat.neighbors(c) {
             let d = cell.min_image(result[j].o.posit - c).magnitude();
