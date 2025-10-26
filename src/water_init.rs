@@ -239,7 +239,8 @@ pub fn make_water_mols(
             break;
         }
 
-        // Tiny jitter to avoid perfect grid artifacts (≤ 0.3 Å)
+        // todo: This doens't seem to be working; the result still is on a grid.
+        // Tiny jitter to avoid perfect grid artifacts
         let jitter = 0.3_f32.min(0.1 * MIN_WATER_OO_DIST);
         if jitter > 0.0 {
             c.x += (rng.sample(uni01) - 0.5) * 2.0 * jitter;
