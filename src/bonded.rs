@@ -3,9 +3,16 @@
 //! among four atoms in a hub configuration (Improper dihedrals). Bonds to hydrogen are treated
 //! differently: They have rigid lengths, which is good enough, and allows for a larger timestep.
 
-use crate::{MdState, SHAKE_MAX_IT, SHAKE_TOL, bonded_forces, split2_mut, split3_mut, split4_mut};
+use crate::{MdState, bonded_forces, split2_mut, split3_mut, split4_mut};
 
 const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
+
+// SHAKE tolerances for fixed hydrogens. These SHAKE constraints are for fixed hydrogens.
+// The tolerance controls how close we get
+// to the target value; lower values are more precise, but require more iterations. `SHAKE_MAX_ITER`
+// constrains the number of iterations.
+const SHAKE_TOL: f32 = 1.0e-4; // Å
+const SHAKE_MAX_IT: usize = 100;
 
 impl MdState {
     pub(crate) fn apply_bonded_forces(&mut self) {

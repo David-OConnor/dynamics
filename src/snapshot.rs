@@ -60,6 +60,10 @@ pub struct Snapshot {
     pub energy_potential: f32,
     /// Optionally added as a post-processing step.
     pub hydrogen_bonds: Vec<HydrogenBond>,
+    /// Instantaneous temperature in Kelvin.
+    pub temperature: f32,
+    /// Instantaneous pressure in Bar.
+    pub pressure: f32,
 }
 
 impl Snapshot {
@@ -168,8 +172,12 @@ impl Snapshot {
 
         copy_le!(result, self.energy_kinetic, i..i + 4);
         i += 4;
-
         copy_le!(result, self.energy_potential, i..i + 4);
+        i += 4;
+        copy_le!(result, self.temperature, i..i + 4);
+        i += 4;
+        copy_le!(result, self.pressure, i..i + 4);
+        // i += 4;
 
         result
     }
@@ -209,6 +217,10 @@ impl Snapshot {
         i += 4;
         let energy_potential = parse_le!(bytes, f32, i..i + 4);
         i += 4;
+        let temperature = parse_le!(bytes, f32, i..i + 4);
+        i += 4;
+        let pressure = parse_le!(bytes, f32, i..i + 4);
+        i += 4;
 
         Ok(Self {
             time: time_f32 as f64,
@@ -221,6 +233,8 @@ impl Snapshot {
             energy_kinetic,
             energy_potential,
             hydrogen_bonds: Vec::new(),
+            temperature,
+            pressure,
         })
     }
 

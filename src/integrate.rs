@@ -75,6 +75,8 @@ impl MdState {
             return;
         }
 
+        let mut pressure = 0.;
+
         match self.cfg.integrator {
             Integrator::LangevinMiddle { gamma } => {
                 if log_time {
@@ -123,16 +125,32 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                let _p_inst_bar = measure_instantaneous_pressure(
+                pressure = measure_instantaneous_pressure(
                     &self.atoms,
                     &self.water,
                     &self.cell,
-                    self.barostat.virial_bonded
-                        + self.barostat.virial_coulomb
+                    self.barostat.virial_coulomb
                         + self.barostat.virial_lj
+                        + self.barostat.virial_bonded
                         + self.barostat.virial_constraints
                         + self.barostat.virial_nonbonded_long_range,
                 );
+
+                if self.step_count.is_multiple_of(1_000) {
+                    self.print_ambient_data(pressure);
+                }
+
+                if !self.cfg.overrides.baro_disabled {
+                    // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
+                    // todo is showing *much* to high.
+                    // self.barostat.apply_isotropic(
+                    //     dt as f64,
+                    //     p_inst_bar,
+                    //     &mut self.cell,
+                    //     &mut self.atoms,
+                    //     &mut self.water,
+                    // );
+                }
 
                 self.apply_all_forces(dev);
 
@@ -208,22 +226,22 @@ impl MdState {
                     start = Instant::now();
                 }
 
+                pressure = measure_instantaneous_pressure(
+                    &self.atoms,
+                    &self.water,
+                    &self.cell,
+                    self.barostat.virial_coulomb
+                        + self.barostat.virial_lj
+                        + self.barostat.virial_bonded
+                        + self.barostat.virial_constraints
+                        + self.barostat.virial_nonbonded_long_range,
+                );
+
+                if self.step_count.is_multiple_of(1_000) {
+                    self.print_ambient_data(pressure);
+                }
+
                 if !self.cfg.overrides.baro_disabled {
-                    let p_inst_bar = measure_instantaneous_pressure(
-                        &self.atoms,
-                        &self.water,
-                        &self.cell,
-                        self.barostat.virial_coulomb
-                            + self.barostat.virial_lj
-                            + self.barostat.virial_bonded
-                            + self.barostat.virial_constraints
-                            + self.barostat.virial_nonbonded_long_range,
-                    );
-
-                    if self.step_count.is_multiple_of(1_000) {
-                        self.print_ambient_data(p_inst_bar);
-                    }
-
                     // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
                     // todo is showing *much* to high.
 
@@ -341,7 +359,7 @@ impl MdState {
         }
 
         let start = Instant::now(); // Not sure how else to handle. (Option would work)
-        self.take_snapshot_if_required();
+        self.take_snapshot_if_required(pressure);
 
         if log_time {
             let elapsed = start.elapsed().as_micros() as u64;
@@ -434,10 +452,11 @@ impl MdState {
     }
 
     /// Print ambient parameters, as a sanity check.
-    fn print_ambient_data(&self, pressure: f64) {
+    pub(crate) fn print_ambient_data(&self, pressure: f64) {
         println!("\nPressure: {pressure} bar");
         println!("------------------------");
-        let temp = self.temperature_kelvin();
+
+        let temp = self.temperature();
         println!("Temp: {temp} K");
 
         let mut water_v = 0.;
@@ -446,11 +465,10 @@ impl MdState {
         }
         println!("Water O vel: {:?}", water_v / self.water.len() as f32);
 
-        let K_kcal = self.kinetic_energy_kcal();
         let V_a3 = self.cell.volume() as f64;
         eprintln!(
             "K[kcal/mol]={:.3}  V[Å^3]={:.3} W_bonded: {:.3}  W_Coul: [kcal/mol]={:.3} W_LJ: [kcal/mol]={:.3} W_long range: {:.3} W_constraint: {:.5}",
-            K_kcal,
+            self.kinetic_energy,
             V_a3,
             self.barostat.virial_bonded,
             self.barostat.virial_coulomb,
@@ -460,7 +478,7 @@ impl MdState {
         );
 
         // reconstruct pressure path
-        let p_kcal_per_a3 = (2.0 * K_kcal
+        let p_kcal_per_a3 = (2.0 * temp
             + self.barostat.virial_coulomb
             + self.barostat.virial_lj
             + self.barostat.virial_bonded
@@ -474,7 +492,7 @@ impl MdState {
 
         // temperature path
         let ndof = 3 * self.atoms.iter().filter(|a| !a.static_).count() + 6 * self.water.len() - 3;
-        let T_k = (2.0 * K_kcal) / (ndof as f64 * GAS_CONST_R as f64);
+        let T_k = (2.0 * temp) / (ndof as f64 * GAS_CONST_R as f64);
         eprintln!("T[K]={:.1}  ndof={}", T_k, ndof);
     }
 }

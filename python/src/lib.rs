@@ -93,6 +93,22 @@ impl Snapshot {
     fn water_o_posits_set(&mut self, v: Vec<[f32; 3]>) {
         self.inner.water_o_posits = v.iter().map(|v| Vec3::from_slice(v).unwrap()).collect();
     }
+    #[getter]
+    fn energy_kinetic(&self) -> f32 {
+        self.inner.energy_kinetic
+    }
+    #[getter]
+    fn energy_potential(&self) -> f32 {
+        self.inner.energy_potential
+    }
+    #[getter]
+    fn temperature(&self) -> f32 {
+        self.inner.temperature
+    }
+    #[getter]
+    fn pressure(&self) -> f32 {
+        self.inner.pressure
+    }
     // todo: Impl teh other fields.
 
     fn __repr__(&self) -> String {

@@ -157,17 +157,13 @@ use crate::{
 #[cfg(feature = "cuda")]
 const PTX: &str = include_str!("../dynamics.ptx");
 
-/// Convert convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all
-/// accelerations by this. (Bonded, and nonbonded)
+// Convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all
+// accelerations by this. (Bonded, and nonbonded)
 const ACCEL_CONVERSION: f32 = 418.4;
-const ACCEL_CONVERSION_INV: f32 = 1. / ACCEL_CONVERSION;
 
-// SHAKE tolerances for fixed hydrogens. These SHAKE constraints are for fixed hydrogens.
-// The tolerance controls how close we get
-// to the target value; lower values are more precise, but require more iterations. `SHAKE_MAX_ITER`
-// constrains the number of iterations.
-const SHAKE_TOL: f32 = 1.0e-4; // Å
-const SHAKE_MAX_IT: usize = 100;
+// amu · Å²/ps²  We use this when accumulating kinetic energy, and need kcal/mol.
+// This, in practice, is for pressure computations.
+const ACCEL_CONVERSION_INV: f32 = 1. / ACCEL_CONVERSION;
 
 // Every this many steps, re-
 const CENTER_SIMBOX_RATIO: usize = 30;
@@ -638,6 +634,11 @@ pub struct MdState {
     /// force values (Flattened; non-water, then water M, H0, H1), and apply them
     /// on the steps where we don't re-calculate. (Force, potential energy, virial energy)
     spme_force_prev: Option<(Vec<Vec3>, f64, f64)>,
+    /// Cached at init; used for kinetic energy calculations.
+    num_static_atoms: usize,
+    // todo: Sub-struct for ambient cache like num_static atoms and thermo_dof
+    /// Degrees of freedom, used in temperature and kinetic energy calculations.
+    thermo_dof: usize,
 }
 
 impl Display for MdState {
@@ -787,6 +788,8 @@ impl MdState {
 
         let cell = SimBox::new(&atoms_md, &cfg.sim_box);
 
+        let num_static_atoms = atoms_md.iter().filter(|a| !a.static_).count();
+
         let mut result = Self {
             cfg: cfg.clone(),
             atoms: atoms_md,
@@ -796,8 +799,11 @@ impl MdState {
             pairs_14_scaled: HashSet::new(),
             force_field_params,
             mass_accel_factor,
+            num_static_atoms,
             ..Default::default()
         };
+
+        result.thermo_dof = result.dof_for_thermo();
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
@@ -985,7 +991,7 @@ impl MdState {
         }
     }
 
-    pub(crate) fn take_snapshot_if_required(&mut self) {
+    pub(crate) fn take_snapshot_if_required(&mut self, pressure: f64) {
         let mut updated_ke = false;
         let mut take_ss = false;
         let mut take_ss_file = false;
@@ -1022,7 +1028,7 @@ impl MdState {
         }
 
         if take_ss || take_ss_file {
-            let snapshot = self.take_snapshot();
+            let snapshot = self.take_snapshot(pressure);
 
             if take_ss {
                 // todo: DOn't clone.
@@ -1053,7 +1059,8 @@ impl MdState {
             .sum()
     }
 
-    fn take_snapshot(&self) -> Snapshot {
+    /// We pass in pressure, as we calculate each step as part of the barostat.
+    fn take_snapshot(&self, pressure: f64) -> Snapshot {
         let mut water_o_posits = Vec::with_capacity(self.water.len());
         let mut water_h0_posits = Vec::with_capacity(self.water.len());
         let mut water_h1_posits = Vec::with_capacity(self.water.len());
@@ -1066,6 +1073,9 @@ impl MdState {
             water_velocities.push(water.o.vel); // Can be from any atom; they should be the same.
         }
 
+        // todo: Store/cache?
+        let temperature = self.temperature() as f32;
+
         Snapshot {
             time: self.time,
             atom_posits: self.atoms.iter().map(|a| a.posit).collect(),
@@ -1077,6 +1087,8 @@ impl MdState {
             energy_kinetic: self.kinetic_energy as f32,
             energy_potential: self.potential_energy as f32,
             hydrogen_bonds: Vec::new(), // Populated later A/R.
+            temperature,
+            pressure: pressure as f32,
         }
     }
 }
