@@ -6,6 +6,8 @@
 //! todo: Handle differnet protenation states, and assign atom-types in a way that's
 //! , todo for a given residue, consistent with a single protenation state. The current approach
 //! is an innacurate hybrid.
+//!
+//! This page has atom labels for all AAs; use it as a ref and QC: https://ccpn.ac.uk/manual/v3/NEFAtomNames.html
 
 // todo notes to patch: (2025-07-20)
 // - Met: good
@@ -214,7 +216,6 @@ pub(crate) fn h_type_in_res_sidechain(
     parent_tir: &AtomTypeInRes,
     aa: Option<AminoAcid>, // None for hetero/ligand.
     h_digit_map: &DigitMap,
-    // ) -> Result<AtomTypeInRes, ParamError> {
 ) -> Result<Option<AtomTypeInRes>, ParamError> {
     let Some(aa) = aa else {
         // Hetero. We can determine the naming scheme directly from the parent.
@@ -327,20 +328,29 @@ pub(crate) fn h_type_in_res_sidechain(
         return Ok(None);
     };
 
-    let digit = match digits.get(h_num_this_parent) {
-        Some(d) => d,
-        None => {
-            // We encounter this error, for example, where a Leucine is missing one of its CD atoms
-            // (A methyl group). Unknown cause, but might be a measurement error.
-            // We've also seen, for example, a CD termining Lysine as a methyl, missing CE.
-            // Rather than assigning a new H #, we duplicate the previous one, so that it correctly
-            // maps to a FF param downstream.
-            eprintln!(
-                "H atom type num out of range (Truncated sidechain?). Digit: {h_num_this_parent} not in {digits:?} - {parent_tir:?} , {aa}. \
-                 Assigning a duplicate digit type-in-res",
-            );
+    let digit = {
+        // Use Debug so variants like CE3/CZ3 carry the numeral
+        let suffix_digit = format!("{:?}", parent_tir)
+            .chars()
+            .rev()
+            .find(|c| c.is_ascii_digit())
+            .and_then(|c| c.to_digit(10))
+            .map(|d| d as usize);
 
-            &digits[digits.len() - 1]
+        if let Some(sd) = suffix_digit {
+            if let Some(pos) = digits.iter().position(|&d| d == sd as u8) {
+                &digits[pos] // exact match: CE3 → 3, CZ3 → 3, CZ2 → 2, etc.
+            } else {
+                // Fall back to the attachment-order index if suffix isn't present in this depth
+                digits
+                    .get(h_num_this_parent)
+                    .unwrap_or_else(|| &digits[digits.len() - 1])
+            }
+        } else {
+            // No numeric suffix on parent (e.g., OG, ND, etc.) → use attachment order
+            digits
+                .get(h_num_this_parent)
+                .unwrap_or_else(|| &digits[digits.len() - 1])
         }
     };
 

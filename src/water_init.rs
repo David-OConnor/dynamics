@@ -214,7 +214,11 @@ pub fn make_water_mols(
     let free_vol = (mask.centers.len() as f32) * (voxel_size.powi(3));
     let n_mols = (WATER_MOLS_PER_VOL * free_vol).round() as usize;
 
-    println!("Solvent free volume: {:.2} / {:.2} Å³ / 1000", free_vol / 1_000., cell.volume() / 1_000.);
+    println!(
+        "Solvent free volume: {:.2} / {:.2} Å³ / 1000",
+        free_vol / 1_000.,
+        cell.volume() / 1_000.
+    );
 
     // Shuffle candidates and greedily accept with fast O–O checks
     let mut rng = rand::rng();

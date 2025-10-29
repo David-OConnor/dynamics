@@ -21,7 +21,10 @@
 //
 // Best guess: Type 1 identifies labels within the residue only. Type 2 (AA) and Type 3 (small mol) are the FF types.
 
-use std::{collections::HashSet, fmt};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
@@ -109,7 +112,7 @@ impl ForceFieldParamsIndexed {
                         }
                         None => {
                             return Err(ParamError::new(&format!(
-                                "MD failure: Missing mass params for {ff_type}"
+                                "\nMD failure: Missing mass params for {ff_type}"
                             )));
                         }
                     }
@@ -121,7 +124,7 @@ impl ForceFieldParamsIndexed {
                         }
                         None => {
                             return Err(ParamError::new(&format!(
-                                "MD failure: Missing mass params for {ff_type}"
+                                "\nMD failure: Missing mass params for {ff_type}"
                             )));
                         }
                     }
@@ -133,7 +136,7 @@ impl ForceFieldParamsIndexed {
                         }
                         None => {
                             return Err(ParamError::new(&format!(
-                                "MD failure: Missing mass params for {ff_type}"
+                                "\nMD failure: Missing mass params for {ff_type}"
                             )));
                         }
                     }
@@ -147,7 +150,7 @@ impl ForceFieldParamsIndexed {
                         },
                     );
 
-                    println!("Missing mass params on {atom}; using element default.");
+                    println!("\nMissing mass params on {atom}; using element default.");
 
                     // return Err(ParamError::new(&format!(
                     //     "MD failure: Missing mass params for {ff_type}"
@@ -185,7 +188,7 @@ impl ForceFieldParamsIndexed {
                         .insert(i, params.lennard_jones.get("O").unwrap().clone());
                     println!("Using O fallback LJ for {atom}");
                 } else {
-                    println!("Missing LJ params for {atom}; setting to 0.");
+                    println!("\nMissing LJ params for {atom}; setting to 0.");
                     // 0. no interaction.
                     // todo: If this is "CG" etc, fall back to other carbon params instead.
                     result.lennard_jones.insert(
@@ -221,17 +224,12 @@ impl ForceFieldParamsIndexed {
                 let type_0 = &atoms[i0].force_field_type;
                 let type_1 = &atoms[i1].force_field_type;
 
-                let data = params
-                    .bond
-                    .get(&(type_0.clone(), type_1.clone()))
-                    .or_else(|| params.bond.get(&(type_1.clone(), type_0.clone())))
-                    .cloned();
+                let data = params.get_bond(&(type_0.clone(), type_1.clone()));
 
                 let Some(data) = data else {
-                    // todo: We get this sometimes with glitched mmCIF files that have duplicate atoms
-                    // todo in slightly different positions.
+                    // todo: Consider removing this, and return an error.
                     eprintln!(
-                        "Missing bond parameters for {type_0}-{type_1} on {} - {}. Using a safe default.",
+                        "\nMissing bond parameters for {type_0}-{type_1} on {} - {}. Using a safe default.",
                         atoms[i0], atoms[i1]
                     );
                     result.bond_stretching.insert(
@@ -245,6 +243,7 @@ impl ForceFieldParamsIndexed {
                     );
                     continue;
                 };
+                let data = data.clone();
 
                 // If using fixed hydrogens, don't add these to our bond stretching params;
                 // add to a separate hydrogen rigid param variable.
@@ -280,39 +279,68 @@ impl ForceFieldParamsIndexed {
                 let type_ctr = &atoms[ctr].force_field_type;
                 let type_n1 = &atoms[n1].force_field_type;
 
-                let data = match params.angle.get(&(
-                    type_n0.clone(),
-                    type_ctr.clone(),
-                    type_n1.clone(),
-                )) {
-                    Some(param) => param.clone(),
-                    // Try the other atom order.
-                    None => {
-                        match params.angle.get(&(
-                            type_n1.clone(),
-                            type_ctr.clone(),
-                            type_n0.clone(),
-                        )) {
-                            Some(param) => param.clone(),
-                            None => {
-                                // todo: Get to the bottom of this.
-                                // todo: In at least some cases, it's caused by duplicate atoms in the MMCIf file. Consider
-                                // todo: sanitizing it on load.
-                                println!(
-                                    "Missing valence angle params {type_n0}-{type_ctr}-{type_n1} on {} - {} - {}. Using a safe default.",
-                                    atoms[n0], atoms[ctr], atoms[n1]
-                                );
-                                // parm19.dat, HC-CT-HC
-                                AngleBendingParams {
-                                    atom_types: (String::new(), String::new(), String::new()),
-                                    k: 35.,
-                                    theta_0: 1.91113,
-                                    comment: None,
-                                }
-                            }
-                        }
+                let data =
+                    params.get_valence_angle(&(type_n0.clone(), type_ctr.clone(), type_n1.clone()));
+
+                let Some(data) = data else {
+                    // todo: Get to the bottom of this.
+                    // todo: In at least some cases, it's caused by duplicate atoms in the MMCIf file. Consider
+                    // todo: sanitizing it on load.
+                    // println!(
+                    //     "\nMissing valence angle params {type_n0}-{type_ctr}-{type_n1} on {} - {} - {}. Using a safe default.",
+                    //     atoms[n0], atoms[ctr], atoms[n1]
+                    // );
+                    // // parm19.dat, HC-CT-HC
+                    // AngleBendingParams {
+                    //     atom_types: (String::new(), String::new(), String::new()),
+                    //     k: 35.,
+                    //     theta_0: 1.91113,
+                    //     comment: None,
+                    // }
+
+                    // This comes up with the Hydrogen bound to NB in His. I don't know what to make of it.
+                    // I'm not sure exactly why I can't find this CR-NB-H angle, but
+                    // try subbing the NA variant:
+                    // "CR-NA-H     50.0      120.00    AA his,    changed based on NMA nmodes"
+                    if (type_n0 == "H" || type_n1 == "H")
+                        && type_ctr == "NB"
+                        && (type_n0 == "CR"
+                            || type_n1 == "CR"
+                            || type_n0 == "CV"
+                            || type_n1 == "CV")
+                    {
+                        // todo: Get to the bottom of this.
+                        println!(
+                            "His HB: Skipping valence angle. For now, inserting a dummy one with no force."
+                        );
+                        result.angle.insert(
+                            (n0, ctr, n1),
+                            AngleBendingParams {
+                                atom_types: (String::new(), String::new(), String::new()),
+                                k: 0.,
+                                theta_0: 0.,
+                                comment: None,
+                            },
+                        );
+                        continue;
+
+                        // if let Some(v) = params.get_valence_angle(&(
+                        //     type_n0.clone(),
+                        //     "NA".to_string(),
+                        //     type_n1.clone(),
+                        // )) {
+                        //     println!("Substituting NA for NB in valence angle params");
+                        //     result.angle.insert((n0, ctr, n1), v.clone());
+                        //     continue;
+                        // }
                     }
+
+                    return Err(ParamError::new(&format!(
+                        "\nMD failure: Missing valence angle params for {type_n0}-{type_ctr}-{type_n1}. (atom0 sn: {})",
+                        atoms[n0].serial_number
+                    )));
                 };
+                let data = data.clone();
 
                 result.angle.insert((n0, ctr, n1), data);
             }
@@ -359,6 +387,7 @@ impl ForceFieldParamsIndexed {
                             true,
                         ) {
                             let mut dihes = dihes.clone();
+
                             for d in &mut dihes {
                                 // Divide here; then don't do it during the dynamics run. Optimization.
                                 d.barrier_height /= d.divider as f32;
@@ -386,7 +415,7 @@ impl ForceFieldParamsIndexed {
                                 );
                             } else {
                                 return Err(ParamError::new(&format!(
-                                    "MD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}. (atom0 sn: {})",
+                                    "\nMD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}. (atom0 sn: {})",
                                     atoms[i0].serial_number
                                 )));
                             }

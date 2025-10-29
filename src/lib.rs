@@ -508,7 +508,7 @@ pub struct MdOverrides {
 }
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-#[derive(Debug, Clone, PartialEq,)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MdConfig {
     /// Defaults to Velocity Verlet.
     pub integrator: Integrator,

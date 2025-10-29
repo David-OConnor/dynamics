@@ -314,11 +314,36 @@ pub fn populate_peptide_ff_and_q(
                     // todo: This is a workaround for having trouble with H types. LIkely
                     // todo when we create them. For now, this meets the intent.
                     AtomTypeInRes::H(_) => {
+                        // todo: This is a workaround for the above; try other HIS variants.
+                        if aa_gen == AminoAcidGeneral::Standard(AminoAcid::His) {
+                            let charges = charge_map
+                                .get(&AminoAcidGeneral::Variant(AminoAcidProtenationVariant::Hie))
+                                .ok_or_else(|| {
+                                    ParamError::new("Unable to find AA mapping for HIE")
+                                })?;
+
+                            // todo: You may need HIP too, even with this workaround.
+                            // todo: DRY
+
+                            for charge in charges {
+                                if charge.type_in_res == *type_in_res {
+                                    atom.force_field_type = Some(charge.ff_type.clone());
+                                    atom.partial_charge = Some(charge.charge);
+
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if found {
+                                break;
+                            }
+                        }
+
                         // Note: We've witnessed this due to errors in the mmCIF file, e.g. on ASP #88 on 9GLS.
                         eprintln!(
-                            "Error assigning FF type and q based on atom type in res: Failed to match H type. #{}, {type_in_res}, {aa_gen:?}. \
+                            "Error assigning FF type and q based on atom type in res: Failed to match H type. Res #{}, Atom #{}, {type_in_res}, {aa_gen:?}. \
                          Falling back to a generic H",
-                            res.serial_number
+                            res.serial_number, atom.serial_number,
                         );
 
                         for charge in charges {
