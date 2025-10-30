@@ -12,13 +12,7 @@ use bincode::{Decode, Encode};
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
-use crate::{
-    CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
-    ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
-    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
-    water_settle,
-    water_settle::{RESET_ANGLE_RATIO, settle_drift},
-};
+use crate::{CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState, ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure}, water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O}, water_settle, water_settle::{RESET_ANGLE_RATIO, settle_drift}, ACCEL_CONVERSION, ACCEL_CONVERSION_INV};
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -125,18 +119,21 @@ impl MdState {
                     start = Instant::now();
                 }
 
+                self.apply_all_forces(dev);
+
+                // todo: QC
+                self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.virial_nonbonded_long_range *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.virial_constraints *= ACCEL_CONVERSION_INV as f64;
+
                 pressure = measure_instantaneous_pressure(
-                    &self.atoms,
-                    &self.water,
+                    self.kinetic_energy,
                     &self.cell,
-                    self.barostat.virial_coulomb
-                        + self.barostat.virial_lj
-                        + self.barostat.virial_bonded
-                        + self.barostat.virial_constraints
-                        + self.barostat.virial_nonbonded_long_range,
+                    self.barostat.virial_total(),
                 );
 
-                if self.step_count.is_multiple_of(1_000) {
+                if self.step_count.is_multiple_of(200) {
                     self.print_ambient_data(pressure);
                 }
 
@@ -151,8 +148,6 @@ impl MdState {
                     //     &mut self.water,
                     // );
                 }
-
-                self.apply_all_forces(dev);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -222,22 +217,23 @@ impl MdState {
                 self.reset_accel_e();
                 self.apply_all_forces(dev);
 
+                // todo: QC
+                self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.virial_nonbonded_long_range *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.virial_constraints *= ACCEL_CONVERSION_INV as f64;
+
                 if log_time {
                     start = Instant::now();
                 }
 
                 pressure = measure_instantaneous_pressure(
-                    &self.atoms,
-                    &self.water,
+                    self.kinetic_energy,
                     &self.cell,
-                    self.barostat.virial_coulomb
-                        + self.barostat.virial_lj
-                        + self.barostat.virial_bonded
-                        + self.barostat.virial_constraints
-                        + self.barostat.virial_nonbonded_long_range,
+                    self.barostat.virial_total(),
                 );
 
-                if self.step_count.is_multiple_of(1_000) {
+                if self.step_count.is_multiple_of(200) {
                     self.print_ambient_data(pressure);
                 }
 
@@ -374,7 +370,7 @@ impl MdState {
 
     /// Half kick and drift for non-water and water. We call this one or more time
     /// in the various integration approaches. Includes the SETTLE application for water,
-    /// and SHAKE + RATTLE for hydrogens, if applicable.
+    /// and SHAKE + RATTLE for hydrogens, if applicable. Updates kinetic energy.
     fn kick_and_drift(&mut self, dt: f32) {
         // Half-kick
         // for (i, a) in self.atoms.iter_mut().enumerate() {
@@ -393,17 +389,19 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt;
             w.h1.vel += w.h1.accel * dt;
 
-            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_coulomb);
+            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_nonbonded_short_range);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
             self.shake_hydrogens();
             self.rattle_hydrogens(dt);
         }
+
+        self.kinetic_energy = self.kinetic_energy();
     }
 
     /// Half kick for non-water and water. We call this one or more time
-    /// in the various integration approaches.
+    /// in the various integration approaches. Updates kinetic energy.
     fn kick_and_calc_accel(&mut self, dt: f32) {
         for (i, a) in self.atoms.iter_mut().enumerate() {
             if a.static_ {
@@ -430,6 +428,8 @@ impl MdState {
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
             self.rattle_hydrogens(dt);
         }
+
+        self.kinetic_energy = self.kinetic_energy();
     }
 
     /// Drifts all non-static atoms in the system.  Includes the SETTLE application for water,
@@ -443,7 +443,7 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_coulomb);
+            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_nonbonded_short_range);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -451,11 +451,13 @@ impl MdState {
         }
     }
 
+    // todo: Consider removing this in favor or exposing these values in snapshots.
+    // todo: Then, applications could display in GUI etc.
     /// Print ambient parameters, as a sanity check.
     pub(crate) fn print_ambient_data(&self, pressure: f64) {
-        println!("\nPressure: {pressure} bar");
         println!("------------------------");
 
+        println!("\nPressure: {pressure} bar");
         let temp = self.temperature();
         println!("Temp: {temp} K");
 
@@ -465,34 +467,26 @@ impl MdState {
         }
         println!("Water O vel: {:?}", water_v / self.water.len() as f32);
 
-        let V_a3 = self.cell.volume() as f64;
+        let cell_vol = self.cell.volume() as f64;
         eprintln!(
-            "K[kcal/mol]={:.3}  V[Å^3]={:.3} W_bonded: {:.3}  W_Coul: [kcal/mol]={:.3} W_LJ: [kcal/mol]={:.3} W_long range: {:.3} W_constraint: {:.5}",
+            "KE={:.3} kcal/mol  Vol={:.3} Å^3  W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.5}",
             self.kinetic_energy,
-            V_a3,
+            cell_vol,
             self.barostat.virial_bonded,
-            self.barostat.virial_coulomb,
-            self.barostat.virial_lj,
+            self.barostat.virial_nonbonded_short_range,
             self.barostat.virial_nonbonded_long_range,
-            self.barostat.virial_constraints
+            self.barostat.virial_constraints,
+
         );
 
-        // reconstruct pressure path
-        let p_kcal_per_a3 = (2.0 * temp
-            + self.barostat.virial_coulomb
-            + self.barostat.virial_lj
-            + self.barostat.virial_bonded
-            + self.barostat.virial_constraints
-            + self.barostat.virial_nonbonded_long_range)
-            / (3.0 * V_a3);
         eprintln!(
-            "P_from_terms[bar]={:.3}",
-            p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
+            "Pressure: {:.3} bar",
+            pressure,
         );
 
         // temperature path
         let ndof = 3 * self.atoms.iter().filter(|a| !a.static_).count() + 6 * self.water.len() - 3;
         let T_k = (2.0 * temp) / (ndof as f64 * GAS_CONST_R as f64);
-        eprintln!("T[K]={:.1}  ndof={}", T_k, ndof);
+        eprintln!("T={:.1}K  ndof={}", T_k, ndof);
     }
 }

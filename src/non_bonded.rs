@@ -420,7 +420,7 @@ impl MdState {
             tgt.h1.force += f_h1;
         }
 
-        self.barostat.virial_coulomb += virial;
+        self.barostat.virial_nonbonded_short_range += virial;
         self.potential_energy += energy;
     }
 

@@ -157,7 +157,7 @@ use crate::{
 #[cfg(feature = "cuda")]
 const PTX: &str = include_str!("../dynamics.ptx");
 
-// Convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files) to amu Å ps⁻². Multiply all
+// Convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files, and our native units) to amu Å ps⁻². Multiply all
 // accelerations by this. (Bonded, and nonbonded)
 const ACCEL_CONVERSION: f32 = 418.4;
 
@@ -900,10 +900,9 @@ impl MdState {
             mol.h1.force = Vec3::new_zero();
         }
 
-        self.barostat.virial_coulomb = 0.0;
-        self.barostat.virial_lj = 0.0;
         self.barostat.virial_bonded = 0.0;
         self.barostat.virial_constraints = 0.0;
+        self.barostat.virial_nonbonded_short_range = 0.0;
         self.barostat.virial_nonbonded_long_range = 0.0;
         self.potential_energy = 0.;
     }
@@ -1001,13 +1000,6 @@ impl MdState {
                 continue;
             }
 
-            // We currently only use kinetic energy in snapshots, so update it only when
-            // calling a handler.
-            if !updated_ke {
-                updated_ke = true;
-                self.kinetic_energy = self.current_kinetic_energy();
-            }
-
             match &handler.save_type {
                 // No action if multiple Memory savetypes are specified.
                 SaveType::Memory => {
@@ -1051,13 +1043,13 @@ impl MdState {
         }
     }
 
-    /// Note: This is currently only for the dynamic atoms; does not take water kinetic energy into account.
-    fn current_kinetic_energy(&self) -> f64 {
-        self.atoms
-            .iter()
-            .map(|a| 0.5 * (a.mass * a.vel.magnitude_squared()) as f64)
-            .sum()
-    }
+    // /// Note: This is currently only for the dynamic atoms; does not take water kinetic energy into account.
+    // fn current_kinetic_energy(&self) -> f64 {
+    //     self.atoms
+    //         .iter()
+    //         .map(|a| 0.5 * (a.mass * a.vel.magnitude_squared()) as f64)
+    //         .sum()
+    // }
 
     /// We pass in pressure, as we calculate each step as part of the barostat.
     fn take_snapshot(&self, pressure: f64) -> Snapshot {

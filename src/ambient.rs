@@ -166,8 +166,8 @@ pub struct BerendsenBarostat {
     /// bar‑1 (≈4.5×10⁻⁵ for water at 300K, 1bar)
     pub kappa_t: f64,
     /// Virials, in kcal. We split these up to make debugging easier.
-    pub virial_coulomb: f64,
-    pub virial_lj: f64,
+    pub virial_nonbonded_short_range: f64,
+    // pub virial_lj: f64,
     pub virial_bonded: f64,
     pub virial_constraints: f64,
     /// I.e. SPME recip
@@ -186,8 +186,8 @@ impl Default for BerendsenBarostat {
             // Isothermal compressibility of water at 298 K.
             kappa_t: 4.5e-5,
             //These virials init to 0 here, and at the start of each integrator step.
-            virial_coulomb: 0.0,
-            virial_lj: 0.0,
+            virial_nonbonded_short_range: 0.0,
+            // virial_lj: 0.0,
             virial_bonded: 0.0,
             virial_constraints: 0.0,
             virial_nonbonded_long_range: 0.0,
@@ -261,32 +261,43 @@ impl BerendsenBarostat {
             w.h1.vel *= lv;
         }
     }
+
+    pub(crate) fn virial_total(&self) -> f64 {
+            // + self.virial_lj
+            self.virial_bonded
+            + self.virial_constraints
+                + self.virial_nonbonded_short_range
+            + self.virial_nonbonded_long_range
+    }
 }
 
 impl MdState {
-    /// Computes total kinetic energy in kcal.
-    pub(crate) fn kinetic_energy_kcal(&self) -> f64 {
-        let mut ke = 0.0;
+    /// Computes total kinetic energy, in kcal/mol
+    /// Includes all non-static atoms, including water.
+    pub(crate) fn kinetic_energy(&self) -> f64 {
+        let mut result = 0.0;
+
         for a in &self.atoms {
             if !a.static_ {
-                ke += 0.5 * (a.mass * a.vel.magnitude_squared()) as f64;
+                result += 0.5 * (a.mass * a.vel.magnitude_squared()) as f64;
             }
         }
 
+        // Do not include the M/EP site.
         for w in &self.water {
-            ke += (0.5 * w.o.mass * w.o.vel.magnitude_squared()) as f64;
-            ke += (0.5 * w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
-            ke += (0.5 * w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
+            result += (0.5 * w.o.mass * w.o.vel.magnitude_squared()) as f64;
+            result += (0.5 * w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
+            result += (0.5 * w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
         }
-        ke * ACCEL_CONVERSION_INV as f64
+
+        // Convert from internal unts to kcal/mol.
+        result * ACCEL_CONVERSION_INV as f64
     }
 
     /// Instantaneous temperature [K] (assumes rigid waters: 6 dof per molecule).
     pub(crate) fn temperature(&self) -> f64 {
-        let ndof = 3 * self.num_static_atoms + 6 * self.water.len() - 3;
-
         let k = self.kinetic_energy;
-        (2.0 * k) / (ndof as f64 * GAS_CONST_R as f64)
+        (2.0 * k) / (self.thermo_dof as f64 * GAS_CONST_R as f64)
     }
 
     fn num_constraints_estimate(&self) -> usize {
@@ -327,9 +338,8 @@ impl MdState {
     pub(crate) fn apply_thermostat_csvr(&mut self, dt: f64, t_target_k: f64) {
         // This value is cached at init.
         let dof = self.thermo_dof.max(2) as f64;
-        let ke = self.kinetic_energy_kcal();
 
-        self.kinetic_energy = ke; // Cache, e.g. for displaying temperature.
+        let ke = self.kinetic_energy();
 
         let ke_bar = 0.5 * dof * GAS_CONST_R as f64 * t_target_k;
 
@@ -552,112 +562,17 @@ impl MdState {
     }
 }
 
-/// Instantaneous pressure in **bar** (pair virial only).
-/// todo: This is wildly high. What's going on? Can't make the barostat work until this is fixed.
-/// P = (2K + W) / (3V)
+/// Instantaneous pressure in bar.
+/// P = (2K + W) / (3V), in kcal/mol/Å^3
 pub(crate) fn measure_instantaneous_pressure(
-    atoms: &[AtomDynamics],
-    waters: &[WaterMol],
+    kinetic_energy: f64, // kcal
     simbox: &SimBox,
-    virial_pair_kcal: f64, // Σ r_ij · f_ij over all (short-range) pairs, in kcal/mol
+    virial_total: f64,
 ) -> f64 {
-    // Kinetic energy (kcal/mol) from instantaneous velocities.
-    // Mass in amu, vel in Å/ps:  K = Σ 1/2 m v^2 * (amu·Å^2/ps^2 → kcal/mol) via KB_A2_PS2_PER_K_PER_AMU* T
-    // Easiest/robust: compute K directly in (amu·Å^2/ps^2), then convert:
-    // 1 (amu·Å^2/ps^2) = KB_A2_PS2_PER_K_PER_AMU [kcal/(mol·K)] * 1 K
-    // But we don't have T per dof here; instead convert unit explicitly:
-    // Conversion: 1 (amu·Å^2/ps^2) = 1.0 *  (kcal/mol) / (KB_A2_PS2_PER_K_PER_AMU)  ?  No.
-    // Simpler and unambiguous: accumulate K in kcal/mol directly:
-    // To avoid any confusion, compute K directly as sum 1/2 m v^2 in **(amu·Å^2/ps^2)** then convert via:
-    // 1 (amu·Å^2/ps^2) = 1.0 * (kcal/mol) / ( (1.0/ (KB_A2_PS2_PER_K_PER_AMU)) * K_per_kelvin )  <-- messy.
-    // Instead: compute K in **kcal/mol** using your existing kinetic-energy routine if you have one.
-    // If not, here is a clean explicit converter:
-
-    fn ke_atoms_kcal(atoms_: impl Iterator<Item = (f32, Vec3)>) -> f64 {
-        let mut sum = 0.0;
-        for (m, v) in atoms_ {
-            let v2 = (v.x as f64) * (v.x as f64)
-                + (v.y as f64) * (v.y as f64)
-                + (v.z as f64) * (v.z as f64);
-            sum += 0.5 * (m as f64) * v2;
-        }
-        sum * ACCEL_CONVERSION_INV as f64
-    }
-
-    // Gather all atoms (dynamics + waters) for KE:
-    let ke_kcal = {
-        let a_iter = atoms.iter().map(|a| (a.mass, a.vel));
-        let w_iter = waters.iter().flat_map(|m| {
-            [
-                (m.o.mass, m.o.vel),
-                (m.h0.mass, m.h0.vel),
-                (m.h1.mass, m.h1.vel),
-            ]
-        });
-        ke_atoms_kcal(a_iter.chain(w_iter))
-    };
-
     // P = (2K + W) / (3V)  in kcal/mol/Å^3
     let v_a3 = simbox.volume() as f64;
-    let p_kcal_per_a3 = (2.0 * ke_kcal + virial_pair_kcal) / (3.0 * v_a3);
+    let p_kcal_per_a3 = (2.0 * kinetic_energy + virial_total) / (3.0 * v_a3);
 
     // Convert to bar
     p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
 }
-
-/// Helper to accumulate from an AtomDynamics if it contributes DOF
-fn add(ad: &AtomDynamics, sum_m_v2: &mut f64, n_mobile: &mut usize) {
-    if ad.static_ {
-        return;
-    }
-    let m = ad.mass as f64;
-
-    if m <= 0.0 {
-        return;
-    } // Skip the massless site on water.
-    let v = ad.vel;
-
-    let v2 =
-        (v.x as f64) * (v.x as f64) + (v.y as f64) * (v.y as f64) + (v.z as f64) * (v.z as f64);
-
-    *sum_m_v2 += m * v2;
-    *n_mobile += 1;
-}
-//
-// /// Instantaneous pressure in Kelvin.
-// pub(crate) fn measure_instantaneous_temp(
-//     atoms: &[AtomDynamics],
-//     waters: &[WaterMol],
-// ) -> f64 {
-//     // todo: DO you use thsi for the thermostat? If so, re-use that instead of re-computing.
-//
-//     let mut sum_m_v2: f64 = 0.0;
-//     let mut n_mobile: usize = 0;
-//
-//     for a in atoms {
-//         add(a, &mut sum_m_v2, &mut n_mobile);
-//     }
-//
-//     for w in waters {
-//         add(&w.o,  &mut sum_m_v2, &mut n_mobile);
-//         add(&w.h0, &mut sum_m_v2, &mut n_mobile);
-//         add(&w.h1, &mut sum_m_v2, &mut n_mobile);
-//         // w.m is the massless site; excluded by mass check
-//     }
-//
-//     if n_mobile == 0 {
-//         return 0.0;
-//     }
-//
-//     // Subtract 3 DOF for COM translation (common practice when COM drift is removed)
-//     let dof = 3 * n_mobile - 3;
-//     if dof <= 0 {
-//         return 0.0;
-//     }
-//
-//     // Kinetic energy (kcal/mol): 0.5 * Σ m v^2 * conv
-//     let ke_kcal_per_mol = 0.5 * sum_m_v2 * ACCEL_CONVERSION_INV as f64;
-//
-//     // Equipartition: K = (dof/2) * R * T  =>  T = 2K / (dof * R)
-//     (2.0 * ke_kcal_per_mol) / ((dof as f64) * GAS_CONST_R as f64)
-// }

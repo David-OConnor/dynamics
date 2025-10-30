@@ -2,11 +2,7 @@
 
 use lin_alg::f32::Vec3;
 
-use crate::{
-    ACCEL_CONVERSION,
-    ambient::SimBox,
-    water_opc::{H_MASS, H_O_H_θ, O_EP_R_0, O_H_R, O_MASS, WaterMol},
-};
+use crate::{ACCEL_CONVERSION, ambient::SimBox, water_opc::{H_MASS, H_O_H_θ, O_EP_R_0, O_H_R, O_MASS, WaterMol}, ACCEL_CONVERSION_INV};
 
 // Reset the water angle to the defined parameter every this many steps,
 // to counter numerical drift
@@ -106,9 +102,9 @@ pub(crate) fn settle_drift(
     let fH1_amu = dvH1 * H_MASS / dt;
 
     // Convert to kcal·mol⁻¹·Å⁻¹ to match your pair-virial units
-    let fO_kcal = fO_amu / ACCEL_CONVERSION;
-    let fH0_kcal = fH0_amu / ACCEL_CONVERSION;
-    let fH1_kcal = fH1_amu / ACCEL_CONVERSION;
+    let fO_kcal = fO_amu * ACCEL_CONVERSION_INV;
+    let fH0_kcal = fH0_amu * ACCEL_CONVERSION_INV;
+    let fH1_kcal = fH1_amu * ACCEL_CONVERSION_INV;
 
     // Midpoint COM-frame positions
     let rO_mid = (rO + rO2) * 0.5;

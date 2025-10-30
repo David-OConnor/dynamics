@@ -222,6 +222,7 @@ pub fn make_water_mols(
 
     // Shuffle candidates and greedily accept with fast O–O checks
     let mut rng = rand::rng();
+    let mut rng = rand::rng();
     let mut candidates = mask.centers.clone();
     candidates.shuffle(&mut rng);
 
