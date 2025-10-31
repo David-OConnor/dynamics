@@ -46,6 +46,7 @@ pub fn build_dynamics(
             ff_mol_type: FfMolType::SmallOrganic,
             atoms: atoms_gen,
             atom_posits: Some(&lig.common.atom_posits),
+            atom_init_velocities: None,
             bonds: bonds_gen,
             adjacency_list: Some(&lig.common.adjacency_list),
             static_: false,
@@ -83,11 +84,14 @@ pub fn build_dynamics(
             atoms,
             // todo: A/R if you allow moving the peptide.
             atom_posits: None,
+            atom_init_velocities: None,
             bonds,
             adjacency_list: None,
             static_: true,
             mol_specific_params: None,
-        })
+        });
+
+        // See also: `MolDynamics::from_sdf()`, `::from_mol2()`, and `::from_amber_geostd("CPB")`
     }
 
     println!("Initializing MD state...");

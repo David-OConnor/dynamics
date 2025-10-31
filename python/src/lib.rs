@@ -237,6 +237,7 @@ impl MolDynamics {
         ff_mol_type: FfMolType,
         atoms: Vec<Py<from_bio_files::AtomGeneric>>,
         atom_posits: Option<Vec<[f64; 3]>>,
+        atom_init_velocities: Option<Vec<[f32; 3]>>,
         bonds: Vec<Py<from_bio_files::BondGeneric>>,
         adjacency_list: Option<Vec<Vec<usize>>>,
         static_: bool,
@@ -259,12 +260,23 @@ impl MolDynamics {
                 .map(|a| Vec3F64::new(a[0], a[1], a[2]))
                 .collect()
         });
+        let atom_init_velocties = match atom_init_velocities {
+            Some(vel) => {
+                vel.map(|v| {
+                    v.into_iter()
+                        .map(|a| Vec3::new(a[0], a[1], a[2]))
+                        .collect()
+                })
+            }
+            None => None,
+        };
 
         Self {
             inner: dynamics_rs::MolDynamics {
                 ff_mol_type: ff_mol_type.into(),
                 atoms,
                 atom_posits,
+                atom_init_velocities,
                 bonds,
                 adjacency_list,
                 static_,

@@ -223,6 +223,8 @@ pub struct MolDynamics {
     /// Separate from `atoms`; this may be more convenient than mutating the atoms
     /// as they may move! If None, we use the positions stored in the atoms.
     pub atom_posits: Option<Vec<Vec3F64>>,
+    /// This may have uses if "shooting" a molecule into a docking position?
+    pub atom_init_velocities: Option<Vec<Vec3>>,
     /// Not required if static.
     pub bonds: Vec<BondGeneric>,
     /// A fast lookup for finding atoms, by index, covalently bonded to each atom.
@@ -254,6 +256,7 @@ impl MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
             atoms: mol.atoms.clone(),
             atom_posits: None,
+            atom_init_velocities: None,
             bonds: mol.bonds.clone(),
             adjacency_list: None,
             static_: false,
@@ -274,6 +277,7 @@ impl MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
             atoms: mol.atoms.clone(),
             atom_posits: None,
+            atom_init_velocities: None,
             bonds: mol.bonds.clone(),
             adjacency_list: None,
             static_: false,
@@ -298,6 +302,7 @@ impl MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
             atoms: mol.atoms,
             atom_posits: None,
+            atom_init_velocities: None,
             bonds: mol.bonds,
             adjacency_list: None,
             static_: false,

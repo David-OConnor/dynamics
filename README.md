@@ -226,6 +226,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
             # Pass a [Vec3] of starting atom positions. If absent,
             # will use the positions stored in atoms.
             atom_posits=None,
+            atom_init_velocities=None,
             bonds=mol.bonds,
             # Pass your own from cache if you want, or it will build.
             adjacency_list=None,
@@ -238,6 +239,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
             ff_mol_type=FfMolType.Peptide,
             atoms=protein.atoms,
             atom_posits=None,
+            atom_init_velocities=None,
             bonds=[],  # Not required if static.
             adjacency_list=None,
             static_=True,
@@ -331,6 +333,7 @@ fn setup_dynamics(
             // Pass a &[Vec3] of starting atom positions. If absent,
             // will use the positions stored in atoms.
             atom_posits: None,
+            atom_init_velocities: None,
             bonds: mol.bonds.clone(),
             // Pass your own from cache if you want, or it will build.
             adjacency_list: None,
@@ -343,6 +346,7 @@ fn setup_dynamics(
             ff_mol_type: FfMolType::Peptide,
             atoms: protein.atoms.clone(),
             atom_posits: None,
+            atom_init_velocities: None,
             bonds: Vec::new(), // Not required if static.
             adjacency_list: None,
             static_: true,
