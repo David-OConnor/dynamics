@@ -21,8 +21,8 @@ as well.
 We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer,
 with nvidia drivers 580 or newer.
 
-**Note: The Python version is currently CPU only**. We would like to fix this, but are having trouble
-linking Cuda.
+**Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having trouble
+linking the cuFFT dependency.
 
 
 ## Use of this library

@@ -1,14 +1,14 @@
-use pyo3::exceptions::PyIOError;
 use std::{path::PathBuf, str::FromStr};
 
+#[cfg(feature = "cuda")]
+use cudarc::{driver::CudaContext, nvrtc::Ptx};
 use dynamics_rs;
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
-use pyo3::{Py, exceptions::PyValueError, prelude::*, types::PyType};
-
-#[cfg(feature = "cuda")]
-use cudarc::{
-    driver::{CudaContext},
-    nvrtc::Ptx,
+use pyo3::{
+    Py,
+    exceptions::{PyIOError, PyValueError},
+    prelude::*,
+    types::PyType,
 };
 
 mod from_bio_files;
@@ -242,6 +242,7 @@ impl MolDynamics {
         adjacency_list: Option<Vec<Vec<usize>>>,
         static_: bool,
         mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
+        bonded_only: bool,
     ) -> Self {
         let atoms = atoms
             .into_iter()
@@ -260,14 +261,12 @@ impl MolDynamics {
                 .map(|a| Vec3F64::new(a[0], a[1], a[2]))
                 .collect()
         });
-        let atom_init_velocties = match atom_init_velocities {
-            Some(vel) => {
-                vel.map(|v| {
-                    v.into_iter()
-                        .map(|a| Vec3::new(a[0], a[1], a[2]))
-                        .collect()
-                })
-            }
+        let atom_init_velocities = match atom_init_velocities {
+            Some(vel) => Some(
+                vel.into_iter()
+                    .map(|v| Vec3::new(v[0], v[1], v[2]))
+                    .collect(),
+            ),
             None => None,
         };
 
@@ -281,6 +280,7 @@ impl MolDynamics {
                 adjacency_list,
                 static_,
                 mol_specific_params,
+                bonded_only,
             },
         }
     }
@@ -471,6 +471,7 @@ impl MdState {
         // Per-molecule ownership
         let mut atoms_bufs: Vec<Vec<bio_files::AtomGeneric>> = Vec::with_capacity(n_mols);
         let mut posit_bufs: Vec<Option<Vec<Vec3F64>>> = Vec::with_capacity(n_mols);
+        let mut vels_bufs: Vec<Option<Vec<Vec3>>> = Vec::with_capacity(n_mols);
         let mut bonds_bufs: Vec<Vec<bio_files::BondGeneric>> = Vec::with_capacity(n_mols);
         let mut adj_bufs: Vec<Option<Vec<Vec<usize>>>> = Vec::with_capacity(n_mols);
         let mut msp_bufs: Vec<Option<bio_files::md_params::ForceFieldParams>> =
@@ -481,6 +482,7 @@ impl MdState {
 
             atoms_bufs.push(v.inner.atoms.iter().map(|a| a.clone()).collect());
             posit_bufs.push(v.inner.atom_posits.clone());
+            vels_bufs.push(v.inner.atom_init_velocities.clone());
             bonds_bufs.push(v.inner.bonds.iter().map(|b| b.clone()).collect());
             adj_bufs.push(v.inner.adjacency_list.clone());
             msp_bufs.push(v.inner.mol_specific_params.clone());
@@ -495,17 +497,20 @@ impl MdState {
             let atoms = take(&mut atoms_bufs[i]);
             let bonds = take(&mut bonds_bufs[i]);
             let atom_posits = take(&mut posit_bufs[i]); // Option<Vec<Vec3F64>>
+            let atom_init_velocities = take(&mut vels_bufs[i]); // Option<Vec<Vec3F64>>
             let adjacency_list = take(&mut adj_bufs[i]); // Option<Vec<Vec<usize>>>
             let mol_specific_params = take(&mut msp_bufs[i]).map(|p| p.clone());
 
             mols_native.push(dynamics_rs::MolDynamics {
                 ff_mol_type: v.inner.ff_mol_type.into(),
-                atoms,          // Vec<bio_files::AtomGeneric>
-                atom_posits,    // Option<Vec<Vec3F64>>
+                atoms,       // Vec<bio_files::AtomGeneric>
+                atom_posits, // Option<Vec<Vec3F64>>
+                atom_init_velocities,
                 bonds,          // Vec<bio_files::BondGeneric>
                 adjacency_list, // Option<Vec<Vec<usize>>>
                 static_: v.inner.static_,
                 mol_specific_params, // Option<dynamics_rs::...::ForceFieldParams>
+                bonded_only: v.inner.bonded_only,
             });
         }
 
@@ -523,7 +528,7 @@ impl MdState {
 
     /// A string for now to keep this wrapper simple.
     fn computation_time(&self) -> String {
-        self.inner.computation_time().to_string()
+        format!("{:?}", self.inner.computation_time())
     }
 
     fn minimize_energy(&mut self, max_iters: usize) {

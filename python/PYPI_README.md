@@ -6,8 +6,6 @@
 A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac.
 Uses CPU with threadpools and SIMD, or an Nvidia GPU.
 
-## Warning: Early release! Lots of missing features. If you see something, post a Github issue.
-
 It uses traditional forcefield-based molecular dynamics, and is inspired by Amber.
 It does not use quantum-mechanics, nor ab-initio methods.
 
@@ -18,8 +16,13 @@ Please reference the [API documentation](https://docs.rs/dynamics) for details o
 of each data structure and function. You may with to reference the [Bio Files API docs](https://docs.rs/bio-files)
 as well.
 
-**Note: The Python version is CPU-only for now**
 **Note: We currently only support saving and loading snapshots/trajectories in a custom format.**
+
+We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer,
+with nvidia drivers 580 or newer.
+
+**Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having trouble
+linking the cuFFT dependency.
 
 
 ## Use of this library
@@ -33,14 +36,14 @@ flexibility that facilitates integration into bigger systems.
 
 
 ## Goals
-- Runs traditional MD algorithms accurately
+- Runs Newtonian MD algorithms accurately
 - Easy to install, learn, and use
 - Fast
 - Easy integration into workflows, scripting, and applications
 
 
 ## Installation
-Python: `pip install mol_dynamics`
+Python: `pip install mol-dynamics`
 
 Rust: Add `dynamics` to `Cargo.toml`. Likely `bio_files` as well.
 
@@ -53,12 +56,25 @@ The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/
 [BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading molecular
 file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library
 ([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them
-directly. See examples below and in the examples folder, and the
+directly. See examples below and in the [examples folder](https://github.com/David-OConnor/dynamics/tree/main/examples), and the
 docs links above; those are structs of plain data that can be built from from arbitrary input sources. For example, if
 you're building an application, you might use a more complicated Atom format; you can create a function that converts
 between yours, and `AtomGeneric`.
 
-Requirements by molecule type:
+### Small organic molecule note
+There is some trouble with small organic molecule file formats. Some tools like openff-toolkit discourage or disallow
+use of Mol2 due to its lack of well-defined specification. They recommend SDF files instead. This is surprising,
+as SDF files also don't have a standard way to define partial charge or force field type. For example, OpenMM, and
+PubChem use different formats for partial charges. We view this with context: the alternatives also have problems or equal
+or greater severity to this. For example, PDBQT isn't intended for general use; XYZ is minimal; CML uses XML which is not convenient.
+
+We suggest using whichever files are convenient, and converting
+them to in-memory data structure using tools you like, or ones we include. Mol2's ability to store force field type and partial
+charge in column data, having a [published spec](https://zhanggroup.org/DockRMSD/mol2.pdf) variant of Mol, and being
+adopted by Amber's Geostd library makes it a good choice.
+
+
+### Requirements by molecule type:
 - **Proteins**/amino acids chains: No special requirements. Uses `mmCif`. (also known as PdbX). Force field type and
   partial charges are inferred automatically.
 - **Small organic molecules**: Must have Force Field name, and partial charge populated on all atoms. `Mol2` files from
@@ -130,12 +146,15 @@ We run a relaxation / energy-minimization function prior to starting each simula
 positions to reduce the amount of energy that comes from initial conditions deviating from bonded parameters.
 
 
-
-
-
 ### Floating point precision
 Mixed precision: 32-bit floating points for most operations. We use 64-bit accumulators, and in thermostat
 and barostat computations.
+
+
+### How pH adjustment works
+pH in proteins is represented by the protenation state of certain amino acids. In particular, His,
+Asp, Cys, Glu, and Lys are affected. These changes are affected in utility functions we provide that
+add Hydrogen atoms.
 
 
 ### Saving results
@@ -170,17 +189,35 @@ using parameters built-in to the program (The Amber one above). Simulating ligan
 file (e.g. *mol2*) include partial charges. we recommend including ligand-specific override
 files as well, e.g. to load dihedral angles from *.frcmod* that aren't present in *Gaff2*.
 
+You can load (and save) combined atom and forcefield data from Amber PRMTOP files; these combine
+these two data types into one file.
+
+Use the code below, the [Examples folder on Github](https://github.com/David-OConnor/dynamics/tree/main/examples),
+and the [API documentation](https://docs.rs/dynamics) to learn how to use it. General workflow:
+
+-Create a [MdState struct](https://docs.rs/dynamics/latest/dynamics/struct.MdState.html) with `MdState::new()`.
+This accepts a [configuration](https://docs.rs/dynamics/latest/dynamics/struct.MdConfig.html), the molecules to simulate,
+and force field parameters.
+
+Run a simulation step by calling `MdState::step()`. This accepts [an enum which defines the computation devices](https://docs.rs/dynamics/latest/dynamics/enum.ComputationDevice.html)
+(CPU/GPU), and the time step in picoseconds. This step can be called as required for your application. For example
+you can call it repeatedly in a loop, or as required, e.g. to not block a GUI, or for interactive MD.
+
 
 Example use (Python):
 ```python
 from mol_dynamics import *
-
 
 def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParams) -> MdState:
     """
     Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
     which acts on the system, but doesn't move.
     """
+
+    # Or, consider using these terse helpers instead for small organic molecules.
+    # MolDynamics.from_amber_geostd("CPB")  # Can use with a PubChem CID as well.
+    # MolDynamics.from_mol2(mol, lig_specific)
+    # MolDynamics.from_sdf(mol, lig_specific)
 
     mols = [
         MolDynamics(
@@ -189,6 +226,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
             # Pass a [Vec3] of starting atom positions. If absent,
             # will use the positions stored in atoms.
             atom_posits=None,
+            atom_init_velocities=None,
             bonds=mol.bonds,
             # Pass your own from cache if you want, or it will build.
             adjacency_list=None,
@@ -201,6 +239,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
             ff_mol_type=FfMolType.Peptide,
             atoms=protein.atoms,
             atom_posits=None,
+            atom_init_velocities=None,
             bonds=[],  # Not required if static.
             adjacency_list=None,
             static_=True,
@@ -222,16 +261,19 @@ def main():
     param_set = FfParamSet.new_amber()
     lig_specific = ForceFieldParams.load_frcmod("CPB.frcmod")
     
+    # Or, instead of loading atoms and mol-specific params separately:
+    # mol, lig_specific = load_prmtop("my_mol.prmtop")
+    
     # Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     # included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
-    # `populate_peptide_ff_and_q() separately.
-    protein.atoms = prepare_peptide(
-        protein.atoms,
-        protein.residues,
-        protein.chains,
+    # `populate_peptide_ff_and_q() separately. Add bonds.
+    _bonds, _dihedrals = prepare_peptide_mmcif(
+        protein,
         param_set.peptide_ff_q_map,
         7.0,
     )
+    # A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
+    # lists, for flexibility.
     
     md = setup_dynamics(mol, protein, param_set, lig_specific)
     
@@ -272,19 +314,27 @@ use dynamics::{
 /// Set up dynamics between a small molecule we treat with full dynamics, and a rigid one
 /// which acts on the system, but doesn't move.
 fn setup_dynamics(
+    dev: &ComputationDevice,
     mol: &Mol2,
     protein: &MmCif,
     param_set: &FfParamSet,
-    lig_specific: &ForceFieldParams,
+    lig_specific: ForceFieldParams,
 ) -> MdState {
+    
+    // Or, consider using these terse helpers instead for small organic molecules.
+    // MolDynamics::from_amber_geostd("CPB").unwrap();  // Can use with a PubChem CID as well.
+    // MolDynamics::from_mol2(&mol, Some(lig_specific)).unwrap();
+    // MolDynamics::from_sdf(&mol, Some(lig_specific)).unwrap();
+    
     let mols = vec![
         MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
-            atoms: &mol.atoms,
+            atoms: mol.atoms.clone(),
             // Pass a &[Vec3] of starting atom positions. If absent,
             // will use the positions stored in atoms.
             atom_posits: None,
-            bonds: &mol.bonds,
+            atom_init_velocities: None,
+            bonds: mol.bonds.clone(),
             // Pass your own from cache if you want, or it will build.
             adjacency_list: None,
             static_: false,
@@ -294,16 +344,17 @@ fn setup_dynamics(
         },
         MolDynamics {
             ff_mol_type: FfMolType::Peptide,
-            atoms: &protein.atoms,
+            atoms: protein.atoms.clone(),
             atom_posits: None,
-            bonds: &[], // Not required if static.
+            atom_init_velocities: None,
+            bonds: Vec::new(), // Not required if static.
             adjacency_list: None,
             static_: true,
             mol_specific_params: None,
         },
     ];
 
-    MdState::new(&MdConfig::default(), &mols, param_set).unwrap()
+    MdState::new(dev, &MdConfig::default(), &mols, param_set).unwrap()
 }
 
 fn main() {
@@ -313,6 +364,9 @@ fn main() {
     let mut protein = MmCif::load(Path::new("1c8k.cif")).unwrap();
     let mol = Mol2::load(Path::new("CPB.mol2")).unwrap();
     let mol_specific = ForceFieldParams::load_frcmod(Path::new("CPB.frcmod")).unwrap();
+
+    // Or, instead of loading atoms and mol-specific params separately:
+    // let (mol, lig_specific) = load_prmtop("my_mol.prmtop");
     
     // Or, if you have a small molecule available in Amber Geostd, load it remotely:
     // let data = bio_apis::amber_geostd::load_mol_files("CPB");
@@ -321,17 +375,17 @@ fn main() {
     
     // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
-    // `populate_peptide_ff_and_q() separately.
-    prepare_peptide(
-        &mut protein.atoms,
-        &mut protein.residues,
-        &mut protein.chains,
+    // `populate_peptide_ff_and_q() separately. Add bonds.
+    let (_bonds, _dihedrals) = prepare_peptide_mmcif(
+        &mut protein,
         &param_set.peptide_ff_q_map.as_ref().unwrap(),
         7.0,
     )
         .unwrap();
+    // A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
+    // lists, for flexibility.
 
-    let mut md = setup_dynamics(&mol, &protein, &param_set, &mol_specific);
+    let mut md = setup_dynamics(&dev, &mol, &protein, &param_set, mol_specific);
 
     let n_steps = 100;
     let dt = 0.002; // picoseconds.
@@ -366,6 +420,7 @@ Example of loading your own parameter files:
         peptide_ff_q_c="aminoct12.lib",
         peptide_ff_q_n=None,
         small_organic="gaff2.dat",
+        lipids="lipid21.dat",
     )
     
     param_set = FfParamSet(param_paths)
@@ -379,6 +434,7 @@ Example of loading your own parameter files:
         peptide_ff_q_c: Some(&Path::new("aminoct12.lib")),
         peptide_ff_q_n: Some(&Path::new("aminont12.lib")),
         small_organic: Some(&Path::new("gaff2.dat")),
+        lipids: Some(&Path::new("lipid21.dat")),
         ..default()
     };
     
@@ -425,19 +481,22 @@ cfg.temp_target = 310.
 # etc
 ```
 
+You can run `md_state.computation_time()` after running to get a breakdown of how long each computation component took
+to run, averaged per step.
+
 ## Using with GPU
 
-We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA) integration.
+We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA) integration. In the python binding, it should be transparent.
+We've exposed a slightly lower level API in rust, where you use setup a Stream and modules with Cudarc in your
+application, and pass them to the library.
 
-Rust setup example with Cudarc. Pass this to the `step` function.
+Rust setup example with Cudarc. Pass `dev`, defined below, to the `step` function.
 ```rust
 let ctx = CudaContext::new(0).unwrap();
 let stream = ctx.default_stream();
-let module = ctx.load_module(Ptx::from_src(dynamics::PTX)).unwrap();
-let dev = ComputationDevice::Gpu((stream, module));
-```
 
-**Note: Currently GPU isn't supported in the python bindings**
+let dev = ComputationDevice::Gpu(GpuModules(stream);
+```
 
 To use with an Nvidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions
 as a publicly exposed string. Set up your application to use it from `dynamics::PTX`. It requires
@@ -460,11 +519,10 @@ This includes operating systems, software distribution, and user experience. We 
 than OpenMM; it can be used on any
 Operating system, and any Python version >= 3.10, installable using `pip` or `cargo`.
 
-This library is intended to *just work*. OpenMM itself is easy to install with Pip, but the additional libraries
-it requires to load force fields are higher-friction. Additionally, it's easy to run into errors when
-using it with proteins from RCSB PDB, and small molecules broadly. Getting a functional OpenMM configuration
+This library is intended to *just work*. OpenMM does not natively work with molecules from online databases like RCSB PDB,
+PubChem, and Drugbank. It doesn't work with Amber GeoStd Mol2 files. OpenMM itself is easy to install with Pip, but the additional libraries
+it requires to load molecules and force fields are higher-friction. Getting a functional OpenMM configuration
 for a given system involves work which we hope to eschew.
-
 
 
 ## Compiling from source
@@ -490,7 +548,6 @@ To build the Python library wheel, from the `python` subdirectory, run `maturin 
 locally for testing, once built, by running `pip install .`
 
 ## Eratta
-- Python is CPU-only
 - GPU operations are slower than they should, as we're passing all data between CPU and GPU each
   time step.
 - CPU SIMD unsupported
@@ -501,3 +558,4 @@ locally for testing, once built, by running `pip install .`
 - [Amber reference manual](https://ambermd.org/doc12/Amber25.pdf)
 - [Ewald Summation/SPME](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html)
 - [OPC water model](https://arxiv.org/abs/1408.1679)
+- [Tripos Mol2 format](https://zhanggroup.org/DockRMSD/mol2.pdf)

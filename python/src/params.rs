@@ -38,14 +38,14 @@ impl FfParamSet {
     }
 
     #[getter]
-    fn peptide_ff_q_map(&self) -> Option<ProtFFTypeChargeMap> {
+    fn peptide_ff_q_map(&self) -> Option<ProtFfChargeMapSet> {
         match self.inner.peptide_ff_q_map.clone() {
-            Some(v) => Some(ProtFFTypeChargeMap { inner: v }),
+            Some(v) => Some(ProtFfChargeMapSet { inner: v }),
             None => None,
         }
     }
     #[setter(peptide_ff_q_map)]
-    fn peptide_ff_q_map_set(&mut self, v: ProtFFTypeChargeMap) {
+    fn peptide_ff_q_map_set(&mut self, v: ProtFfChargeMapSet) {
         self.inner.peptide_ff_q_map = Some(v.inner);
     }
 
@@ -57,13 +57,13 @@ impl FfParamSet {
     // pub carbohydrates: Option<ForceFieldParams>,
     // /// In addition to charge, this also contains the mapping of res type to FF type; required to map
     // /// other parameters to protein atoms. E.g. from `amino19.lib`, and its N and C-terminus variants.
-    // pub peptide_ff_q_map: Option<ProtFFTypeChargeMap>,
+    // pub peptide_ff_q_map: Option<ProtFfChargeMapSet>,
 }
 
 #[derive(Clone)]
 #[pyclass]
-struct ProtFFTypeChargeMap {
-    inner: dynamics_rs::ProtFFTypeChargeMap,
+struct ProtFfChargeMapSet {
+    inner: dynamics_rs::params::ProtFfChargeMapSet,
 }
 
 // // todo: Impl after converting the atom and residue types.
@@ -71,7 +71,7 @@ struct ProtFFTypeChargeMap {
 // fn populate_peptide_ff_and_q(
 //     atoms: &[AtomGeneric],
 //     residues: &[ResidueGeneric],
-//     ff_type_charge: &ProtFFTypeChargeMap,
+//     ff_type_charge: &ProtFfChargeMapSet,
 // ) -> Result<(), ParamError> {
 //     dynamics_rs::populate_peptide_ff_and_q(atoms, residues, &ff_type_charge.inner)
 // }
@@ -83,7 +83,7 @@ pub fn prepare_peptide(
     mut bonds: Vec<Py<BondGeneric>>, // we’ll return fresh BondGeneric objects instead of trying to edit this list
     residues: Vec<Py<ResidueGeneric>>,
     chains: Vec<Py<ChainGeneric>>,
-    ff_map: ProtFFTypeChargeMap,
+    ff_map: ProtFfChargeMapSet,
     ph: f32,
 ) -> PyResult<(Vec<BondGeneric>, Vec<Dihedral>)> {
     // Move out inners
@@ -145,9 +145,9 @@ pub fn prepare_peptide(
 
 #[pyfunction]
 pub fn prepare_peptide_mmcif(
-    _py: Python<'_>,                       // keep if you want; rename to _py to silence warnings
-    mol: pyo3::Bound<'_, MmCif>,          // <- Bound to your class, not PyCell
-    ff_map: ProtFFTypeChargeMap,
+    _py: Python<'_>,             // keep if you want; rename to _py to silence warnings
+    mol: pyo3::Bound<'_, MmCif>, // <- Bound to your class, not PyCell
+    ff_map: ProtFfChargeMapSet,
     ph: f32,
 ) -> PyResult<(Vec<BondGeneric>, Vec<Dihedral>)> {
     let mut mol_b = mol.borrow_mut();
@@ -156,8 +156,14 @@ pub fn prepare_peptide_mmcif(
         dynamics_rs::params::prepare_peptide_mmcif(&mut mol_b.inner, &ff_map.inner, ph)
             .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
 
-    let bonds_out = bonds.into_iter().map(|inner| BondGeneric { inner }).collect();
-    let dihedrals_out = dihedrals.into_iter().map(|inner| Dihedral { inner }).collect();
+    let bonds_out = bonds
+        .into_iter()
+        .map(|inner| BondGeneric { inner })
+        .collect();
+    let dihedrals_out = dihedrals
+        .into_iter()
+        .map(|inner| Dihedral { inner })
+        .collect();
 
     Ok((bonds_out, dihedrals_out))
 }

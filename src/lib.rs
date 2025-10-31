@@ -748,7 +748,16 @@ impl MdState {
             };
 
             for (i, atom) in atoms.iter().enumerate() {
-                atoms_md.push(AtomDynamics::new(atom, atom_posits, i, mol.static_)?);
+                let mut atom = AtomDynamics::new(atom, atom_posits, i, mol.static_)?;
+                if let Some(vel) = &mol.atom_init_velocities {
+                    if i >= vel.len() {
+                        return Err(ParamError::new("Initial velocities passed, but don't match atom len."))
+                    }
+                    atom.vel = vel[i];
+                }
+
+                atoms_md.push(atom);
+
             }
 
             // Use the included adjacency list if available. If not, construct it.
