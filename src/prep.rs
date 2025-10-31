@@ -33,8 +33,8 @@ use bio_files::md_params::{
     MassParams,
 };
 use itertools::Itertools;
-use na_seq::Element;
-use na_seq::Element::Hydrogen;
+use na_seq::{Element, Element::Hydrogen};
+
 use crate::{AtomDynamics, MdState, ParamError, params::ForceFieldParamsIndexed};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
@@ -248,17 +248,17 @@ impl ForceFieldParamsIndexed {
                 // If using fixed hydrogens, don't add these to our bond stretching params;
                 // add to a separate hydrogen rigid param variable.
                 if h_constraint == HydrogenConstraint::Constrained
-                    && (atoms[i0].element == Hydrogen
-                        || atoms[i1].element == Hydrogen)
+                    && (atoms[i0].element == Hydrogen || atoms[i1].element == Hydrogen)
                 {
-
                     // Set up inverse mass using params directly, so we don't have to have
                     // mass loaded into the atom directly yet.
                     let ff_type_0 = &atoms[i0].force_field_type;
                     let ff_type_1 = &atoms[i1].force_field_type;
 
                     // Mass
-                    let (Some(mass_0), Some(mass_1)) = (params.mass.get(ff_type_0), params.mass.get(ff_type_1)) else {
+                    let (Some(mass_0), Some(mass_1)) =
+                        (params.mass.get(ff_type_0), params.mass.get(ff_type_1))
+                    else {
                         return Err(ParamError::new(&format!(
                             "MD failure: Missing mass params for {ff_type_0} or {ff_type_1}"
                         )));

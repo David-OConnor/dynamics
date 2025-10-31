@@ -234,6 +234,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
             # This is usually mandatory for small organic molecules. Provided, for example,
             # in Amber FRCMOD files. Overrides general params.
             mol_specific_params=lig_specific,
+            bonded_only=False,
         ),
         MolDynamics(
             ff_mol_type=FfMolType.Peptide,
@@ -244,6 +245,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
             adjacency_list=None,
             static_=True,
             mol_specific_params=None,
+            bonded_only=False,
         ),
     ]
 
@@ -341,6 +343,7 @@ fn setup_dynamics(
             // This is usually mandatory for small organic molecules. Provided, for example,
             // in Amber FRCMOD files. Overrides general params.
             mol_specific_params: Some(lig_specific),
+            bonded_only: false,
         },
         MolDynamics {
             ff_mol_type: FfMolType::Peptide,
@@ -351,6 +354,7 @@ fn setup_dynamics(
             adjacency_list: None,
             static_: true,
             mol_specific_params: None,
+            bonded_only: false,
         },
     ];
 

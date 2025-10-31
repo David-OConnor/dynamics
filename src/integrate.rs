@@ -12,7 +12,14 @@ use bincode::{Decode, Encode};
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
-use crate::{CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState, ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure}, water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O}, water_settle, water_settle::{RESET_ANGLE_RATIO, settle_drift}, ACCEL_CONVERSION, ACCEL_CONVERSION_INV};
+use crate::{
+    ACCEL_CONVERSION, ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO,
+    ComputationDevice, HydrogenConstraint, MdState,
+    ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
+    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
+    water_settle,
+    water_settle::{RESET_ANGLE_RATIO, settle_drift},
+};
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -389,7 +396,12 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt;
             w.h1.vel += w.h1.accel * dt;
 
-            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_nonbonded_short_range);
+            settle_drift(
+                w,
+                dt,
+                &self.cell,
+                &mut self.barostat.virial_nonbonded_short_range,
+            );
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -443,7 +455,12 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            settle_drift(w, dt, &self.cell, &mut self.barostat.virial_nonbonded_short_range);
+            settle_drift(
+                w,
+                dt,
+                &self.cell,
+                &mut self.barostat.virial_nonbonded_short_range,
+            );
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -476,13 +493,9 @@ impl MdState {
             self.barostat.virial_nonbonded_short_range,
             self.barostat.virial_nonbonded_long_range,
             self.barostat.virial_constraints,
-
         );
 
-        eprintln!(
-            "Pressure: {:.3} bar",
-            pressure,
-        );
+        eprintln!("Pressure: {:.3} bar", pressure,);
 
         // temperature path
         let ndof = 3 * self.atoms.iter().filter(|a| !a.static_).count() + 6 * self.water.len() - 3;

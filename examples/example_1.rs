@@ -51,6 +51,7 @@ pub fn build_dynamics(
             adjacency_list: Some(&lig.common.adjacency_list),
             static_: false,
             mol_specific_params: Some(msp),
+            bonded_only: false,
         })
     }
 
@@ -89,6 +90,7 @@ pub fn build_dynamics(
             adjacency_list: None,
             static_: true,
             mol_specific_params: None,
+            bonded_only: false,
         });
 
         // See also: `MolDynamics::from_sdf()`, `::from_mol2()`, and `::from_amber_geostd("CPB")`

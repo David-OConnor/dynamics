@@ -2,7 +2,11 @@
 
 use lin_alg::f32::Vec3;
 
-use crate::{ACCEL_CONVERSION, ambient::SimBox, water_opc::{H_MASS, H_O_H_θ, O_EP_R_0, O_H_R, O_MASS, WaterMol}, ACCEL_CONVERSION_INV};
+use crate::{
+    ACCEL_CONVERSION, ACCEL_CONVERSION_INV,
+    ambient::SimBox,
+    water_opc::{H_MASS, H_O_H_θ, O_EP_R_0, O_H_R, O_MASS, WaterMol},
+};
 
 // Reset the water angle to the defined parameter every this many steps,
 // to counter numerical drift

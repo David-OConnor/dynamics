@@ -17,18 +17,17 @@ lin_alg = "1.3.9"
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 cudarc = { version = "0.17.2", default-features = false, features = ["std", "driver", "dynamic-linking", "cuda-13000"], optional=true }
 [target.'cfg(target_os = "windows")'.dependencies]
+# Note: On windows, for the Python bindings only, Dynamic linking seems not to work.
 cudarc = { version = "0.17.2", default-features = false, features = ["std", "driver", "dynamic-loading", "cuda-13000"], optional=true }
 
 
 [build-dependencies]
-cuda_setup = { version = "0.1.7", optional = true }
+cuda_setup = { version = "0.1.9", optional = true }
 
 [features]
-#default = ["cuda"]
-default = []
+default = ["cuda"]
 
-# Note: cuFFT results in a large wheel, and may not work as-is
-# with these python bindings.
+
 # Note: For now we use CUDA for short-range interactions, but not for the long-range interactions.
 # todo: Once vkFFT is working, try adding that.
 cuda = ["cudarc", "dynamics_rs/cuda"]

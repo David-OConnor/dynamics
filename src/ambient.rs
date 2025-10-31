@@ -263,10 +263,10 @@ impl BerendsenBarostat {
     }
 
     pub(crate) fn virial_total(&self) -> f64 {
-            // + self.virial_lj
-            self.virial_bonded
+        // + self.virial_lj
+        self.virial_bonded
             + self.virial_constraints
-                + self.virial_nonbonded_short_range
+            + self.virial_nonbonded_short_range
             + self.virial_nonbonded_long_range
     }
 }

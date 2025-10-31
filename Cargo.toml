@@ -50,6 +50,7 @@ bincode = { version = "2.0.1", optional = true }
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 cudarc = { version = "0.17.2", default-features = false, features = ["std", "driver", "dynamic-linking", "cuda-13000"], optional=true }
 [target.'cfg(target_os = "windows")'.dependencies]
+# When building the python version, change this to Dyanmic Loading. temporarily. (Windows only)
 cudarc = { version = "0.17.2", default-features = false, features = ["std", "driver", "dynamic-linking", "cuda-13000"], optional=true }
 
 

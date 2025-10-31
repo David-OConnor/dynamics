@@ -217,15 +217,6 @@ make_enum!(
 
 #[pyclass]
 struct MolDynamics {
-    // // We don't use the inner pattern here, as we can't use lifetimes in Pyo3.
-    // // This contains owned equivalents.
-    // pub ff_mol_type: FfMolType,
-    // pub atoms: Vec<AtomGeneric>,
-    // pub atom_posits: Option<Vec<Vec3F64>>,
-    // pub bonds: Vec<BondGeneric>,
-    // pub adjacency_list: Option<Vec<Vec<usize>>>,
-    // pub static_: bool,
-    // pub mol_specific_params: Option<ForceFieldParams>,
     inner: dynamics_rs::MolDynamics,
 }
 
@@ -315,6 +306,26 @@ impl MolDynamics {
             Ok(inner) => Ok(Self { inner }),
             Err(e) => Err(PyIOError::new_err(e.to_string())),
         }
+    }
+
+    #[getter]
+    fn atoms(&self) -> Vec<AtomGeneric> {
+        self.inner
+            .atoms
+            .clone()
+            .into_iter()
+            .map(|a| AtomGeneric { inner: a })
+            .collect()
+    }
+
+    #[getter]
+    fn bonds(&self) -> Vec<BondGeneric> {
+        self.inner
+            .bonds
+            .clone()
+            .into_iter()
+            .map(|a| BondGeneric { inner: a })
+            .collect()
     }
 }
 
@@ -436,20 +447,8 @@ fn get_dev() -> dynamics_rs::ComputationDevice {
     #[cfg(feature = "cuda")]
     if cudarc::driver::result::init().is_ok() {
         let ctx = CudaContext::new(0).unwrap();
-
         let stream = ctx.default_stream();
-        let module = ctx.load_module(Ptx::from_src(dynamics_rs::PTX));
-
-        match module {
-            Ok(m) => dynamics_rs::ComputationDevice::Gpu((stream, m)),
-            Err(e) => {
-                eprintln!(
-                    "Error loading CUDA module: {}; not using CUDA. Error: {e}",
-                    dynamics_rs::PTX
-                );
-                dynamics_rs::ComputationDevice::Cpu
-            }
-        }
+        dynamics_rs::ComputationDevice::Gpu(stream)
     } else {
         dynamics_rs::ComputationDevice::Cpu
     }
