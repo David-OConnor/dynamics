@@ -241,7 +241,8 @@ fn add_to_sink(
 /// Applies non-bonded force in parallel (CPU thread-pool) over a set of atoms, with indices assigned
 /// upstream.
 ///
-/// Return the virial pair component we accumulate. For use with the temp/barostat. (kcal/mol)
+/// Returns (forces on non-water atoms, forces on water molecules, virial, potential energy total,
+/// potential energy between molecule pairs. (kcal/mol)
 fn calc_force_cpu(
     pairs: &[NonBondedPair],
     atoms_std: &[AtomDynamics],
@@ -249,9 +250,20 @@ fn calc_force_cpu(
     cell: &SimBox,
     lj_tables: &LjTables,
     overrides: &MdOverrides,
-) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
+    mol_start_indices: &[usize],
+) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>) {
     let n_std = atoms_std.len();
     let n_wat = water.len();
+    let n_mol = mol_start_indices.len();
+
+    // Map flattened atom index -> molecule index. We use this for assigning per-molecule-pair
+    // potential energy.
+    // Assumes mol_start_indices is sorted ascending, e.g. [0, 120, 240, ...].
+    let find_mol_idx = |atom_idx: usize, starts: &[usize]| -> usize {
+        starts
+            .binary_search(&atom_idx)
+            .unwrap_or_else(|pos| if pos == 0 { 0 } else { pos - 1 })
+    };
 
     pairs
         .par_iter()
@@ -261,11 +273,13 @@ fn calc_force_cpu(
                     // Sums as f64.
                     vec![Vec3F64::new_zero(); n_std],
                     vec![ForcesOnWaterMol::default(); n_wat],
-                    0.0_f64, // Virial sum
-                    0.0_f64, // Energy sum
+                    0.0_f64,                                       // Virial sum
+                    0.0_f64,                                       // Energy sum
+                    vec![0.0_f64; mol_start_indices.len().pow(2)], // Per-pair
                 )
             },
-            |(mut acc_std, mut acc_w, mut virial, mut energy), p| {
+            |(mut f_std, mut f_wat, mut virial, mut energy, mut energy_between_mols), p| {
+                // |(mut f_std, mut f_w, mut virial, mut energy), p| {
                 let a_t = p.tgt.get(atoms_std, water);
                 let a_s = p.src.get(atoms_std, water);
 
@@ -284,13 +298,13 @@ fn calc_force_cpu(
 
                 // Convert to f64 prior to summing.
                 let f: Vec3F64 = f.into();
-                add_to_sink(&mut acc_std, &mut acc_w, p.tgt, f);
+                add_to_sink(&mut f_std, &mut f_wat, p.tgt, f);
                 if p.symmetric {
-                    add_to_sink(&mut acc_std, &mut acc_w, p.src, -f);
+                    add_to_sink(&mut f_std, &mut f_wat, p.src, -f);
                 }
 
-                // We are not interested, in this point, at energy that does not involve our dyanamic (ligand) atoms.
-                // We skip water-water, and water-static interations.
+                // We are not interested, in this point, at potential energy that only involves water atoms.
+                // We skip water-water.
                 let involves_std =
                     matches!(p.tgt, BodyRef::NonWater(_)) || matches!(p.src, BodyRef::NonWater(_));
 
@@ -298,7 +312,23 @@ fn calc_force_cpu(
                     energy += e_pair as f64;
                 }
 
-                (acc_std, acc_w, virial, energy)
+                // todo: QC this!
+                // Experimenting with per-mol potential energy.
+                if let (BodyRef::NonWater(i_tgt), BodyRef::NonWater(i_src)) = (p.tgt, p.src) {
+                    let m_t = find_mol_idx(i_tgt, mol_start_indices);
+                    let m_s = find_mol_idx(i_src, mol_start_indices);
+                    let idx_ts = m_t * n_mol + m_s;
+                    energy_between_mols[idx_ts] += e_pair as f64;
+
+                    // make it symmetric so callers don't have to
+                    if m_t != m_s {
+                        let idx_st = m_s * n_mol + m_t;
+                        energy_between_mols[idx_st] += e_pair as f64;
+                    }
+                }
+
+                (f_std, f_wat, virial, energy, energy_between_mols)
+                // (f_std, f_w, virial, energy)
             },
         )
         .reduce(
@@ -308,9 +338,11 @@ fn calc_force_cpu(
                     vec![ForcesOnWaterMol::default(); n_wat],
                     0.0_f64,
                     0.0_f64,
+                    vec![0.0_f64; mol_start_indices.len().pow(2)],
                 )
             },
-            |(mut f_on_std, mut f_on_water, virial_a, e_a), (db, wb, virial_b, e_b)| {
+            |(mut f_on_std, mut f_on_water, virial_a, e_a, mut em_a),
+             (db, wb, virial_b, e_b, em_b)| {
                 for i in 0..n_std {
                     f_on_std[i] += db[i];
                 }
@@ -321,7 +353,13 @@ fn calc_force_cpu(
                     f_on_water[i].f_h1 += wb[i].f_h1;
                 }
 
-                (f_on_std, f_on_water, virial_a + virial_b, e_a + e_b)
+                // Merge per-molecule energy
+                for i in 0..em_a.len() {
+                    em_a[i] += em_b[i];
+                }
+
+                // (f_on_std, f_on_water, virial_a + virial_b, e_a + e_b)
+                (f_on_std, f_on_water, virial_a + virial_b, e_a + e_b, em_a)
             },
         )
 }
@@ -354,7 +392,7 @@ impl MdState {
     /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
     /// applies forces from non-water, and water sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
-        let (f_on_std, f_on_water, virial, energy) = match dev {
+        let (f_on_std, f_on_water, virial, energy, energy_between_mols) = match dev {
             ComputationDevice::Cpu => {
                 if is_x86_feature_detected!("avx512f") {
                     // calc_force_x16(
@@ -381,6 +419,7 @@ impl MdState {
                     &self.cell,
                     &self.lj_tables,
                     &self.cfg.overrides,
+                    &self.mol_start_indices,
                 )
             }
             #[cfg(feature = "cuda")]
@@ -422,11 +461,19 @@ impl MdState {
 
         self.barostat.virial_nonbonded_short_range += virial;
         self.potential_energy += energy;
+
+        // todo; not sure. For one mol, we get 1 and 0.
+        if energy_between_mols.len() == self.potential_energy_between_mols.len() {
+            for (i, e) in self.potential_energy_between_mols.iter_mut().enumerate() {
+                *e += energy_between_mols[i];
+            }
+        }
     }
 
     /// [Re] initialize non-bonded interaction pairs between atoms. Do this whenever we rebuild neighbors.
     /// Build the neighbors set prior to running this.
     pub(crate) fn setup_pairs(&mut self) {
+        let atoms = &self.atoms;
         let n_std = self.atoms.len();
         let n_water_mols = self.water.len();
 
@@ -452,6 +499,10 @@ impl MdState {
                     .copied()
                     .filter(move |&j| j > i_tgt) // Ensure stable order
                     .filter_map(move |i_src| {
+                        if atoms[i_src].bonded_only || atoms[i_tgt].bonded_only {
+                            return None;
+                        }
+
                         let key = (i_tgt, i_src);
                         if exclusions.contains(&key) {
                             return None;

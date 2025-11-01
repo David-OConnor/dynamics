@@ -372,6 +372,7 @@ impl AtomDynamics {
         atom_posits: &[Vec3],
         i: usize,
         static_: bool,
+        bonded_only: bool,
     ) -> Result<Self, ParamError> {
         let ff_type = match &atom.force_field_type {
             Some(ff_type) => ff_type.clone(),
@@ -391,6 +392,7 @@ impl AtomDynamics {
         Ok(Self {
             serial_number: atom.serial_number,
             static_,
+            bonded_only,
             element: atom.element,
             posit: atom_posits[i],
             force_field_type: ff_type,
@@ -571,6 +573,8 @@ pub struct MdState {
     pub(crate) water_x8: Vec<WaterMolx8>,
     #[cfg(target_arch = "x86_64")]
     pub(crate) water_x16: Vec<WaterMolx16>,
+    /// Note: We don't use bond structs once the simulation is set up; the adjacency list is the
+    /// source of this.
     pub adjacency_list: Vec<Vec<usize>>,
     // h_constraints: Vec<HydrogenConstraintInner>,
     // /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
@@ -617,6 +621,9 @@ pub struct MdState {
     /// kcal/mol
     pub kinetic_energy: f64,
     pub potential_energy: f64,
+    /// Used to track which molecule each atom is associated with in our flattened structures.
+    /// This is the potential energy between every pair of molecules.
+    pub potential_energy_between_mols: Vec<f64>,
     /// Every so many snapshots, write these to file, then clear from memory.
     snapshot_queue_for_file: Vec<Snapshot>,
     #[cfg(feature = "cuda")]
@@ -644,6 +651,8 @@ pub struct MdState {
     // todo: Sub-struct for ambient cache like num_static atoms and thermo_dof
     /// Degrees of freedom, used in temperature and kinetic energy calculations.
     thermo_dof: usize,
+    /// Used to track which molecule each atom is associated with in our flattened structures.
+    pub mol_start_indices: Vec<usize>,
 }
 
 impl Display for MdState {
@@ -685,9 +694,15 @@ impl MdState {
         let mut params = ForceFieldParams::default();
 
         // Used for updating indices for tracking purposes.
-        let mut total_atom_count = 0;
+        let mut atom_ct_prior_to_this_mol = 0;
+
+        let mut mol_start_indices = Vec::new();
 
         for mol in mols {
+            if !mol.atoms.is_empty() {
+                mol_start_indices.push(atoms_md.len());
+            }
+
             // Filter out hetero atoms in proteins. These are often example ligands that we do
             // not wish to model.
             // We must perform this filter prior to most of the other steps in this function.
@@ -748,7 +763,8 @@ impl MdState {
             };
 
             for (i, atom) in atoms.iter().enumerate() {
-                let mut atom = AtomDynamics::new(atom, atom_posits, i, mol.static_)?;
+                let mut atom =
+                    AtomDynamics::new(atom, atom_posits, i, mol.static_, mol.bonded_only)?;
                 if let Some(vel) = &mol.atom_init_velocities {
                     if i >= vel.len() {
                         return Err(ParamError::new(
@@ -767,16 +783,17 @@ impl MdState {
                 None => &build_adjacency_list(&atoms, &mol.bonds)?,
             };
 
+            // Update indices based on atoms from previously-added molecules.
             for aj in adjacency_list_ {
                 let mut updated = aj.clone();
                 for neighbor in &mut updated {
-                    *neighbor += total_atom_count;
+                    *neighbor += atom_ct_prior_to_this_mol;
                 }
 
                 adjacency_list.push(updated);
             }
 
-            total_atom_count += atoms.len();
+            atom_ct_prior_to_this_mol += atoms.len();
         }
 
         if atoms_md.is_empty() {
@@ -805,6 +822,8 @@ impl MdState {
 
         let num_static_atoms = atoms_md.iter().filter(|a| !a.static_).count();
 
+        let potential_energy_between_mols = vec![0.; mol_start_indices.len().pow(2)];
+
         let mut result = Self {
             cfg: cfg.clone(),
             atoms: atoms_md,
@@ -815,6 +834,8 @@ impl MdState {
             force_field_params,
             mass_accel_factor,
             num_static_atoms,
+            mol_start_indices,
+            potential_energy_between_mols,
             ..Default::default()
         };
 
@@ -919,7 +940,9 @@ impl MdState {
         self.barostat.virial_constraints = 0.0;
         self.barostat.virial_nonbonded_short_range = 0.0;
         self.barostat.virial_nonbonded_long_range = 0.0;
+
         self.potential_energy = 0.;
+        self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)]
     }
 
     fn apply_all_forces(&mut self, dev: &ComputationDevice) {
@@ -1083,6 +1106,12 @@ impl MdState {
         // todo: Store/cache?
         let temperature = self.temperature() as f32;
 
+        let energy_potential_between_mols = self
+            .potential_energy_between_mols
+            .iter()
+            .map(|v| *v as f32)
+            .collect();
+
         Snapshot {
             time: self.time,
             atom_posits: self.atoms.iter().map(|a| a.posit).collect(),
@@ -1093,6 +1122,7 @@ impl MdState {
             water_velocities,
             energy_kinetic: self.kinetic_energy as f32,
             energy_potential: self.potential_energy as f32,
+            energy_potential_between_mols,
             hydrogen_bonds: Vec::new(), // Populated later A/R.
             temperature,
             pressure: pressure as f32,

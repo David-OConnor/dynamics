@@ -310,7 +310,7 @@ fn upload_positions(
 /// Inputs are structured differently here from our other one; uses pre-paired inputs and outputs, and
 /// a common index. Exclusions (e.g. Amber-style 1-2 adn 1-3) are handled upstream.
 ///
-/// Returns force, virial sum, and potential energy.
+/// Returns (force on non-water, force on water, virial sum, potential energy total, per-mol-pair potential energy)
 pub fn force_nonbonded_gpu(
     stream: &Arc<CudaStream>,
     kernel: &CudaFunction,
@@ -324,7 +324,7 @@ pub fn force_nonbonded_gpu(
     forces: &mut ForcesPositsGpu,
     per_neighbor: &PerNeighborGpu,
     overrides: &MdOverrides,
-) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64) {
+) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>) {
     upload_positions(stream, forces, atoms_dyn, water);
 
     let n = pairs.len();
@@ -418,7 +418,7 @@ pub fn force_nonbonded_gpu(
 
     let forces_on_dyn = forces_on_dyn.into_iter().map(|f| f.into()).collect();
 
-    (forces_on_dyn, forces_on_water, virial, energy)
+    (forces_on_dyn, forces_on_water, virial, energy, Vec::new())
 }
 
 /// Zero forces and accumulators on the device. Run this each step.

@@ -58,6 +58,9 @@ pub struct Snapshot {
     pub water_velocities: Vec<Vec3>,
     pub energy_kinetic: f32,
     pub energy_potential: f32,
+    /// Used to track which molecule each atom is associated with in our flattened structures.
+    /// This is the potential energy between every pair of molecules.
+    pub energy_potential_between_mols: Vec<f32>,
     /// Optionally added as a post-processing step.
     pub hydrogen_bonds: Vec<HydrogenBond>,
     /// Instantaneous temperature in Kelvin.
@@ -110,7 +113,7 @@ impl Snapshot {
         let mut i = 0;
 
         copy_le!(result, self.time, i..i + 4);
-        i += 1;
+        i += 4;
         copy_le!(result, self.atom_posits.len() as u32, i..i + 4);
         i += 4;
         copy_le!(result, self.water_o_posits.len() as u32, i..i + 4);
@@ -217,6 +220,7 @@ impl Snapshot {
         i += 4;
         let energy_potential = parse_le!(bytes, f32, i..i + 4);
         i += 4;
+        // todo: Omitting H bonds and mol potential for now.
         let temperature = parse_le!(bytes, f32, i..i + 4);
         i += 4;
         let pressure = parse_le!(bytes, f32, i..i + 4);
@@ -232,6 +236,7 @@ impl Snapshot {
             water_velocities,
             energy_kinetic,
             energy_potential,
+            energy_potential_between_mols: Vec::new(),
             hydrogen_bonds: Vec::new(),
             temperature,
             pressure,
