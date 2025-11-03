@@ -620,7 +620,7 @@ impl MdState {
             }
         };
 
-        // println!("F Recip: {}", f_recip[0]);
+        println!("F Recip: {}", f_recip[0]);
 
         self.potential_energy += e_recip as f64;
         let mut virial_lr_recip = self.unpack_apply_pme_forces(&f_recip, &pos_all);

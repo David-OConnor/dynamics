@@ -39,6 +39,9 @@ const MIN_NONWATER_DIST: f32 = 3.75;
 const MIN_WATER_OO_DIST: f32 = 2.8;
 
 const MAX_GEN_ATTEMPTS: usize = 50; // todo: Tune A/R.
+// Max amount in each direction to move each atom from the grid. Makes the initialization
+// less crystaline.
+const JITTER: f32 = 5.;
 
 // Start free-volume code ----------
 
@@ -222,7 +225,6 @@ pub fn make_water_mols(
 
     // Shuffle candidates and greedily accept with fast O–O checks
     let mut rng = rand::rng();
-    let mut rng = rand::rng();
     let mut candidates = mask.centers.clone();
     candidates.shuffle(&mut rng);
 
@@ -244,13 +246,10 @@ pub fn make_water_mols(
             break;
         }
 
-        // todo: This doens't seem to be working; the result still is on a grid.
-        // Tiny jitter to avoid perfect grid artifacts
-        let jitter = 0.3_f32.min(0.1 * MIN_WATER_OO_DIST);
-        if jitter > 0.0 {
-            c.x += (rng.sample(uni01) - 0.5) * 2.0 * jitter;
-            c.y += (rng.sample(uni01) - 0.5) * 2.0 * jitter;
-            c.z += (rng.sample(uni01) - 0.5) * 2.0 * jitter;
+        if JITTER.abs() > 0.0 {
+            c.x += (rng.sample(uni01) - 0.5) * 2.0 * JITTER;
+            c.y += (rng.sample(uni01) - 0.5) * 2.0 * JITTER;
+            c.z += (rng.sample(uni01) - 0.5) * 2.0 * JITTER;
             c = cell.wrap(c);
         }
 
