@@ -87,6 +87,7 @@ mod forces;
 pub mod integrate;
 mod neighbors;
 mod non_bonded;
+pub mod param_inference;
 pub mod params;
 mod prep;
 #[cfg(target_arch = "x86_64")]
@@ -156,6 +157,11 @@ use crate::{
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
 #[cfg(feature = "cuda")]
 const PTX: &str = include_str!("../dynamics.ptx");
+
+// todo: This is duplicate with the definitions in param_inference mod.
+// Model: ~1.5Mb. Vocab: ~440 bytes.
+const PARAM_INFERENCE_MODEL: &[u8] = include_bytes!("../geostd_model.safetensors");
+const PARAM_INFERENCE_VOCAB: &[u8] = include_bytes!("../geostd_model.vocab");
 
 // Convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files, and our native units) to amu Å ps⁻². Multiply all
 // accelerations by this. (Bonded, and nonbonded)

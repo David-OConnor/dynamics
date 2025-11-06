@@ -295,21 +295,6 @@ impl ForceFieldParamsIndexed {
                     params.get_valence_angle(&(type_n0.clone(), type_ctr.clone(), type_n1.clone()));
 
                 let Some(data) = data else {
-                    // todo: Get to the bottom of this.
-                    // todo: In at least some cases, it's caused by duplicate atoms in the MMCIf file. Consider
-                    // todo: sanitizing it on load.
-                    // println!(
-                    //     "\nMissing valence angle params {type_n0}-{type_ctr}-{type_n1} on {} - {} - {}. Using a safe default.",
-                    //     atoms[n0], atoms[ctr], atoms[n1]
-                    // );
-                    // // parm19.dat, HC-CT-HC
-                    // AngleBendingParams {
-                    //     atom_types: (String::new(), String::new(), String::new()),
-                    //     k: 35.,
-                    //     theta_0: 1.91113,
-                    //     comment: None,
-                    // }
-
                     // This comes up with the Hydrogen bound to NB in His. I don't know what to make of it.
                     // I'm not sure exactly why I can't find this CR-NB-H angle, but
                     // try subbing the NA variant:
@@ -348,9 +333,10 @@ impl ForceFieldParamsIndexed {
                     }
 
                     return Err(ParamError::new(&format!(
-                        "\nMD failure: Missing valence angle params for {type_n0}-{type_ctr}-{type_n1}. (atom0 sn: {})",
-                        atoms[n0].serial_number
+                        "\nMD failure: Missing valence angle params for {type_n0}-{type_ctr}-{type_n1}. (sns: {} - {} - {})",
+                        atoms[n0].serial_number, atoms[ctr].serial_number, atoms[n1].serial_number,
                     )));
+                    // }
                 };
                 let data = data.clone();
 

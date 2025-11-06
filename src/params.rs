@@ -48,6 +48,8 @@ const RNA_LIB: &str = include_str!("../param_data/RNA.lib");
 // todo, and not required. YIL: Yildirim torsion refit. CI: Legacy Cornell-style. SHAW: incomplete,
 // todo from a person named Shaw.
 
+// Note: Water parameters are concise; we store them directly.
+
 #[derive(Default, Debug)]
 /// A set of general parameters that aren't molecule-specific. E.g. from GAFF2, OL3, RNA, or amino19.
 /// These are used as a baseline, and in some cases, overridden by molecule-specific parameters.

@@ -166,7 +166,7 @@ pub(crate) fn settle_no_dt(mol: &mut WaterMol, cell: &SimBox) {
     let v1 = h1_pos_local - o_pos;
 
     // Bisector (direction of HOH bisector)
-    let mut u = (v0 + v1).to_normalized(); // bisector
+    let u = (v0 + v1).to_normalized(); // bisector
     // In-plane perpendicular (points toward H0 minus H1 direction)
     let mut v = (v0 - v1).to_normalized(); // difference axis
     // Ensure v is orthogonalized and normalized against u (robustness)

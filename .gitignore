@@ -32,3 +32,8 @@ Cargo.lock
 *.opc
 #*.OL24
 *.dcd
+
+# ML models
+*.pt
+*.safetensors
+*.vocab

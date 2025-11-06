@@ -70,9 +70,13 @@ impl MdState {
 
         // Zero velocities; we’re minimizing, not integrating. Note that accel and force are
         // zeroed downstream.
+        // Store initial velocities, and re-apply at the end.
+        let mut initial_velocities = Vec::with_capacity(self.atoms.len());
         for a in &mut self.atoms {
+            initial_velocities.push(a.vel);
             a.vel = Vec3::new_zero();
         }
+
         for w in &mut self.water {
             w.o.vel = Vec3::new_zero();
             w.h0.vel = Vec3::new_zero();
@@ -149,6 +153,9 @@ impl MdState {
                     let step_mag = (alpha * f_mag).min(STEP_MAX);
                     let s = site.force * (step_mag / f_mag);
 
+                    site.posit += s;
+                    *s_ref = s;
+
                     self.neighbors_nb.max_displacement_sq = self
                         .neighbors_nb
                         .max_displacement_sq
@@ -221,6 +228,11 @@ impl MdState {
 
         // Undo our config change.
         self.cfg.overrides.long_range_recip_disabled = prev_long_range;
+
+        // Re-apply our initial velocities.
+        for (i, a) in self.atoms.iter_mut().enumerate() {
+            a.vel = initial_velocities[i];
+        }
 
         let elapsed = start.elapsed().as_millis();
         println!("Complete in {elapsed} ms. Used {iters} of {max_iters} iters");
