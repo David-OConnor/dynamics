@@ -16,7 +16,7 @@ use param_inference::{
 };
 use rand::{Rng, seq::SliceRandom};
 
-use crate::param_inference::frcmod::build_param_db;
+use crate::param_inference::frcmod::{DIHEDRAL_FEATS, MAX_DIHEDRAL_TERMS};
 
 // Higher = perhaps better training, but slower to train.
 // todo: Try setting max of 50-100 epochs, and stop early A/R if val loss
@@ -46,6 +46,16 @@ pub struct Batch {
     pub type_ids: Tensor,
     pub has_type: Tensor,
     pub charges: Tensor,
+    // todo: Valence angle and bond stretching params too, although those are rare.
+    //
+    pub dihedral_index: Tensor,  // [n_dih, 4] i64, atom indices
+    pub dihedral_params: Tensor, // [n_dih, MAX_DIHEDRAL_TERMS, DIH_FEATS]
+    pub dihedral_mask: Tensor,   // [n_dih, MAX_DIHEDRAL_TERMS]
+    //
+    pub improper_index: Tensor,
+    pub improper_params: Tensor,
+    pub improper_mask: Tensor,
+    //
     pub num_atoms: usize,
 }
 
@@ -65,19 +75,6 @@ impl GeoStdMol2Dataset {
     pub fn get(&self, idx: usize, device: &Device) -> candle_core::Result<Batch> {
         let mol = Mol2::load(&self.mol2_paths[idx])?;
         let frcmod = ForceFieldParams::load_frcmod(&self.frcmod_paths[idx])?;
-
-        // if !frcmod.mass.is_empty() {
-        //     println!("FRCmod mass: {:?}", frcmod.mass);
-        // }
-        // if !frcmod.lennard_jones.is_empty() {
-        //     println!("FRCmod lj: {:?}", frcmod.lennard_jones);
-        // }
-        // if !frcmod.bond.is_empty() {
-        //     println!("FRCmod bond: {:?}", frcmod.bond);
-        // }
-        // if !frcmod.angle.is_empty() {
-        //     println!("FRCmod angle: {:?}", frcmod.angle);
-        // }
 
         let atoms = &mol.atoms;
         let bonds = &mol.bonds;
@@ -147,6 +144,97 @@ impl GeoStdMol2Dataset {
             Tensor::from_slice(&edge_index_vec, (m, 2), device)?
         };
 
+        // FRCMOD code here. -------
+
+        // todo: Use your own adacency list builder fn instead.
+        // build adjacency
+        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for b in bonds {
+            let i = (b.atom_0_sn - 1) as usize;
+            let j = (b.atom_1_sn - 1) as usize;
+            adj[i].push(j);
+            adj[j].push(i);
+        }
+
+        // collect dihedrals (i - j - k - l)
+        let mut dih_indices: Vec<i64> = Vec::new(); // flat, we’ll shape later
+        let mut dih_params: Vec<f32> = Vec::new(); // flat: n_dih * MAX_DIHEDRAL_TERMS * DIH_FEATS
+        let mut dih_mask: Vec<f32> = Vec::new(); // flat: n_dih * MAX_DIHEDRAL_TERMS
+
+        for b in bonds {
+            let j = (b.atom_0_sn - 1) as usize;
+            let k = (b.atom_1_sn - 1) as usize;
+
+            for &i in adj[j].iter() {
+                if i == k {
+                    continue;
+                }
+                for &l in adj[k].iter() {
+                    if l == j {
+                        continue;
+                    }
+
+                    // this is one dihedral: i - j - k - l
+                    dih_indices.push(i as i64);
+                    dih_indices.push(j as i64);
+                    dih_indices.push(k as i64);
+                    dih_indices.push(l as i64);
+
+                    // we have atom FF types in training data, so we can look up the terms
+                    let ti = atoms[i].force_field_type.as_ref();
+                    let tj = atoms[j].force_field_type.as_ref();
+                    let tk = atoms[k].force_field_type.as_ref();
+                    let tl = atoms[l].force_field_type.as_ref();
+
+                    // default: no terms
+                    let mut this_terms: Vec<f32> = vec![0.0; MAX_DIHEDRAL_TERMS * DIHEDRAL_FEATS];
+                    let mut this_mask: Vec<f32> = vec![0.0; MAX_DIHEDRAL_TERMS];
+
+                    if let (Some(ti), Some(tj), Some(tk), Some(tl)) = (ti, tj, tk, tl) {
+                        let key = (ti.clone(), tj.clone(), tk.clone(), tl.clone());
+                        if let Some(terms) = frcmod.dihedral.get(&key) {
+                            for (t_idx, term) in terms.iter().take(MAX_DIHEDRAL_TERMS).enumerate() {
+                                // order: barrier_height, phase, periodicity
+                                this_terms[t_idx * DIHEDRAL_FEATS + 0] = term.barrier_height;
+                                this_terms[t_idx * DIHEDRAL_FEATS + 1] = term.phase;
+                                this_terms[t_idx * DIHEDRAL_FEATS + 2] = term.periodicity as f32;
+                                this_mask[t_idx] = 1.0;
+                            }
+                        }
+                    }
+
+                    dih_params.extend_from_slice(&this_terms);
+                    dih_mask.extend_from_slice(&this_mask);
+                }
+            }
+        }
+
+        let n_dih = dih_indices.len() / 4;
+        let dihedral_index = if n_dih == 0 {
+            Tensor::zeros((0, 4), DType::I64, device)?
+        } else {
+            Tensor::from_slice(&dih_indices, (n_dih, 4), device)?
+        };
+        let dihedral_params = if n_dih == 0 {
+            Tensor::zeros((0, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS), DType::F32, device)?
+        } else {
+            Tensor::from_slice(
+                &dih_params,
+                (n_dih, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS),
+                device,
+            )?
+        };
+        let dihedral_mask = if n_dih == 0 {
+            Tensor::zeros((0, MAX_DIHEDRAL_TERMS), DType::F32, device)?
+        } else {
+            Tensor::from_slice(&dih_mask, (n_dih, MAX_DIHEDRAL_TERMS), device)?
+        };
+
+        let improper_index = Tensor::zeros((0, 4), DType::I64, device)?;
+        let improper_params =
+            Tensor::zeros((0, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS), DType::F32, device)?;
+        let improper_mask = Tensor::zeros((0, MAX_DIHEDRAL_TERMS), DType::F32, device)?;
+
         Ok(Batch {
             elem_ids,
             coords,
@@ -154,6 +242,12 @@ impl GeoStdMol2Dataset {
             type_ids,
             has_type,
             charges,
+            dihedral_index,
+            dihedral_params,
+            dihedral_mask,
+            improper_index,
+            improper_params,
+            improper_mask,
             num_atoms: n,
         })
     }
@@ -168,7 +262,6 @@ fn main() -> candle_core::Result<()> {
     println!("Training on GeoStd data with device: {device:?}");
 
     let (paths_mol2, paths_frcmod) = find_paths(Path::new(GEOSTD_PATH))?;
-    let param_db = build_param_db(&paths_frcmod)?;
 
     let vocabs = Vocabs::new(&paths_mol2)?;
     let n_elems = vocabs.el.len();
@@ -215,8 +308,13 @@ fn main() -> candle_core::Result<()> {
         for i in train_order.iter() {
             let batch = dataset.get(*i, &device)?;
 
-            let (type_logits, charges_pred) =
-                model.forward(&batch.elem_ids, &batch.coords, &batch.edge_index)?;
+            let (type_logits, charges_pred, dih_pred, imp_pred) = model.forward(
+                &batch.elem_ids,
+                &batch.coords,
+                &batch.edge_index,
+                &batch.dihedral_index,
+                &batch.improper_index,
+            )?;
 
             let diff = (charges_pred - &batch.charges)?;
             let charge_loss = diff.sqr()?.mean_all()?;
@@ -241,7 +339,56 @@ fn main() -> candle_core::Result<()> {
                 Tensor::zeros((), DType::F32, &device)?
             };
 
-            let loss = (&charge_loss + &type_loss)?;
+            let mut dihedral_loss = Tensor::zeros((), DType::F32, &device)?;
+            if batch.dihedral_index.dims()[0] > 0 {
+                let diff = (dih_pred - &batch.dihedral_params)?;
+                let diff2 = diff.sqr()?;
+                let mask = batch
+                    .dihedral_mask
+                    .unsqueeze(2)?
+                    .broadcast_as(diff2.dims())?;
+                let masked = (diff2 * &mask)?;
+
+                let sum = masked.sum_all()?;
+
+                let mask_host = batch.dihedral_mask.to_vec2::<f32>()?;
+                let mut count = 0f32;
+                for row in mask_host {
+                    for v in row {
+                        count += v;
+                    }
+                }
+                if count > 0.0 {
+                    let denom = Tensor::new(count, &device)?;
+                    dihedral_loss = (&sum / &denom)?;
+                }
+            }
+
+            let mut improper_loss = Tensor::zeros((), DType::F32, &device)?;
+            if batch.improper_index.dims()[0] > 0 {
+                let diff = (imp_pred - &batch.improper_params)?;
+                let diff2 = diff.sqr()?;
+                let mask = batch
+                    .improper_mask
+                    .unsqueeze(2)?
+                    .broadcast_as(diff2.dims())?;
+                let masked = (diff2 * &mask)?;
+                let sum = masked.sum_all()?;
+
+                let mask_host = batch.improper_mask.to_vec2::<f32>()?;
+                let mut count = 0f32;
+                for row in mask_host {
+                    for v in row {
+                        count += v;
+                    }
+                }
+                if count > 0.0 {
+                    let denom = Tensor::new(count, &device)?;
+                    improper_loss = (&sum / &denom)?;
+                }
+            }
+
+            let loss = (&charge_loss + &type_loss + &dihedral_loss + &improper_loss)?;
 
             opt.backward_step(&loss)?;
 
@@ -255,8 +402,13 @@ fn main() -> candle_core::Result<()> {
         for i in val_idxs.iter() {
             let batch = dataset.get(*i, &device)?;
 
-            let (type_logits, charges_pred) =
-                model.forward(&batch.elem_ids, &batch.coords, &batch.edge_index)?;
+            let (type_logits, charges_pred, dih_pred, imp_pred) = model.forward(
+                &batch.elem_ids,
+                &batch.coords,
+                &batch.edge_index,
+                &batch.dihedral_index,
+                &batch.improper_index,
+            )?;
 
             let diff = (charges_pred - &batch.charges)?;
             let charge_loss = diff.sqr()?.mean_all()?;

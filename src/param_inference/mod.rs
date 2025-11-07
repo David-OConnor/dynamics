@@ -26,7 +26,10 @@ use candle_core::{CudaDevice, DType, Device, IndexOp, Module, Tensor};
 use candle_nn as nn;
 use candle_nn::{Embedding, Linear, VarBuilder, ops::sigmoid};
 
-use crate::param_inference::files::{MODEL_PATH, VOCAB_PATH};
+use crate::param_inference::{
+    files::{MODEL_PATH, VOCAB_PATH},
+    frcmod::{DIHEDRAL_FEATS, MAX_DIHEDRAL_TERMS},
+};
 
 /// We save this to file during training, and load it during inference.
 #[derive(Debug, Encode, Decode)]
@@ -170,6 +173,8 @@ pub(crate) struct MolGNN {
     mp3: MessagePassingLayer,
     type_head: Linear,
     charge_head: Linear,
+    dihedral_head: Linear, // new
+    improper_head: Linear,
 }
 
 impl MolGNN {
@@ -187,6 +192,18 @@ impl MolGNN {
         let mp3 = MessagePassingLayer::new(vb.pp("mp3"), hidden_dim)?;
         let type_head = nn::linear(hidden_dim, n_atom_types, vb.pp("type_head"))?;
         let charge_head = nn::linear(hidden_dim, 1, vb.pp("charge_head"))?;
+
+        let dihedral_head = nn::linear(
+            hidden_dim * 4,
+            MAX_DIHEDRAL_TERMS * DIHEDRAL_FEATS,
+            vb.pp("dih_head"),
+        )?;
+        let improper_head = nn::linear(
+            hidden_dim * 4,
+            MAX_DIHEDRAL_TERMS * DIHEDRAL_FEATS,
+            vb.pp("improper_head"),
+        )?;
+
         Ok(Self {
             elem_emb,
             coord_lin,
@@ -195,6 +212,8 @@ impl MolGNN {
             mp3,
             type_head,
             charge_head,
+            dihedral_head,
+            improper_head,
         })
     }
 
@@ -203,7 +222,9 @@ impl MolGNN {
         elem_ids: &Tensor,
         coords: &Tensor,
         edge_index: &Tensor,
-    ) -> candle_core::Result<(Tensor, Tensor)> {
+        dihedral_index: &Tensor,
+        improper_index: &Tensor,
+    ) -> candle_core::Result<(Tensor, Tensor, Tensor, Tensor)> {
         let h_emb = self.elem_emb.forward(elem_ids)?;
         let h_coord = self.coord_lin.forward(coords)?;
         let mut h = (h_emb + h_coord)?;
@@ -214,11 +235,105 @@ impl MolGNN {
 
         let type_logits = self.type_head.forward(&h)?;
         let charges = self.charge_head.forward(&h)?.squeeze(1)?;
-        Ok((type_logits, charges))
+        // dihedrals
+        let dih_pred = if dihedral_index.dims()[0] == 0 {
+            Tensor::zeros(
+                (0, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS),
+                DType::F32,
+                h.device(),
+            )?
+        } else {
+            let i_idx = dihedral_index.i((.., 0))?.contiguous()?;
+            let j_idx = dihedral_index.i((.., 1))?.contiguous()?;
+            let k_idx = dihedral_index.i((.., 2))?.contiguous()?;
+            let l_idx = dihedral_index.i((.., 3))?.contiguous()?;
+
+            let hi = h.index_select(&i_idx, 0)?;
+            let hj = h.index_select(&j_idx, 0)?;
+            let hk = h.index_select(&k_idx, 0)?;
+            let hl = h.index_select(&l_idx, 0)?;
+
+            let dih_in = Tensor::cat(&[hi, hj, hk, hl], 1)?;
+            let dih_flat = self.dihedral_head.forward(&dih_in)?;
+            let n_dih = dihedral_index.dims()[0];
+            dih_flat.reshape((n_dih, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS))?
+        };
+
+        // impropers (same pattern)
+        let improper_pred = if improper_index.dims()[0] == 0 {
+            Tensor::zeros(
+                (0, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS),
+                DType::F32,
+                h.device(),
+            )?
+        } else {
+            let i_idx = improper_index.i((.., 0))?.contiguous()?;
+            let j_idx = improper_index.i((.., 1))?.contiguous()?;
+            let k_idx = improper_index.i((.., 2))?.contiguous()?;
+            let l_idx = improper_index.i((.., 3))?.contiguous()?;
+
+            let hi = h.index_select(&i_idx, 0)?;
+            let hj = h.index_select(&j_idx, 0)?;
+            let hk = h.index_select(&k_idx, 0)?;
+            let hl = h.index_select(&l_idx, 0)?;
+
+            let improper_in = Tensor::cat(&[hi, hj, hk, hl], 1)?;
+            let improper_flat = self.improper_head.forward(&improper_in)?;
+            let n_imp = improper_index.dims()[0];
+            improper_flat.reshape((n_imp, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS))?
+        };
+
+        Ok((type_logits, charges, dih_pred, improper_pred))
     }
 }
 
 // -------- Inference --------
+
+fn build_dih_tensors(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    device: &Device,
+) -> candle_core::Result<(Tensor, Tensor)> {
+    let n = atoms.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for b in bonds {
+        let i = (b.atom_0_sn - 1) as usize;
+        let j = (b.atom_1_sn - 1) as usize;
+        adj[i].push(j);
+        adj[j].push(i);
+    }
+
+    let mut dih_indices: Vec<i64> = Vec::new();
+    for b in bonds {
+        let j = (b.atom_0_sn - 1) as usize;
+        let k = (b.atom_1_sn - 1) as usize;
+        for &i in adj[j].iter() {
+            if i == k {
+                continue;
+            }
+            for &l in adj[k].iter() {
+                if l == j {
+                    continue;
+                }
+                dih_indices.push(i as i64);
+                dih_indices.push(j as i64);
+                dih_indices.push(k as i64);
+                dih_indices.push(l as i64);
+            }
+        }
+    }
+
+    let n_dih = dih_indices.len() / 4;
+    let dihedral_index = if n_dih == 0 {
+        Tensor::zeros((0, 4), DType::I64, device)?
+    } else {
+        Tensor::from_slice(&dih_indices, (n_dih, 4), device)?
+    };
+
+    let improper_index = Tensor::zeros((0, 4), DType::I64, device)?;
+
+    Ok((dihedral_index, improper_index))
+}
 
 /// Find bond force field type, partial charge, and parameter overrides. (Paramater overrides
 /// are generally Dihedral and improper only, but we've observed bond and angle as well.
@@ -228,7 +343,12 @@ fn run_inference(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     device: &Device,
-) -> candle_core::Result<(Vec<String>, Vec<f32>, Vec<ForceFieldParams>)> {
+) -> candle_core::Result<(
+    Vec<String>,
+    Vec<f32>,
+    Tensor, // dihedral_pred: [n_dih, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS]
+    Tensor, // dihedral_index: [n_dih, 4]
+)> {
     let mut elem_ids = Vec::with_capacity(atoms.len());
     let mut coords = Vec::with_capacity(atoms.len() * 3);
 
@@ -253,7 +373,6 @@ fn run_inference(
     for bond in bonds.iter() {
         let i = (bond.atom_0_sn - 1) as i64;
         let j = (bond.atom_1_sn - 1) as i64;
-
         edge_index_vec.push(i);
         edge_index_vec.push(j);
         edge_index_vec.push(j);
@@ -262,18 +381,26 @@ fn run_inference(
 
     let elem_ids = Tensor::from_slice(&elem_ids, (atoms.len(),), device)?;
     let coords = Tensor::from_slice(&coords, (atoms.len(), 3), device)?;
-
     let edge_index = if edge_index_vec.is_empty() {
         Tensor::zeros((0, 2), DType::I64, device)?
     } else {
         Tensor::from_slice(&edge_index_vec, (edge_index_vec.len() / 2, 2), device)?
     };
 
-    let (type_logits, charges) = model.forward(&elem_ids, &coords, &edge_index)?;
+    // rebuild dihedrals for this molecule
+    let (dihedral_index, improper_index) = build_dih_tensors(atoms, bonds, device)?;
+
+    let (type_logits, charges_t, dihedral_pred, _improper_pred) = model.forward(
+        &elem_ids,
+        &coords,
+        &edge_index,
+        &dihedral_index,
+        &improper_index,
+    )?;
 
     let type_ids = type_logits.argmax(1)?.to_dtype(DType::I64)?;
     let type_ids: Vec<i64> = type_ids.to_vec1()?;
-    let charges: Vec<f32> = charges.to_vec1()?;
+    let charges: Vec<f32> = charges_t.to_vec1()?;
 
     let inv_type_vocab: HashMap<usize, String> = vocabs
         .atom_type
@@ -282,62 +409,82 @@ fn run_inference(
         .collect();
 
     let mut ff_types = Vec::with_capacity(atoms.len());
-    let mut q = Vec::with_capacity(atoms.len());
-    let mut dihedral_params = Vec::new();
-
-    for i in 0..atoms.len() {
-        let Some(ff) = inv_type_vocab.get(&(type_ids[i] as usize)) else {
-            return Err(candle_core::error::Error::Msg("Uhoh".to_string()));
-        };
-
-        ff_types.push(ff.to_string());
-        q.push(charges[i]);
+    for tid in type_ids {
+        ff_types.push(inv_type_vocab[&(tid as usize)].clone());
     }
 
-    Ok((ff_types, q, dihedral_params))
+    Ok((ff_types, charges, dihedral_pred, dihedral_index))
 }
 
 /// Infer force field type, partial charge, and dihedral atoms for a molecule for
 /// which we don't have them.
-pub(crate) fn infer_params(
+pub fn infer_params(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
-) -> candle_core::Result<(Vec<String>, Vec<f32>, Vec<ForceFieldParams>)> {
-    // todo yikes: CPU is much faster!
-    // Example time comparison. CPU: 10ms. GPU: 68ms.
-    // #[cfg(feature = "cuda")]
-    // let dev_candle = Device::Cuda(CudaDevice::new_with_stream(0).unwrap());
-    // #[cfg(not(feature = "cuda"))]
+) -> candle_core::Result<(Vec<String>, Vec<f32>, ForceFieldParams)> {
     let dev_candle = Device::Cpu;
-
-    println!("Running inference on GeoStd data with device: {dev_candle:?}");
 
     let start = Instant::now();
 
-    // let paths = find_paths(&mol2_dir).unwrap();
-    // let (el_vocab, atom_type_vocab) = build_vocabs(&paths).unwrap();
     let vocabs: Vocabs = load(&Path::new(VOCAB_PATH)).unwrap();
-
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();
     let hidden_dim = 128;
 
-    // Make a varmap and LOAD the trained weights
     let mut varmap = candle_nn::VarMap::new();
-
-    // Build the model from the loaded varmap
     let vb = VarBuilder::from_varmap(&mut varmap, DType::F32, &dev_candle);
     let model = MolGNN::new(vb, n_elems, n_atom_types, hidden_dim).unwrap();
     varmap.load(MODEL_PATH).unwrap();
 
-    // Run inference
-    let (ff_types, charges, frcmod) =
-        run_inference(&model, &vocabs, atoms, bonds, &dev_candle).unwrap();
+    let (ff_types, charges, dihedrals_pred, dihedral_index) =
+        run_inference(&model, &vocabs, atoms, bonds, &dev_candle)?;
+
+    // turn predictions into ForceFieldParams
+    let mut out = ForceFieldParams::default();
+
+    let dihedrals = dihedrals_pred.to_vec3::<f32>()?;
+    let dih_idx = dihedral_index.to_vec2::<i64>()?;
+
+    for (d_i, idxs) in dih_idx.iter().enumerate() {
+        let i = idxs[0] as usize;
+        let j = idxs[1] as usize;
+        let k = idxs[2] as usize;
+        let l = idxs[3] as usize;
+
+        let ti = ff_types[i].clone();
+        let tj = ff_types[j].clone();
+        let tk = ff_types[k].clone();
+        let tl = ff_types[l].clone();
+
+        let mut terms_vec = Vec::new();
+        for t in 0..MAX_DIHEDRAL_TERMS {
+            let barrier = dihedrals[d_i][t][0];
+            let phase = dihedrals[d_i][t][1];
+            let periodicity = dihedrals[d_i][t][2];
+
+            if barrier.abs() < 1e-5 {
+                continue;
+            }
+
+            terms_vec.push(DihedralParams {
+                atom_types: (ti.clone(), tj.clone(), tk.clone(), tl.clone()),
+                divider: 1,
+                barrier_height: barrier,
+                phase,
+                periodicity: periodicity.round() as u8,
+                comment: None,
+            });
+        }
+
+        if !terms_vec.is_empty() {
+            out.dihedral.insert((ti, tj, tk, tl), terms_vec);
+        }
+    }
 
     let elapsed = start.elapsed().as_millis();
     println!("Inference complete in {elapsed} ms");
 
-    Ok((ff_types, charges, frcmod))
+    Ok((ff_types, charges, out))
 }
 
 // C+P from graphics.
