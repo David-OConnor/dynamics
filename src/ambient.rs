@@ -356,9 +356,15 @@ impl MdState {
         let lam = (kprime / ke).sqrt() as f32;
 
         for a in &mut self.atoms {
+            // todo temp break
+            // break;
+
             if a.static_ {
                 continue;
             }
+
+            // todo: Experimenting.
+
             a.vel *= lam;
         }
         for w in &mut self.water {
@@ -371,7 +377,7 @@ impl MdState {
     /// A thermostat that integrates the stochastic Langevin equation. Good temperature control
     /// and ergodicity, but the friction parameter damps real dynamics as it grows. This applies an OU update.
     /// todo: Should this be based on f64?
-    pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma_ps: f32, temp_k: f32) {
+    pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma_ps: f32, temp_tgt_k: f32) {
         let c = (-gamma_ps * dt).exp();
         let s2 = (1.0 - c * c).max(0.0); // numerical guard
 
@@ -381,8 +387,7 @@ impl MdState {
             }
 
             // per-component σ for velocity noise
-            // per-component σ for velocity noise
-            let sigma = (KB_A2_PS2_PER_K_PER_AMU * temp_k * s2 / a.mass).sqrt();
+            let sigma = (KB_A2_PS2_PER_K_PER_AMU * temp_tgt_k * s2 / a.mass).sqrt();
 
             let nx: f32 = self.barostat.rng.sample(StandardNormal);
             let ny: f32 = self.barostat.rng.sample(StandardNormal);
@@ -393,13 +398,12 @@ impl MdState {
             a.vel.z = c * a.vel.z + sigma * nz;
         }
 
-        self.apply_langevin_thermostat_water(dt, gamma_ps, temp_k);
+        self.apply_langevin_thermostat_water(dt, gamma_ps, temp_tgt_k);
     }
 
     /// Part of the langevin thermostat.
     /// todo: Should this be based on f64?
     fn apply_langevin_thermostat_water(&mut self, dt: f32, gamma_ps: f32, temp_k: f32) {
-        // return; // todo temp!!
         let c = (-gamma_ps * dt).exp();
         let s2 = (1.0 - c * c).max(0.0);
         let m_tot = O_MASS + 2.0 * H_MASS;
@@ -432,10 +436,12 @@ impl MdState {
             let mut b = 0.0;
             let mut cxy = 0.0;
             let mut e = 0.0; // xy, xz, yz
+
             let mut add = |r: Vec3, m: f32| {
                 let x = r.x;
                 let y = r.y;
                 let z = r.z;
+
                 a += m * (y * y + z * z);
                 d += m * (x * x + z * z);
                 f += m * (x * x + y * y);
@@ -443,6 +449,7 @@ impl MdState {
                 cxy -= m * x * z;
                 e -= m * y * z;
             };
+
             add(r_o, O_MASS);
             add(r_h0, H_MASS);
             add(r_h1, H_MASS);
@@ -458,6 +465,7 @@ impl MdState {
             } else {
                 0.0
             };
+
             let t33 = (f - l31 * l31 - l32 * l32).max(0.0);
             let l33 = t33.sqrt();
 
@@ -481,17 +489,20 @@ impl MdState {
                 } else {
                     0.0
                 };
+
                 let y3 = if lx33 > 0.0 {
                     (rhs.z - lx31 * y1 - lx32 * y2) / lx33
                 } else {
                     0.0
                 };
+
                 Vec3 {
                     x: y1,
                     y: y2,
                     z: y3,
                 }
             };
+
             let solve_upper = |lx11: f32,
                                lx21: f32,
                                lx31: f32,
@@ -517,6 +528,7 @@ impl MdState {
                     z: z3,
                 }
             };
+
             let y = solve_lower(l11, l21, l31, l22, l32, l33, l_vec);
             let mut omega = solve_upper(l11, l21, l31, l22, l32, l33, y);
 
@@ -524,6 +536,7 @@ impl MdState {
             let nx: f32 = self.barostat.rng.sample(StandardNormal);
             let ny: f32 = self.barostat.rng.sample(StandardNormal);
             let nz: f32 = self.barostat.rng.sample(StandardNormal);
+
             v_com.x = c * v_com.x + sigma_v * nx;
             v_com.y = c * v_com.y + sigma_v * ny;
             v_com.z = c * v_com.z + sigma_v * nz;

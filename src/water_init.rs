@@ -165,7 +165,7 @@ fn build_free_mask(cell: &SimBox, atoms: &[AtomDynamics], voxel_size: f32) -> Fr
     }
 
     let mut centers = Vec::new();
-    let half = 0.5 * voxel_size;
+
     for ix in 0..nx {
         for iy in 0..ny {
             for iz in 0..nz {
@@ -332,9 +332,9 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: b
             (r / m_tot, m_tot)
         };
 
-        let rO = m.o.posit - r_com;
-        let rH0 = m.h0.posit - r_com;
-        let rH1 = m.h1.posit - r_com;
+        let r_0 = m.o.posit - r_com;
+        let r_h0 = m.h0.posit - r_com;
+        let r_h1 = m.h1.posit - r_com;
 
         // Sample COM velocity
         let sigma_v = (kT / m_tot).sqrt();
@@ -363,7 +363,7 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: b
                 ],
             ]
         };
-        let mut I_arr = inertia(rO, m.o.mass);
+        let mut I_arr = inertia(r_0, m.o.mass);
         let add_I = |I: &mut [[f32; 3]; 3], J: [[f32; 3]; 3]| {
             for i in 0..3 {
                 for j in 0..3 {
@@ -371,8 +371,8 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: b
                 }
             }
         };
-        add_I(&mut I_arr, inertia(rH0, m.h0.mass));
-        add_I(&mut I_arr, inertia(rH1, m.h1.mass));
+        add_I(&mut I_arr, inertia(r_h0, m.h0.mass));
+        add_I(&mut I_arr, inertia(r_h1, m.h1.mass));
 
         // Convert to Mat3 once, then use
         let I = Mat3F32::from_arr(I_arr);
@@ -394,9 +394,9 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: b
         let omega = I.solve_system(L_world); // ω = I^{-1} L
 
         // Set atomic velocities
-        m.o.vel = v_com + omega.cross(rO);
-        m.h0.vel = v_com + omega.cross(rH0);
-        m.h1.vel = v_com + omega.cross(rH1);
+        m.o.vel = v_com + omega.cross(r_0);
+        m.h0.vel = v_com + omega.cross(r_h0);
+        m.h1.vel = v_com + omega.cross(r_h1);
     }
 
     // Remove global COM drift
@@ -452,24 +452,4 @@ fn remove_com_velocity(mols: &mut [WaterMol]) {
     for a in atoms_mut(mols) {
         a.vel -= v_com;
     }
-}
-
-fn too_close_to_atoms(p: Vec3, atoms: &[AtomDynamics], cell: &SimBox) -> bool {
-    for a in atoms {
-        let d = cell.min_image(a.posit - p).magnitude();
-        if d < MIN_NONWATER_DIST {
-            return true;
-        }
-    }
-    false
-}
-
-fn too_close_to_waters(p: Vec3, waters: &[WaterMol], cell: &SimBox) -> bool {
-    for w in waters {
-        let d = cell.min_image(w.o.posit - p).magnitude();
-        if d < MIN_WATER_OO_DIST {
-            return true;
-        }
-    }
-    false
 }

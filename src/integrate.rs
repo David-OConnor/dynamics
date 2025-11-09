@@ -47,7 +47,9 @@ pub enum Integrator {
 
 impl Default for Integrator {
     fn default() -> Self {
-        Self::LangevinMiddle { gamma: 1. }
+        // todo: Langevin middle is not working well.
+        // Self::LangevinMiddle { gamma: 1. }
+        Self::VerletVelocity
     }
 }
 

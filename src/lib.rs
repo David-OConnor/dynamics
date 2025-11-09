@@ -159,13 +159,6 @@ use crate::{
 #[cfg(feature = "cuda")]
 const PTX: &str = include_str!("../dynamics.ptx");
 
-// todo: This is duplicate with the definitions in param_inference mod.
-// Model: ~1.5Mb. Vocab: ~440 bytes.
-// todo: Figure out how you handle this. You currently need this file both in the Dynamics
-// todo lib, and your application. I'm not sure how this will work out in applications.
-const PARAM_INFERENCE_MODEL: &[u8] = include_bytes!("../geostd_model.safetensors");
-const PARAM_INFERENCE_VOCAB: &[u8] = include_bytes!("../geostd_model.vocab");
-
 // Multiply by this to convert from kcal/mol to amu • (Å/ps)²  Multiply all accelerations by this.
 // Converts *into* our internal units.
 const ACCEL_CONVERSION: f32 = 418.4;

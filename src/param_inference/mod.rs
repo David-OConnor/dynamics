@@ -431,13 +431,15 @@ pub fn infer_params(
     dihedrals_missing: Vec<(String, String, String, String)>,
     improper_missing: Vec<(String, String, String, String)>,
     gaff2: &ForceFieldParams,
+    model_bytes: &[u8], // E.g. included with application binary.
+    vocab_bytes: &[u8], // E.g. included with application binary.
 ) -> candle_core::Result<(Vec<String>, Vec<f32>, ForceFieldParams)> {
     // Note: CUDA doesn't seem faster here.
     let dev_candle = Device::Cpu;
 
     let start = Instant::now();
 
-    let vocabs: Vocabs = load(&Path::new(VOCAB_PATH))?;
+    let vocabs: Vocabs = load_from_bytes(&vocab_bytes)?;
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();
     let hidden_dim = 128;
@@ -445,7 +447,10 @@ pub fn infer_params(
     let mut varmap = candle_nn::VarMap::new();
     let vb = VarBuilder::from_varmap(&mut varmap, DType::F32, &dev_candle);
     let model = MolGNN::new(vb, n_elems, n_atom_types, hidden_dim)?;
+
+    // todo: Sort this out.
     varmap.load(MODEL_PATH)?;
+    // varmap.load(model_bytes)?;
 
     let (ff_types, charges, dihedrals_pred, dihedral_index) =
         run_inference(&model, &vocabs, atoms, bonds, &dev_candle)?;
@@ -586,6 +591,20 @@ pub(crate) fn load<T: Decode<()>>(path: &Path) -> io::Result<T> {
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
+
+    let (decoded, _len) = match bincode::decode_from_slice(&buffer, config) {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("Error loading from file. Did the format change?");
+            return Err(io::Error::new(ErrorKind::Other, "error loading"));
+        }
+    };
+    Ok(decoded)
+}
+
+/// Load from file, using Bincode. We currently use this for preference files.
+pub(crate) fn load_from_bytes<T: Decode<()>>(buffer: &[u8]) -> io::Result<T> {
+    let config = bincode::config::standard();
 
     let (decoded, _len) = match bincode::decode_from_slice(&buffer, config) {
         Ok(v) => v,
