@@ -105,6 +105,7 @@ pub mod minimize_energy;
 
 #[cfg(test)]
 mod tests;
+// mod h_bond_inference;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
@@ -160,6 +161,8 @@ const PTX: &str = include_str!("../dynamics.ptx");
 
 // todo: This is duplicate with the definitions in param_inference mod.
 // Model: ~1.5Mb. Vocab: ~440 bytes.
+// todo: Figure out how you handle this. You currently need this file both in the Dynamics
+// todo lib, and your application. I'm not sure how this will work out in applications.
 const PARAM_INFERENCE_MODEL: &[u8] = include_bytes!("../geostd_model.safetensors");
 const PARAM_INFERENCE_VOCAB: &[u8] = include_bytes!("../geostd_model.vocab");
 

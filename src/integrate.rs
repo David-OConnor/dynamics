@@ -1,6 +1,7 @@
 //! Contains integration code, including the primary time step.
 
 use std::{
+    f32::MAX,
     fmt,
     fmt::{Display, Formatter},
     time::Instant,
@@ -12,10 +13,15 @@ use bincode::{Decode, Encode};
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
+// The maximum allowed acceleration, in Å/ps^2.
+// For example, pathological starting conditions including hydrogen placement.
+const MAX_ACCEL: f32 = 1e5;
+const MAX_ACCEL_SQ: f32 = MAX_ACCEL * MAX_ACCEL;
+
 use crate::{
-    ACCEL_CONVERSION, ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO,
-    ComputationDevice, HydrogenConstraint, MdState,
-    ambient::{BAR_PER_KCAL_MOL_PER_A3, GAS_CONST_R, measure_instantaneous_pressure},
+    ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
+    HydrogenConstraint, MdState,
+    ambient::{GAS_CONST_R, measure_instantaneous_pressure},
     water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
     water_settle,
     water_settle::{RESET_ANGLE_RATIO, settle_drift},
@@ -421,6 +427,16 @@ impl MdState {
             }
 
             a.accel = a.force * self.mass_accel_factor[i];
+            if a.accel.magnitude_squared() > MAX_ACCEL_SQ {
+                println!(
+                    "Error: Acceleration out of bounds on step{}. Clamping {:.3} to {:.3}",
+                    self.step_count,
+                    a.accel.magnitude(),
+                    MAX_ACCEL
+                );
+                a.accel = a.accel.to_normalized() * MAX_ACCEL;
+            }
+
             a.vel += a.accel * dt;
         }
 

@@ -418,33 +418,50 @@ fn run_inference(
 
 /// Infer force field type, partial charge, and dihedral atoms for a molecule for
 /// which we don't have them.
+///
+/// We infer FF type and partial charge for each atom. We infer missing FRCMODM params (Generally
+/// dihedrals and impropers; occasionally others) based partially on which ones (defined by sets of
+/// 4 FF types) are present in this mol, but aren't in GAFF2. Note: This is trickier for Impropers,
+/// as it's authorized to ommit these in some cases. Proper dihedrals, on the other hand, are
+/// not permitted to be missing.
 pub fn infer_params(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
+    // todo: Consider bond stretching and valence angles eventually as well.
+    dihedrals_missing: Vec<(String, String, String, String)>,
+    improper_missing: Vec<(String, String, String, String)>,
+    gaff2: &ForceFieldParams,
 ) -> candle_core::Result<(Vec<String>, Vec<f32>, ForceFieldParams)> {
+    // Note: CUDA doesn't seem faster here.
     let dev_candle = Device::Cpu;
 
     let start = Instant::now();
 
-    let vocabs: Vocabs = load(&Path::new(VOCAB_PATH)).unwrap();
+    let vocabs: Vocabs = load(&Path::new(VOCAB_PATH))?;
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();
     let hidden_dim = 128;
 
     let mut varmap = candle_nn::VarMap::new();
     let vb = VarBuilder::from_varmap(&mut varmap, DType::F32, &dev_candle);
-    let model = MolGNN::new(vb, n_elems, n_atom_types, hidden_dim).unwrap();
-    varmap.load(MODEL_PATH).unwrap();
+    let model = MolGNN::new(vb, n_elems, n_atom_types, hidden_dim)?;
+    varmap.load(MODEL_PATH)?;
 
     let (ff_types, charges, dihedrals_pred, dihedral_index) =
         run_inference(&model, &vocabs, atoms, bonds, &dev_candle)?;
 
-    // turn predictions into ForceFieldParams
-    let mut out = ForceFieldParams::default();
+    let mut params = ForceFieldParams::default();
 
     let dihedrals = dihedrals_pred.to_vec3::<f32>()?;
     let dih_idx = dihedral_index.to_vec2::<i64>()?;
 
+    // cache to reuse for missing list
+    let mut produced: std::collections::HashMap<
+        (String, String, String, String),
+        Vec<bio_files::md_params::DihedralParams>,
+    > = std::collections::HashMap::new();
+
+    // 1) all 4-atom lines we found in the mol
     for (d_i, idxs) in dih_idx.iter().enumerate() {
         let i = idxs[0] as usize;
         let j = idxs[1] as usize;
@@ -456,6 +473,16 @@ pub fn infer_params(
         let tk = ff_types[k].clone();
         let tl = ff_types[l].clone();
 
+        let key = (ti.clone(), tj.clone(), tk.clone(), tl.clone());
+
+        if let Some(terms) =
+            gaff2.get_dihedral(&(ti.clone(), tj.clone(), tk.clone(), tl.clone()), false)
+        {
+            params.dihedral.insert(key.clone(), terms.clone());
+            produced.insert(key, terms.clone());
+            continue;
+        }
+
         let mut terms_vec = Vec::new();
         for t in 0..MAX_DIHEDRAL_TERMS {
             let barrier = dihedrals[d_i][t][0];
@@ -466,7 +493,7 @@ pub fn infer_params(
                 continue;
             }
 
-            terms_vec.push(DihedralParams {
+            terms_vec.push(bio_files::md_params::DihedralParams {
                 atom_types: (ti.clone(), tj.clone(), tk.clone(), tl.clone()),
                 divider: 1,
                 barrier_height: barrier,
@@ -476,15 +503,67 @@ pub fn infer_params(
             });
         }
 
-        if !terms_vec.is_empty() {
-            out.dihedral.insert((ti, tj, tk, tl), terms_vec);
+        if terms_vec.is_empty() {
+            let barrier0 = dihedrals[d_i][0][0];
+            let phase0 = dihedrals[d_i][0][1];
+            let per0 = dihedrals[d_i][0][2];
+
+            terms_vec.push(DihedralParams {
+                atom_types: (ti.clone(), tj.clone(), tk.clone(), tl.clone()),
+                divider: 1,
+                barrier_height: if barrier0.abs() < 1e-5 { 0.1 } else { barrier0 },
+                phase: if phase0.abs() < 1e-5 { 0.0 } else { phase0 },
+                periodicity: if per0.abs() < 0.5 {
+                    1
+                } else {
+                    per0.round() as u8
+                },
+                comment: None,
+            });
         }
+
+        // 2) caller-supplied missing dihedrals (already checked both orders upstream)
+        for (a, b, c, d) in &dihedrals_missing {
+            let key = (a.clone(), b.clone(), c.clone(), d.clone());
+            if params.dihedral.contains_key(&key) {
+                continue;
+            }
+
+            if let Some(terms) =
+                gaff2.get_dihedral(&(a.clone(), b.clone(), c.clone(), d.clone()), false)
+            {
+                params.dihedral.insert(key, terms.clone());
+                continue;
+            }
+
+            if let Some(terms) = produced.get(&(a.clone(), b.clone(), c.clone(), d.clone())) {
+                params
+                    .dihedral
+                    .insert((a.clone(), b.clone(), c.clone(), d.clone()), terms.clone());
+                continue;
+            }
+
+            params.dihedral.insert(
+                (a.clone(), b.clone(), c.clone(), d.clone()),
+                vec![DihedralParams {
+                    atom_types: (a.clone(), b.clone(), c.clone(), d.clone()),
+                    divider: 1,
+                    barrier_height: 0.1,
+                    phase: 0.0,
+                    periodicity: 1,
+                    comment: None,
+                }],
+            );
+        }
+
+        params.dihedral.insert(key.clone(), terms_vec.clone());
+        produced.insert(key, terms_vec);
     }
 
     let elapsed = start.elapsed().as_millis();
     println!("Inference complete in {elapsed} ms");
 
-    Ok((ff_types, charges, out))
+    Ok((ff_types, charges, params))
 }
 
 // C+P from graphics.

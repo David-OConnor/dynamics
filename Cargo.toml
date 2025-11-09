@@ -29,6 +29,8 @@ required-features = ["train-bin"]
 include = [
     "src/**",
     "param_data/*",
+    "geostd_model.safetensors",
+    "geostd_model.vocab",
     "Cargo.toml",
     "README.md",
     "README.md",
@@ -68,7 +70,7 @@ cudarc = { version = "0.17.7", default-features = false, features = ["std", "dri
 #candle-nn = { git = "https://github.com/David-OConnor/candle", package = "candle-nn" }
 
 candle-core = { path = "../../../Desktop/candle/candle-core" }
-candle-nn = { path = "../../../Desktop/candle/candle-nn"}
+candle-nn = { path = "../../../Desktop/candle/candle-nn" }
 
 #candle-core = { git = "https://github.com/huggingface/candle", package = "candle-core" }
 #candle-nn = { git = "https://github.com/huggingface/candle", package = "candle-nn" }

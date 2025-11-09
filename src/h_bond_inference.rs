@@ -2,7 +2,7 @@
 // todo to not use its Atom type.
 
 use std::f32::consts::TAU;
-
+use lin_alg::f32::Vec3;
 use na_seq::Element::{Fluorine, Hydrogen, Nitrogen, Oxygen, Sulfur};
 use crate::AtomDynamics;
 use crate::snapshot::HydrogenBond;
@@ -89,7 +89,7 @@ fn hydrogen_bond_inner(
 
 /// Create hydrogen bonds between all atoms in a group. See `create_hydrogen_bonds_one_way` for the more
 /// flexible fn it calls.
-pub(crate) fn create_hydrogen_bonds(atoms: &[AtomDynamics], waters: &[WaterMol], bonds: &[Bond]) -> Vec<HydrogenBond> {
+pub(crate) fn create_hydrogen_bonds(atoms: &[AtomDynamics], posits: &[Vec3], waters: &[WaterMol], bonds: &[Bond]) -> Vec<HydrogenBond> {
     let indices: Vec<_> = (0..atoms.len()).collect();
     create_hydrogen_bonds_one_way(atoms, &indices, bonds, atoms, &indices, false)
 }

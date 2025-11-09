@@ -1,4 +1,8 @@
-//! This is the entry point for a standalone application to train the data.
+//! This is the entry point for a standalone application to train a neural net model
+//! to provide Amber-style force field paramers for small organic molecules not present in
+//! Amber's GAFF2.dat. It generates per-atom FF name and partial charge, and per-molecule
+//! FRCMOD-style overrides for bonded params. (Generally Dihedral and improper angles)
+//!
 //! Run `cargo b --release --bin train
 
 use std::path::{Path, PathBuf};
@@ -18,10 +22,12 @@ use rand::{Rng, seq::SliceRandom};
 
 use crate::param_inference::frcmod::{DIHEDRAL_FEATS, MAX_DIHEDRAL_TERMS};
 
+const GAFF2: &str = include_str!("../param_data/gaff2.dat");
+
 // Higher = perhaps better training, but slower to train.
 // todo: Try setting max of 50-100 epochs, and stop early A/R if val loss
 // todo hasn't improved.
-const N_EPOCHS: u8 = 10;
+const N_EPOCHS: u8 = 50;
 // Stop training if we have this many epochs without improvement.
 const EARLY_STOPPING_PATIENCE: u8 = 7;
 
@@ -32,12 +38,6 @@ const HIDDEN_DIM: usize = 128; // todo: Try 256 as well, and compare.
 // Higher learning rate: Faster, but can overshoot. Lower: Safer but slower.
 // 1e-3 is a good default.
 const LEARNING_RATE: f64 = 1e-3; // todo: What should this be? What is it?
-
-struct GeoStdMol2Dataset {
-    mol2_paths: Vec<PathBuf>,
-    frcmod_paths: Vec<PathBuf>,
-    vocabs: Vocabs,
-}
 
 pub struct Batch {
     pub elem_ids: Tensor,
@@ -59,12 +59,25 @@ pub struct Batch {
     pub num_atoms: usize,
 }
 
+struct GeoStdMol2Dataset {
+    mol2_paths: Vec<PathBuf>,
+    frcmod_paths: Vec<PathBuf>,
+    vocabs: Vocabs,
+    gaff2: ForceFieldParams,
+}
+
 impl GeoStdMol2Dataset {
-    pub fn new(mol2_paths: &[PathBuf], frcmod_paths: &[PathBuf], vocabs: Vocabs) -> Self {
+    pub fn new(
+        mol2_paths: &[PathBuf],
+        frcmod_paths: &[PathBuf],
+        vocabs: Vocabs,
+        gaff2: ForceFieldParams,
+    ) -> Self {
         Self {
             mol2_paths: mol2_paths.to_vec(),
             frcmod_paths: frcmod_paths.to_vec(),
             vocabs,
+            gaff2,
         }
     }
 
@@ -192,9 +205,22 @@ impl GeoStdMol2Dataset {
 
                     if let (Some(ti), Some(tj), Some(tk), Some(tl)) = (ti, tj, tk, tl) {
                         let key = (ti.clone(), tj.clone(), tk.clone(), tl.clone());
-                        if let Some(terms) = frcmod.dihedral.get(&key) {
+                        let key_rev = (tl.clone(), tk.clone(), tj.clone(), ti.clone());
+
+                        let src_terms = if let Some(terms) = frcmod.dihedral.get(&key) {
+                            Some(terms)
+                        } else if let Some(terms) = frcmod.dihedral.get(&key_rev) {
+                            Some(terms)
+                        } else if let Some(terms) = self.gaff2.dihedral.get(&key) {
+                            Some(terms)
+                        } else if let Some(terms) = self.gaff2.dihedral.get(&key_rev) {
+                            Some(terms)
+                        } else {
+                            None
+                        };
+
+                        if let Some(terms) = src_terms {
                             for (t_idx, term) in terms.iter().take(MAX_DIHEDRAL_TERMS).enumerate() {
-                                // order: barrier_height, phase, periodicity
                                 this_terms[t_idx * DIHEDRAL_FEATS + 0] = term.barrier_height;
                                 this_terms[t_idx * DIHEDRAL_FEATS + 1] = term.phase;
                                 this_terms[t_idx * DIHEDRAL_FEATS + 2] = term.periodicity as f32;
@@ -253,6 +279,7 @@ impl GeoStdMol2Dataset {
     }
 }
 
+/// This is the entry point for our application to train parameters.
 fn main() -> candle_core::Result<()> {
     #[cfg(feature = "cuda")]
     let device = Device::Cuda(CudaDevice::new_with_stream(0)?);
@@ -263,6 +290,11 @@ fn main() -> candle_core::Result<()> {
 
     let (paths_mol2, paths_frcmod) = find_paths(Path::new(GEOSTD_PATH))?;
 
+    // Load Gaff2 parameters, which FRCMOD data provides overrides for, for dihedrals and
+    // improper dihedrals (And rarely valence angles and bond stretching params).
+    // todo: TBD if we need this in training, or just for inference
+    let gaff2_params = ForceFieldParams::from_dat(GAFF2)?;
+
     let vocabs = Vocabs::new(&paths_mol2)?;
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();
@@ -270,7 +302,7 @@ fn main() -> candle_core::Result<()> {
     save(Path::new(VOCAB_PATH), &vocabs)?;
     println!("Vocabs built and saved to {VOCAB_PATH}");
 
-    let dataset = GeoStdMol2Dataset::new(&paths_mol2, &paths_frcmod, vocabs);
+    let dataset = GeoStdMol2Dataset::new(&paths_mol2, &paths_frcmod, vocabs, gaff2_params);
 
     let mut varmap = candle_nn::VarMap::new();
     let vb = VarBuilder::from_varmap(&mut varmap, DType::F32, &device);

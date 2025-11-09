@@ -13,6 +13,8 @@ use bio_files::{AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType};
 use lin_alg::f32::Vec3;
 use na_seq::Element;
 
+use crate::AtomDynamics;
+
 // Append to any snapshot-saving files every this number of snapshots.
 // todo:  Update A/R. Likely higher.
 pub(crate) const FILE_SAVE_INTERVAL: usize = 100;
@@ -71,11 +73,10 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// The element indices must match the atom posits.
-    pub fn populate_hydrogen_bonds(&mut self, els: &[Element]) {
-        let result = Vec::new();
-        // todo
+    pub fn populate_hydrogen_bonds(&mut self, atoms: &[AtomDynamics]) {
+        // let result = create_hydrogen_bonds(&atoms, &self.atom_posits, &self.water_o_posits, &self.bonds);
 
-        self.hydrogen_bonds = result;
+        // self.hydrogen_bonds = result;
     }
 }
 

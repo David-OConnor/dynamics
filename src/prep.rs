@@ -375,15 +375,14 @@ impl ForceFieldParamsIndexed {
                         let type_2 = &atoms[i2].force_field_type;
                         let type_3 = &atoms[i3].force_field_type;
 
-                        if let Some(dihes) = params.get_dihedral(
-                            &(
-                                type_0.clone(),
-                                type_1.clone(),
-                                type_2.clone(),
-                                type_3.clone(),
-                            ),
-                            true,
-                        ) {
+                        let key = (
+                            type_0.clone(),
+                            type_1.clone(),
+                            type_2.clone(),
+                            type_3.clone(),
+                        );
+
+                        if let Some(dihes) = params.get_dihedral(&key, true) {
                             let mut dihes = dihes.clone();
 
                             for d in &mut dihes {
@@ -398,12 +397,7 @@ impl ForceFieldParamsIndexed {
                                 result.dihedral.insert(
                                     idx_key,
                                     vec![DihedralParams {
-                                        atom_types: (
-                                            type_0.clone(),
-                                            type_1.clone(),
-                                            type_2.clone(),
-                                            type_3.clone(),
-                                        ),
+                                        atom_types: key,
                                         divider: 1,
                                         barrier_height: 0.,
                                         phase: 0.,
@@ -441,7 +435,7 @@ impl ForceFieldParamsIndexed {
                     for d in b + 1..satellites.len() {
                         let (sat0, sat1, sat2) = (satellites[a], satellites[b], satellites[d]);
 
-                        let idx_key = (sat0, sat1, ctr, sat2); // order is fixed → no swap
+                        let idx_key = (sat0, sat1, ctr, sat2); // Order is fixed; no swap
                         if !seen.insert(idx_key) {
                             continue;
                         }
@@ -463,7 +457,7 @@ impl ForceFieldParamsIndexed {
                         );
 
                         // In the case of improper, unlike all other param types, we are allowed to
-                        // have missing values. Impropers areonly, by Amber convention, for planar
+                        // have missing values. Impropers are only, by Amber convention, for planar
                         // hub and spoke setups, so non-planar ones will be omitted. These may occur,
                         // for example, at ring intersections.
                         if let Some(dihes) = params.get_dihedral(&key, false) {
