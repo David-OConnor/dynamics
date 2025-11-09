@@ -166,15 +166,16 @@ const PTX: &str = include_str!("../dynamics.ptx");
 const PARAM_INFERENCE_MODEL: &[u8] = include_bytes!("../geostd_model.safetensors");
 const PARAM_INFERENCE_VOCAB: &[u8] = include_bytes!("../geostd_model.vocab");
 
-// Convert kcal mol⁻¹ Å⁻¹ (Values in the Amber parameter files, and our native units) to amu Å ps⁻². Multiply all
-// accelerations by this. (Bonded, and nonbonded)
+// Multiply by this to convert from kcal/mol to amu • (Å/ps)²  Multiply all accelerations by this.
+// Converts *into* our internal units.
 const ACCEL_CONVERSION: f32 = 418.4;
 
-// amu · Å²/ps²  We use this when accumulating kinetic energy, and need kcal/mol.
-// This, in practice, is for pressure computations.
+// Multiply by this to convert from amu • (Å/ps)² to kcal/mol.  We use this when accumulating kinetic
+// energy, for example. This, in practice, is for temperature and pressure computations.
+// Converts *out of * our internal units.
 const ACCEL_CONVERSION_INV: f32 = 1. / ACCEL_CONVERSION;
 
-// Every this many steps, re-
+// Every this many steps, re-center the sim (solvent) box.
 const CENTER_SIMBOX_RATIO: usize = 30;
 
 // Run SPME once every these steps. It's the slowest computation, and is comparatively
@@ -327,27 +328,25 @@ impl MolDynamics {
 pub struct AtomDynamics {
     pub serial_number: u32,
     /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
-    /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
-    /// and VDW) only.
+    /// in docking, this might be a rigid receptor. They serve as sources for Coulomb and LJ (non-bonded)
+    /// interactions, and as anchors for bonded ones.
     pub static_: bool,
     /// If true, this atom exerts and experiences non-bonded forces only.
     /// This may be useful for protein atoms that aren't near a docking site.
     pub bonded_only: bool,
     pub force_field_type: String,
     pub element: Element,
-    // pub name: String,
     pub posit: Vec3,
     /// Å / ps
     pub vel: Vec3,
     /// Å / ps²
     pub accel: Vec3,
-    /// We confirm this to acceleration prior to updating velocities.
+    /// Å • amu / ps²
     pub force: Vec3,
-    /// Daltons
-    /// todo: Move these 4 out of this to save memory; use from the params struct directly.
+    /// Daltons or amu
     pub mass: f32,
     /// Amber charge units. This is not the elementary charge units found in amino19.lib and gaff2.dat;
-    /// it's scaled by a constant.
+    /// it's scaled by the electrostatic constant.
     pub partial_charge: f32,
     /// Å
     pub lj_sigma: f32,
@@ -848,8 +847,6 @@ impl MdState {
             ..Default::default()
         };
 
-        result.thermo_dof = result.dof_for_thermo();
-
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
         result.lj_tables = LjTables::new(&result.atoms);
@@ -861,8 +858,16 @@ impl MdState {
         result.water = if cfg.overrides.skip_water {
             Vec::new()
         } else {
-            make_water_mols(&result.cell, cfg.temp_target, &result.atoms)
+            make_water_mols(
+                &result.cell,
+                cfg.temp_target,
+                &result.atoms,
+                cfg.zero_com_drift,
+            )
         };
+
+        // Calc DOF only after all atoms and water are initialized.
+        result.thermo_dof = result.dof_for_thermo();
 
         result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
 

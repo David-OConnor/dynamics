@@ -13,13 +13,13 @@ use rand::{Rng, prelude::ThreadRng};
 use rand_distr::{ChiSquared, Distribution, StandardNormal};
 
 use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
+    ACCEL_CONVERSION, ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
     water_opc::{H_MASS, O_MASS, WaterMol},
 };
 
 // Per-molecule Boltzmann, in kcal/mol/K.
 // For assigning velocities from temperature, and other thermostat/barostat use.
-pub(crate) const GAS_CONST_R: f32 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
+pub(crate) const GAS_CONST_R: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
 
 // Boltzmann constant in (amu · Å²/ps²) K⁻¹
 // We use this for the Langevin and Anderson thermostat, where we need per-particle Gaussian noise or variance.
@@ -162,6 +162,8 @@ pub struct BerendsenBarostat {
     pub pressure_target: f64,
     /// picoseconds
     pub tau_pressure: f64,
+    /// Temperature-coupling time constant. Note: This is for thermostat; not barostat.
+    /// Lower means more sensitive.
     pub tau_temp: f64,
     /// bar‑1 (≈4.5×10⁻⁵ for water at 300K, 1bar)
     pub kappa_t: f64,
@@ -182,7 +184,7 @@ impl Default for BerendsenBarostat {
             pressure_target: 1.,
             // Relaxation time: 1 ps ⇒ gentle volume changes every few steps.
             tau_pressure: 1.,
-            tau_temp: 1.,
+            tau_temp: 0.03,
             // Isothermal compressibility of water at 298 K.
             kappa_t: 4.5e-5,
             //These virials init to 0 here, and at the start of each integrator step.
@@ -279,57 +281,50 @@ impl MdState {
 
         for a in &self.atoms {
             if !a.static_ {
-                result += 0.5 * (a.mass * a.vel.magnitude_squared()) as f64;
+                result += (a.mass * a.vel.magnitude_squared()) as f64;
             }
         }
 
         // Do not include the M/EP site.
         for w in &self.water {
-            result += (0.5 * w.o.mass * w.o.vel.magnitude_squared()) as f64;
-            result += (0.5 * w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
-            result += (0.5 * w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
+            result += (w.o.mass * w.o.vel.magnitude_squared()) as f64;
+            result += (w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
+            result += (w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
         }
 
-        // Convert from internal unts to kcal/mol.
-        result * ACCEL_CONVERSION_INV as f64
+        // Add in the 0.5 factor, and convert from amu • (Å/ps)² to kcal/mol.
+        result * 0.5 * ACCEL_CONVERSION_INV as f64
     }
 
-    /// Instantaneous temperature [K] (assumes rigid waters: 6 dof per molecule).
+    /// Instantaneous temperature [K]
     pub(crate) fn temperature(&self) -> f64 {
-        let k = self.kinetic_energy;
-        (2.0 * k) / (self.thermo_dof as f64 * GAS_CONST_R as f64)
+        (2.0 * self.kinetic_energy) / (self.thermo_dof as f64 * GAS_CONST_R)
     }
 
-    fn num_constraints_estimate(&self) -> usize {
-        let mut result = 0;
-
-        // Rigid waters (O,H0,H1 rigid; EP is massless/virtual)
-        // 3 constraints per water triad.
-        result += 3 * self.water.len();
-
-        // (2) SHAKE/RATTLE on X–H bonds among *dynamic* atoms (not counting waters here)
-        // If hydrogens are constrained,
-        // count is number of H atoms among self.atoms (Each has one constrained bond).
-        if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
-            result += self
-                .atoms
-                .iter()
-                .filter(|a| a.element == Element::Hydrogen)
-                .count();
-        }
-
-        result
-    }
-
+    /// Used in temperature computation. Constraints tracked are Hydrogen if configured, and
+    /// static atoms.
     /// We cache this at init. Used for kinetic energy and temperature computations.
     pub(crate) fn dof_for_thermo(&self) -> usize {
-        let mut n = 3 * (self.atoms.len() + 3 * self.water.len());
-        n -= self.num_constraints_estimate();
+        let result = 3 * self.atoms.iter().filter(|a| !a.static_).count() + 3 * self.water.len();
 
-        if self.cfg.zero_com_drift {
-            n = n.saturating_sub(3);
-        }
-        n
+        let num_constraints = {
+            let mut c = 0;
+
+            for atom in &self.atoms {
+                if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained
+                    && atom.element == Element::Hydrogen
+                {
+                    c += 1;
+                }
+            }
+
+            if self.cfg.zero_com_drift {
+                c += 3;
+            }
+            c
+        };
+
+        result.saturating_sub(num_constraints)
     }
 
     /// Canonical Sampling through Velocities Rescaling thermostat. Also known as Bussi.
@@ -339,22 +334,24 @@ impl MdState {
         // This value is cached at init.
         let dof = self.thermo_dof.max(2) as f64;
 
-        let ke = self.kinetic_energy();
-
-        let ke_bar = 0.5 * dof * GAS_CONST_R as f64 * t_target_k;
+        // Cached during the kick-and-drift step.
+        let ke = self.kinetic_energy; // In kcal/mol
 
         let c = (-dt / self.barostat.tau_temp).exp();
+
         // Draw the two random variates used in the exact CSVR update:
         let r: f64 = StandardNormal.sample(&mut self.barostat.rng); // N(0,1)
         let chi = ChiSquared::new(dof - 1.0)
             .unwrap()
             .sample(&mut self.barostat.rng); // χ²_{dof-1}
 
+        let ke_target = 0.5 * dof * GAS_CONST_R * t_target_k;
+
         // Discrete-time exact solution for the OU process in K (from Bussi 2007):
         // K' = K*c + ke_bar*(1.0 - c) * [ (chi + r*r)/dof ] + 2.0*r*sqrt(c*(1.0-c)*K*ke_bar/dof)
         let kprime = ke * c
-            + ke_bar * (1.0 - c) * ((chi + r * r) / dof)
-            + 2.0 * r * ((c * (1.0 - c) * ke * ke_bar / dof).sqrt());
+            + ke_target * (1.0 - c) * ((chi + r * r) / dof)
+            + 2.0 * r * ((c * (1.0 - c) * ke * ke_target / dof).sqrt());
 
         let lam = (kprime / ke).sqrt() as f32;
 
@@ -375,7 +372,6 @@ impl MdState {
     /// and ergodicity, but the friction parameter damps real dynamics as it grows. This applies an OU update.
     /// todo: Should this be based on f64?
     pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma_ps: f32, temp_k: f32) {
-        // return; // todo temp!!
         let c = (-gamma_ps * dt).exp();
         let s2 = (1.0 - c * c).max(0.0); // numerical guard
 
@@ -575,4 +571,57 @@ pub(crate) fn measure_instantaneous_pressure(
 
     // Convert to bar
     p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
+}
+
+impl MdState {
+    // todo: Consider removing this in favor or exposing these values in snapshots.
+    // todo: Then, applications could display in GUI etc.
+    /// Print ambient parameters, as a sanity check.
+    pub(crate) fn print_ambient_data(&self, pressure: f64) {
+        println!("\n------Ambient stats at step {}--------", self.step_count);
+
+        let cell_vol = self.cell.volume() as f64;
+        let atom_count = &self.atoms.iter().filter(|a| !a.static_).count();
+        println!(
+            "Cell vol: {cell_vol:.3} Å^3 num dynamic atoms: {atom_count} num water mols: {}",
+            self.water.len()
+        );
+
+        let temp = self.temperature();
+        println!("\nTemperature: {temp:.2} K");
+
+        let mut water_v = 0.;
+        for mol in &self.water {
+            water_v += mol.o.vel.magnitude();
+        }
+        let mut atom_v = 0.;
+        for atom in self.atoms.iter().filter(|a| !a.static_) {
+            atom_v += atom.vel.magnitude();
+        }
+
+        println!(
+            "Ke: {:.2} kcal/mol = {:.2} (Å/ps)²  DOF: {}",
+            self.kinetic_energy,
+            self.kinetic_energy * ACCEL_CONVERSION as f64,
+            self.thermo_dof
+        );
+
+        println!(
+            "Water O avg vel: {:.3} Å/ps | Atom (non-static) avg vel: {:.3} Å/ps",
+            water_v / self.water.len() as f32,
+            atom_v / *atom_count as f32
+        );
+
+        println!("\nPressure: {pressure:.3} bar");
+
+        eprintln!(
+            "W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.5}",
+            self.barostat.virial_bonded,
+            self.barostat.virial_nonbonded_short_range,
+            self.barostat.virial_nonbonded_long_range,
+            self.barostat.virial_constraints,
+        );
+
+        println!("------------------------");
+    }
 }

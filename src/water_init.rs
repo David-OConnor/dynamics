@@ -205,6 +205,7 @@ pub fn make_water_mols(
     cell: &SimBox,
     temperature_tgt: f32,
     atoms: &[AtomDynamics],
+    zero_com_drift: bool,
 ) -> Vec<WaterMol> {
     println!("Initializing water molecules...");
     let start = Instant::now();
@@ -306,14 +307,14 @@ pub fn make_water_mols(
         );
     }
 
-    init_velocities_rigid(&mut result, temperature_tgt, cell);
+    init_velocities_rigid(&mut result, temperature_tgt, zero_com_drift);
 
     let elapsed = start.elapsed().as_millis();
     println!("Complete in {elapsed} ms.");
     result
 }
 
-fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, _cell: &SimBox) {
+fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: bool) {
     use rand_distr::Normal;
 
     let mut rng = rand::rng();
@@ -402,9 +403,10 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, _cell: &SimBox) {
     remove_com_velocity(mols);
 
     // Optional: compute KE (translation+rotation == sum ½ m v^2 now) and rescale to T_target
-    let (ke_raw, dof) = kinetic_energy_and_dof(mols); // dof = 6*N - 3
-    let lambda =
-        (t_target / (2.0 * (ke_raw * ACCEL_CONVERSION_INV) / (dof as f32 * GAS_CONST_R))).sqrt();
+    let (ke_raw, dof) = kinetic_energy_and_dof(mols, zero_com_drift);
+
+    let lambda = (t_target / (2.0 * ke_raw) / (dof as f32 * GAS_CONST_R as f32)).sqrt();
+
     for a in atoms_mut(mols) {
         if a.mass > 0.0 {
             a.vel *= lambda;
@@ -412,18 +414,24 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, _cell: &SimBox) {
     }
 }
 
-fn kinetic_energy_and_dof(mols: &[WaterMol]) -> (f32, usize) {
-    let mut ke = 0.0;
-    let mut dof = 0usize;
-    for m in mols {
-        for a in [&m.o, &m.h0, &m.h1] {
-            ke += 0.5 * a.mass * a.vel.dot(a.vel);
-            dof += 3;
-        }
+/// Calculate kinetic energy in kcal/mol, and DOF for water only.
+/// Water is rigid, so 3 DOF per molecule.
+fn kinetic_energy_and_dof(mols: &[WaterMol], zero_com_drift: bool) -> (f32, usize) {
+    let mut ke = 0.;
+    for w in mols {
+        ke += (w.o.mass * w.o.vel.magnitude_squared()) as f64;
+        ke += (w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
+        ke += (w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
     }
-    // remove 3 for total COM; remove constraints if you track them
-    let n_constraints = 3 * mols.len();
-    (ke, dof - 3 - n_constraints)
+
+    let mut dof = mols.len() * 3;
+
+    if zero_com_drift {
+        dof = dof.saturating_sub(3);
+    }
+
+    // Add in the 0.5 factor, and convert from amu • (Å/ps)² to kcal/mol.
+    (ke as f32 * 0.5 * ACCEL_CONVERSION_INV, dof)
 }
 
 fn atoms_mut(mols: &mut [WaterMol]) -> impl Iterator<Item = &mut AtomDynamics> {

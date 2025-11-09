@@ -57,6 +57,7 @@ pub const SCALE_COUL_14: f32 = 1.0 / 1.2;
 // files and amino19.lib.) to the self-consistent amber units required to calculate Coulomb force.
 // We apply this to dynamic and static atoms when building Indexed params, and to water molecules
 // on their construction. We do not apply this during integration.
+// Electrostatic constant: 332.0522 kcal·Å/(mol·e²). This is the square root of that.
 pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 
 /// We use this to load the correct data from LJ lookup tables. Since we use indices,

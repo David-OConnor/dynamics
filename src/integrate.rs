@@ -1,7 +1,6 @@
 //! Contains integration code, including the primary time step.
 
 use std::{
-    f32::MAX,
     fmt,
     fmt::{Display, Formatter},
     time::Instant,
@@ -10,6 +9,15 @@ use std::{
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 
+use crate::{
+    ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
+    HydrogenConstraint, MdState,
+    ambient::measure_instantaneous_pressure,
+    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
+    water_settle,
+    water_settle::{RESET_ANGLE_RATIO, settle_drift},
+};
+
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
 const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
@@ -17,15 +25,6 @@ const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 // For example, pathological starting conditions including hydrogen placement.
 const MAX_ACCEL: f32 = 1e5;
 const MAX_ACCEL_SQ: f32 = MAX_ACCEL * MAX_ACCEL;
-
-use crate::{
-    ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
-    HydrogenConstraint, MdState,
-    ambient::{GAS_CONST_R, measure_instantaneous_pressure},
-    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
-    water_settle,
-    water_settle::{RESET_ANGLE_RATIO, settle_drift},
-};
 
 // todo: Make this Thermostat instead of Integrator? And have a WIP Integrator with just VV.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -146,10 +145,6 @@ impl MdState {
                     self.barostat.virial_total(),
                 );
 
-                if self.step_count.is_multiple_of(200) {
-                    self.print_ambient_data(pressure);
-                }
-
                 if !self.cfg.overrides.baro_disabled {
                     // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
                     // todo is showing *much* to high.
@@ -245,10 +240,6 @@ impl MdState {
                     &self.cell,
                     self.barostat.virial_total(),
                 );
-
-                if self.step_count.is_multiple_of(200) {
-                    self.print_ambient_data(pressure);
-                }
 
                 if !self.cfg.overrides.baro_disabled {
                     // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
@@ -367,6 +358,10 @@ impl MdState {
             }
         }
 
+        if self.step_count.is_multiple_of(200) {
+            self.print_ambient_data(pressure);
+        }
+
         let start = Instant::now(); // Not sure how else to handle. (Option would work)
         self.take_snapshot_if_required(pressure);
 
@@ -429,7 +424,8 @@ impl MdState {
             a.accel = a.force * self.mass_accel_factor[i];
             if a.accel.magnitude_squared() > MAX_ACCEL_SQ {
                 println!(
-                    "Error: Acceleration out of bounds on step{}. Clamping {:.3} to {:.3}",
+                    "Error: Acceleration out of bounds for atom {} on step {}. Clamping {:.3} to {:.3}",
+                    i,
                     self.step_count,
                     a.accel.magnitude(),
                     MAX_ACCEL
@@ -482,40 +478,5 @@ impl MdState {
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
             self.shake_hydrogens();
         }
-    }
-
-    // todo: Consider removing this in favor or exposing these values in snapshots.
-    // todo: Then, applications could display in GUI etc.
-    /// Print ambient parameters, as a sanity check.
-    pub(crate) fn print_ambient_data(&self, pressure: f64) {
-        println!("------------------------");
-
-        println!("\nPressure: {pressure} bar");
-        let temp = self.temperature();
-        println!("Temp: {temp} K");
-
-        let mut water_v = 0.;
-        for mol in &self.water {
-            water_v += mol.o.vel.magnitude();
-        }
-        println!("Water O vel: {:?}", water_v / self.water.len() as f32);
-
-        let cell_vol = self.cell.volume() as f64;
-        eprintln!(
-            "KE={:.3} kcal/mol  Vol={:.3} Å^3  W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.5}",
-            self.kinetic_energy,
-            cell_vol,
-            self.barostat.virial_bonded,
-            self.barostat.virial_nonbonded_short_range,
-            self.barostat.virial_nonbonded_long_range,
-            self.barostat.virial_constraints,
-        );
-
-        eprintln!("Pressure: {:.3} bar", pressure,);
-
-        // temperature path
-        let ndof = 3 * self.atoms.iter().filter(|a| !a.static_).count() + 6 * self.water.len() - 3;
-        let T_k = (2.0 * temp) / (ndof as f64 * GAS_CONST_R as f64);
-        eprintln!("T={:.1}K  ndof={}", T_k, ndof);
     }
 }
