@@ -596,7 +596,7 @@ impl MdState {
         let cell_vol = self.cell.volume() as f64;
         let atom_count = &self.atoms.iter().filter(|a| !a.static_).count();
         println!(
-            "Cell vol: {cell_vol:.3} Å^3 num dynamic atoms: {atom_count} num water mols: {}",
+            "Cell vol: {cell_vol:.1} Å^3 num dynamic atoms: {atom_count} num water mols: {}",
             self.water.len()
         );
 

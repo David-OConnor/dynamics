@@ -105,6 +105,7 @@ pub mod minimize_energy;
 
 #[cfg(test)]
 mod tests;
+mod sa_surface;
 // mod h_bond_inference;
 
 #[cfg(feature = "cuda")]

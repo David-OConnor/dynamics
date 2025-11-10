@@ -62,6 +62,9 @@ cudarc = { version = "0.17.7", default-features = false, features = ["std", "dri
 # When building the python version, change this to Dyanmic Loading. temporarily. (Windows only)
 cudarc = { version = "0.17.7", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-linking", "cuda-13000"], optional=true }
 
+# We use this to compute the volume of  solvent accessible surface mesh when adding water molecules
+mcubes = "0.1.7"
+
 # todo: Enable cuda wiht a custom PR
 #candle-core = { version = "0.9.1" }
 #candle-nn = { version = "0.9.1" }

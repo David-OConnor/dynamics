@@ -6,18 +6,16 @@
 
 use std::{f32::consts::TAU, time::Instant};
 
-use lin_alg::f32::{Mat3 as Mat3F32, Quaternion as QuaternionF32, Vec3};
+use lin_alg::f32::{Mat3 as Mat3F32, Quaternion as QuaternionF32, Quaternion, Vec3};
 use rand::{Rng, distr::Uniform, seq::SliceRandom};
+use rand::rngs::ThreadRng;
+use rand_distr::Normal;
 use rand_distr::Distribution;
 
-use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics,
-    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
-    water_opc::WaterMol,
-};
+use crate::{ACCEL_CONVERSION_INV, AtomDynamics, ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox}, water_opc::WaterMol, sa_surface, MdState};
 
-// 0.997 g cm⁻³ is a good default density. We use this for initializing and maintaining
-// the water density and molecule count.
+// 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing
+// and maintaining the water density and molecule count.
 const WATER_DENSITY: f32 = 0.997;
 
 // g / mol (or AMU per molecule)
@@ -38,169 +36,33 @@ const MIN_NONWATER_DIST: f32 = 3.75;
 // A conservative water-water (Oxygen-Oxygen) minimum distance. 2.7 - 3.2 Å is suitable.
 const MIN_WATER_OO_DIST: f32 = 2.8;
 
+// todo: Look into what this is doing
+// "coarse but safe"?
+// const VOXEL_SIZE: f32 = 2.8;
+
 const MAX_GEN_ATTEMPTS: usize = 50; // todo: Tune A/R.
 // Max amount in each direction to move each atom from the grid. Makes the initialization
 // less crystaline.
 const JITTER: f32 = 5.;
 
-// Start free-volume code ----------
+// todo: Adjust this as required, e.g. perhaps simulate until the atoms are all deconflicted.
+const NUM_SIM_STEPS: usize = 100;
+const SIM_DT: f32 = 0.010; // ps. What should this be?
 
-#[derive(Clone)]
-struct CellList {
-    cell_size: f32,
-    dims: [usize; 3],
-    low: Vec3,
-    high: Vec3,
-    inv_extent: Vec3,
-    buckets: Vec<Vec<usize>>,
-}
 
-impl CellList {
-    fn new(cell: &SimBox, cell_size: f32, capacity_hint: usize) -> Self {
-        let low = cell.bounds_low;
-        let high = cell.bounds_high;
-        let extent = high - low;
-        let dims = [
-            (extent.x / cell_size).floor().max(1.0) as usize,
-            (extent.y / cell_size).floor().max(1.0) as usize,
-            (extent.z / cell_size).floor().max(1.0) as usize,
-        ];
-        let inv_extent = Vec3::new(1.0 / extent.x, 1.0 / extent.y, 1.0 / extent.z);
-
-        let mut buckets = Vec::with_capacity(dims[0] * dims[1] * dims[2]);
-        buckets.resize_with(buckets.capacity(), Vec::new);
-
-        let n_buckets = buckets.len();
-
-        if capacity_hint > 0 {
-            // amortize: naive pre-reserve
-            for b in &mut buckets {
-                b.reserve((capacity_hint as f32 / n_buckets as f32).ceil() as usize + 4);
-            }
-        }
-        Self {
-            cell_size,
-            dims,
-            low,
-            high,
-            inv_extent,
-            buckets,
-        }
-    }
-
-    #[inline]
-    fn idx3(&self, mut ix: isize, mut iy: isize, mut iz: isize) -> usize {
-        let nx = self.dims[0] as isize;
-        let ny = self.dims[1] as isize;
-        let nz = self.dims[2] as isize;
-        // periodic wrap
-        ix = (ix % nx + nx) % nx;
-        iy = (iy % ny + ny) % ny;
-        iz = (iz % nz + nz) % nz;
-        (ix as usize) + self.dims[0] * (iy as usize) + self.dims[0] * self.dims[1] * (iz as usize)
-    }
-
-    #[inline]
-    fn to_ijk(&self, p: Vec3) -> (isize, isize, isize) {
-        // Map to [0,1) then scale by dims
-        let r = self.inv_extent.hadamard_product(p - self.low);
-        let fx = (r.x.fract() + 1.0).fract();
-        let fy = (r.y.fract() + 1.0).fract();
-        let fz = (r.z.fract() + 1.0).fract();
-        let ix = (fx * self.dims[0] as f32).floor() as isize;
-        let iy = (fy * self.dims[1] as f32).floor() as isize;
-        let iz = (fz * self.dims[2] as f32).floor() as isize;
-        (ix, iy, iz)
-    }
-
-    fn clear(&mut self) {
-        for b in &mut self.buckets {
-            b.clear();
-        }
-    }
-
-    fn insert(&mut self, idx: usize, p: Vec3) {
-        let (ix, iy, iz) = self.to_ijk(p);
-        let k = self.idx3(ix, iy, iz);
-        self.buckets[k].push(idx);
-    }
-
-    /// Iterate indices in the 3×3×3 neighborhood (periodic).
-    fn neighbors<'a>(&'a self, p: Vec3) -> impl Iterator<Item = usize> + 'a {
-        let (ix, iy, iz) = self.to_ijk(p);
-        let nx = self.dims[0] as isize;
-        let ny = self.dims[1] as isize;
-        let nz = self.dims[2] as isize;
-        let mut out = Vec::with_capacity(64);
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                for dz in -1..=1 {
-                    let k = self.idx3(ix + dx, iy + dy, iz + dz);
-                    out.extend(self.buckets[k].iter().copied());
-                }
-            }
-        }
-        out.into_iter()
-    }
-}
-
-struct FreeMask {
-    centers: Vec<Vec3>, // voxel centers that are "free"
-    voxel_size: f32,
-}
-
-fn build_free_mask(cell: &SimBox, atoms: &[AtomDynamics], voxel_size: f32) -> FreeMask {
-    let low = cell.bounds_low;
-    let high = cell.bounds_high;
-    let ext = high - low;
-    let nx = (ext.x / voxel_size).floor().max(1.0) as usize;
-    let ny = (ext.y / voxel_size).floor().max(1.0) as usize;
-    let nz = (ext.z / voxel_size).floor().max(1.0) as usize;
-
-    // Cell list for atoms with search cell size = MIN_WATER_NONWATER_DIST
-    let mut cl_atoms = CellList::new(cell, MIN_NONWATER_DIST, atoms.len());
-    cl_atoms.clear();
-    for (i, a) in atoms.iter().enumerate() {
-        cl_atoms.insert(i, a.posit);
-    }
-
-    let mut centers = Vec::new();
-
-    for ix in 0..nx {
-        for iy in 0..ny {
-            for iz in 0..nz {
-                let c = Vec3::new(
-                    low.x + (ix as f32 + 0.5) * voxel_size,
-                    low.y + (iy as f32 + 0.5) * voxel_size,
-                    low.z + (iz as f32 + 0.5) * voxel_size,
-                );
-
-                // Quick reject using neighbors
-                let mut ok = true;
-                for j in cl_atoms.neighbors(c) {
-                    let d = cell.min_image(atoms[j].posit - c).magnitude();
-                    if d < MIN_NONWATER_DIST {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok {
-                    centers.push(c);
-                }
-            }
-        }
-    }
-    FreeMask {
-        centers,
-        voxel_size,
-    }
-}
-
-// End free-volume code ---------
-
-/// Generate water molecules to meet a temperature target, using a standard density. We deconflict
-/// with (solute) atoms in the simulation, and base the number of molecules to add on the free space,
-/// not the total cell volume.
+/// Generate water molecules to meet a temperature target, using standard density assumptions.
+/// We deconflict with (solute) atoms in the simulation, and base the number of molecules to add
+/// on the free space, not the total cell volume.
+///
+/// Process:
+/// - Compute the solvent-free volume using an isosurface
+/// - Compute the number of molecules to add
+/// - Add them on a regular grid with random orientations, and velocities in a random distribution
+/// that matches the target temperature.
+/// - Run a brief simulation with the solute
+/// atoms as static, to intially position water molecules realistically. This
+/// takes advantage of our simulations' acceleration limits to deconflict water molecules
+/// from the solute and each other.
 pub fn make_water_mols(
     cell: &SimBox,
     temperature_tgt: f32,
@@ -210,118 +72,92 @@ pub fn make_water_mols(
     println!("Initializing water molecules...");
     let start = Instant::now();
 
-    // Build free-volume mask (excludes voxels too close to solute)
-    let voxel_size = 2.8_f32.max(MIN_WATER_OO_DIST); // coarse but safe
-    let mask = build_free_mask(cell, atoms, voxel_size);
+    // Initialize an RNG for orientations.
+    let mut rng = rand::rng();
+    let distro = Uniform::<f32>::new(0.0, 1.0).unwrap();
+
+    let cell_volume = cell.volume();
+    let mol_volume = sa_surface::vol_take_up_by_atoms(atoms);
+    let free_vol = cell_volume - mol_volume;
 
     // Estimate free volume & n_mols from it
-    let free_vol = (mask.centers.len() as f32) * (voxel_size.powi(3));
     let n_mols = (WATER_MOLS_PER_VOL * free_vol).round() as usize;
 
     println!(
-        "Solvent free volume: {:.2} / {:.2} Å³ / 1000",
+        "Solvent-free vol: {:.2} Cell vol: {:.2} (Å³ / 1,000)  |  Mols to add: {n_mols}",
         free_vol / 1_000.,
-        cell.volume() / 1_000.
+        cell_volume / 1_000.
     );
 
-    // Shuffle candidates and greedily accept with fast O–O checks
-    let mut rng = rand::rng();
-    let mut candidates = mask.centers.clone();
-    candidates.shuffle(&mut rng);
+    let mut result = Vec::with_capacity(n_mols);
 
-    // Build once: solute cell list for quick recheck (used after jitter)
-    let mut cl_atoms = CellList::new(cell, MIN_NONWATER_DIST, atoms.len());
-    cl_atoms.clear();
-    for (i, a) in atoms.iter().enumerate() {
-        cl_atoms.insert(i, a.posit);
+    if n_mols == 0 {
+        println!("Complete in {} ms.", start.elapsed().as_millis());
+        return result;
     }
 
-    let mut cl_wat = CellList::new(cell, MIN_WATER_OO_DIST, n_mols);
-    cl_wat.clear();
+    // Initialize the correct number of water molecules on a uniform grid. We ignore the solute for
+    let lx = cell.bounds_high.x - cell.bounds_low.x;
+    let ly = cell.bounds_high.y - cell.bounds_low.y;
+    let lz = cell.bounds_high.z - cell.bounds_low.z;
 
-    let uni01 = Uniform::<f32>::new(0.0, 1.0).unwrap();
-    let mut result: Vec<WaterMol> = Vec::with_capacity(n_mols);
+    let base = (n_mols as f32).cbrt().round().max(1.0) as usize;
+    let n_x = base;
+    let n_y = base;
+    let n_z = ((n_mols + (n_x * n_y) - 1) / (n_x * n_y)).max(1);
 
-    for mut c in candidates.into_iter() {
-        if result.len() >= n_mols {
-            break;
-        }
+    let spacing_x = lx / n_x as f32;
+    let spacing_y = ly / n_y as f32;
+    let spacing_z = lz / n_z as f32;
 
-        if JITTER.abs() > 0.0 {
-            c.x += (rng.sample(uni01) - 0.5) * 2.0 * JITTER;
-            c.y += (rng.sample(uni01) - 0.5) * 2.0 * JITTER;
-            c.z += (rng.sample(uni01) - 0.5) * 2.0 * JITTER;
-            c = cell.wrap(c);
-        }
+    for i in 0..n_mols {
+        let a = i % n_x;
+        let b = (i / n_x) % n_y;
+        let c = i / (n_x * n_y);
 
-        // Check for conflicts with non-water atoms.
-        let mut ok = true;
-        for j in cl_atoms.neighbors(c) {
-            let d = cell.min_image(atoms[j].posit - c).magnitude();
-            if d < MIN_NONWATER_DIST {
-                ok = false;
-                break;
-            }
-        }
-        if !ok {
-            continue;
-        }
-
-        // Check for conflicts with other waters.
-
-        let mut ok = true;
-        for j in cl_wat.neighbors(c) {
-            let d = cell.min_image(result[j].o.posit - c).magnitude();
-            if d < MIN_WATER_OO_DIST {
-                ok = false;
-                break;
-            }
-        }
-        if !ok {
-            continue;
-        }
-
-        // Random orientation (Shoemake)
-        let (u1, u2, u3) = (rng.sample(uni01), rng.sample(uni01), rng.sample(uni01));
-        let sqrt1_minus_u1 = (1.0 - u1).sqrt();
-        let sqrt_u1 = u1.sqrt();
-        let (theta1, theta2) = (TAU * u2, TAU * u3);
-        let q = QuaternionF32::new(
-            sqrt1_minus_u1 * theta1.sin(),
-            sqrt1_minus_u1 * theta1.cos(),
-            sqrt_u1 * theta2.sin(),
-            sqrt_u1 * theta2.cos(),
-        )
-        .to_normalized();
-
-        let idx = result.len();
-        result.push(WaterMol::new(c, Vec3::new_zero(), q));
-        cl_wat.insert(idx, c);
-    }
-
-    if result.len() < n_mols {
-        eprintln!(
-            "Placed {} / {} waters; consider enlarging the box or loosening thresholds.",
-            result.len(),
-            n_mols
+        let posit = Vec3::new(
+            cell.bounds_low.x + (a as f32 + 0.5) * spacing_x,
+            cell.bounds_low.y + (b as f32 + 0.5) * spacing_y,
+            cell.bounds_low.z + (c as f32 + 0.5) * spacing_z,
         );
+
+        result.push(WaterMol::new(
+            posit,
+            Vec3::new_zero(),
+            random_quaternion(&mut rng, distro),
+        ));
     }
 
-    init_velocities_rigid(&mut result, temperature_tgt, zero_com_drift);
+    // todo: Should we run the sim before, or after initializing velocities?
+
+    // Run a brief simulation
+    //
+    // // todo... hmm.
+    // let md = MdState::new(
+    //     dev,
+    //     MdConfig {
+    //         ..Default::default()
+    //     },
+    //     param_set,
+    // );
+    //
+    // for _ in 0..NUM_SIM_STEPS {
+    //     md.step(SIM_DT);
+    // }
+
+    // Set velocities consistent with the temperature target.
+    init_velocities_rigid(&mut result, temperature_tgt, zero_com_drift, &mut rng);
 
     let elapsed = start.elapsed().as_millis();
-    println!("Complete in {elapsed} ms.");
+    println!("Added {} water mols in {elapsed} ms.", result.len());
     result
 }
 
-fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: bool) {
-    use rand_distr::Normal;
-
-    let mut rng = rand::rng();
+fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: bool, rng: &mut ThreadRng) {
     let kT = KB_A2_PS2_PER_K_PER_AMU * t_target;
 
     for m in mols.iter_mut() {
-        // COM & relative positions
+        // COM and relative positions
         let (r_com, m_tot) = {
             let mut r = Vec3::new_zero();
             let mut m_tot = 0.0;
@@ -339,7 +175,7 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: b
         // Sample COM velocity
         let sigma_v = (kT / m_tot).sqrt();
         let n = Normal::new(0.0, sigma_v).unwrap();
-        let v_com = Vec3::new(n.sample(&mut rng), n.sample(&mut rng), n.sample(&mut rng));
+        let v_com = Vec3::new(n.sample(rng), n.sample(rng), n.sample(rng));
 
         // Inertia tensor about COM (world frame)
         // Build as arrays (your code)
@@ -382,13 +218,13 @@ fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: b
         let L_principal = Vec3::new(
             Normal::new(0.0, (kT * eigvals.x.max(0.0)).sqrt())
                 .unwrap()
-                .sample(&mut rng),
+                .sample(rng),
             Normal::new(0.0, (kT * eigvals.y.max(0.0)).sqrt())
                 .unwrap()
-                .sample(&mut rng),
+                .sample(rng),
             Normal::new(0.0, (kT * eigvals.z.max(0.0)).sqrt())
                 .unwrap()
-                .sample(&mut rng),
+                .sample(rng),
         );
         let L_world = eigvecs * L_principal; // assumes Mat3 * Vec3 is implemented
         let omega = I.solve_system(L_world); // ω = I^{-1} L
@@ -452,4 +288,22 @@ fn remove_com_velocity(mols: &mut [WaterMol]) {
     for a in atoms_mut(mols) {
         a.vel -= v_com;
     }
+}
+
+
+// todo: It might be nice to have this in lin_alg, although I don't want to add the rand
+// todo dependency to it.
+fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> QuaternionF32 {
+    let (u1, u2, u3) = (rng.sample(distro), rng.sample(distro), rng.sample(distro));
+    let sqrt1_minus_u1 = (1.0 - u1).sqrt();
+    let sqrt_u1 = u1.sqrt();
+    let (theta1, theta2) = (TAU * u2, TAU * u3);
+
+    QuaternionF32::new(
+        sqrt1_minus_u1 * theta1.sin(),
+        sqrt1_minus_u1 * theta1.cos(),
+        sqrt_u1 * theta2.sin(),
+        sqrt_u1 * theta2.cos(),
+    )
+        .to_normalized()
 }
