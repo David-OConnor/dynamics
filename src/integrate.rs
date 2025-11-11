@@ -378,6 +378,11 @@ impl MdState {
                 self.computation_time.total += elapsed;
             }
         }
+
+        // todo temp!
+        // if self.water_only_sim_at_init {
+        //     self.take_snapshot_if_required(pressure);
+        // }
     }
 
     /// Half kick and drift for non-water and water. We call this one or more time

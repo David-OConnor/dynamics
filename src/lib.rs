@@ -1010,6 +1010,9 @@ impl MdState {
             } else {
                 match &self.spme_force_prev {
                     Some((forces, potential_e, virial_e)) => {
+                        // Unpack; forces were applied to flattened water and non-water
+                        // due to how the our GPU pipeline works.
+
                         // self.unpack_apply_pme_forces(forces, &[]);
                         // todo: This is a C+P from the unpack fn! We are getting a borrow error otherwise.
                         let water_start = self.atoms.len();
@@ -1020,11 +1023,12 @@ impl MdState {
                             } else {
                                 let i_wat = i - water_start;
                                 let i_wat_mol = i_wat / 3;
-                                match i_wat % 3 {
-                                    0 => self.water[i_wat_mol].m.force += *f,
-                                    1 => self.water[i_wat_mol].h0.force += *f,
-                                    _ => self.water[i_wat_mol].h1.force += *f,
-                                }
+                                // match i_wat % 3 {
+                                    // todo temp rm!!!
+                                    // 0 => self.water[i_wat_mol].m.force += *f,
+                                    // 1 => self.water[i_wat_mol].h0.force += *f,
+                                    // _ => self.water[i_wat_mol].h1.force += *f,
+                                // }
                             }
                         }
 

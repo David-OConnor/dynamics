@@ -37,7 +37,6 @@ const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 // Vdw contact distance between water molecules and organic molecules is roughly 3.5 Å.
 // todo: Hmm. We could get lower, but there's some risk of an H atom being too close,
 // todo and we're currently only measuring water o dist to atoms.
-// const MIN_NONWATER_DIST: f32 = 3.75;
 const MIN_NONWATER_DIST: f32 = 1.7;
 const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 
@@ -50,9 +49,11 @@ const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
 
 // Higher is better, but slower. After hydrogen bond networks are settled, higher doens't
 // improve things.
-const NUM_SIM_STEPS: usize = 600;
+
+const NUM_SIM_STEPS: usize = 800;
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
-const SIM_DT: f32 = 0.002;
+// We seem to get better settling results with a low dt.
+const SIM_DT: f32 = 0.001;
 
 /// Generate water molecules to meet a temperature target, using standard density assumptions.
 /// We deconflict with (solute) atoms in the simulation, and base the number of molecules to add
@@ -171,7 +172,7 @@ pub fn make_water_mols(
     }
 
     // Set velocities consistent with the temperature target.
-    init_velocities_rigid(&mut result, temperature_tgt, zero_com_drift, &mut rng);
+    init_velocities(&mut result, temperature_tgt, zero_com_drift, &mut rng);
 
     let elapsed = start.elapsed().as_millis();
     println!(
@@ -181,8 +182,9 @@ pub fn make_water_mols(
     result
 }
 
-
-fn init_velocities_rigid(
+/// Note: This sets a reasonable default, but our thermostat, applied notably during
+/// our initial water simulation, determines the actual temperature set at proper sim init.
+fn init_velocities(
     mols: &mut [WaterMol],
     t_target: f32,
     zero_com_drift: bool,
@@ -244,7 +246,6 @@ fn init_velocities_rigid(
         add_I(&mut I_arr, inertia(r_h0, m.h0.mass));
         add_I(&mut I_arr, inertia(r_h1, m.h1.mass));
 
-        // Convert to Mat3 once, then use
         let I = Mat3F32::from_arr(I_arr);
 
         // Diagonalize and solve with the Mat3 methods
@@ -272,10 +273,11 @@ fn init_velocities_rigid(
     // Remove global COM drift
     remove_com_velocity(mols);
 
-    // Optional: compute KE (translation+rotation == sum ½ m v^2 now) and rescale to T_target
     let (ke_raw, dof) = kinetic_energy_and_dof(mols, zero_com_drift);
 
-    let lambda = (t_target / (2.0 * ke_raw) / (dof as f32 * GAS_CONST_R as f32)).sqrt();
+    // current T = 2 KE / (dof * R)
+    let temperature_meas = (2.0 * ke_raw) / (dof as f32 * GAS_CONST_R as f32);
+    let lambda = (t_target / temperature_meas).sqrt();
 
     for a in atoms_mut(mols) {
         if a.mass > 0.0 {
@@ -346,6 +348,11 @@ impl MdState {
     /// prior to the first proper simulation step. Runs MD on water only.
     /// Make sure to only run this after state is properly initialized, e.g. towards the end
     /// of init; not immediately after populating waters.
+    ///
+    /// This will result in an immediate energy bump as water positions settle from their grid
+    /// into position. As they settle, the thermostat will bring the velocities down to set
+    /// the target temp. This sim should run long enough to the water is stable by the time
+    /// the main sim starts.
     pub fn md_on_water_only(&mut self, dev: &ComputationDevice) {
         println!("Initializing water H bond networks...");
         let start = Instant::now();

@@ -26,6 +26,11 @@ pub(crate) const GAS_CONST_R: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Am
 pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 
+// We set an aggressive thermostat during water initialization, then a more relaxed one at runtime.
+// This is for the VV/CVSR themostat only.
+const TAU_TEMP: f64 = 0.8;
+const TAU_TEMP_WATER_INIT: f64 = 0.03;
+
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for water atoms. Its size and position should be such as to keep the system
 /// solvated. We may move it around during the sim.
@@ -164,6 +169,7 @@ pub struct BerendsenBarostat {
     pub tau_pressure: f64,
     /// Temperature-coupling time constant. Note: This is for thermostat; not barostat.
     /// Lower means more sensitive.
+    /// For CSVR thermostat only; not Langevin
     pub tau_temp: f64,
     /// bar‑1 (≈4.5×10⁻⁵ for water at 300K, 1bar)
     pub kappa_t: f64,
@@ -184,7 +190,7 @@ impl Default for BerendsenBarostat {
             pressure_target: 1.,
             // Relaxation time: 1 ps ⇒ gentle volume changes every few steps.
             tau_pressure: 1.,
-            tau_temp: 0.03,
+            tau_temp: TAU_TEMP,
             // Isothermal compressibility of water at 298 K.
             kappa_t: 4.5e-5,
             //These virials init to 0 here, and at the start of each integrator step.
@@ -305,16 +311,21 @@ impl MdState {
     /// static atoms.
     /// We cache this at init. Used for kinetic energy and temperature computations.
     pub(crate) fn dof_for_thermo(&self) -> usize {
-        let result = 3 * self.atoms.iter().filter(|a| !a.static_).count() + 3 * self.water.len();
+        let mut result = 3 * self.water.len();
+        if !self.water_only_sim_at_init {
+            result += 3 * self.atoms.iter().filter(|a| !a.static_).count();
+        }
 
         let num_constraints = {
             let mut c = 0;
 
-            for atom in &self.atoms {
-                if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained
-                    && atom.element == Element::Hydrogen
-                {
-                    c += 1;
+            if !self.water_only_sim_at_init {
+                for atom in &self.atoms {
+                    if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained
+                        && atom.element == Element::Hydrogen
+                    {
+                        c += 1;
+                    }
                 }
             }
 
@@ -337,7 +348,13 @@ impl MdState {
         // Cached during the kick-and-drift step.
         let ke = self.kinetic_energy; // In kcal/mol
 
-        let c = (-dt / self.barostat.tau_temp).exp();
+        let tau_temp = if self.water_only_sim_at_init {
+            TAU_TEMP_WATER_INIT
+        } else {
+            self.barostat.tau_temp
+        };
+
+        let c = (-dt / tau_temp).exp();
 
         // Draw the two random variates used in the exact CSVR update:
         let r: f64 = StandardNormal.sample(&mut self.barostat.rng); // N(0,1)
@@ -356,14 +373,9 @@ impl MdState {
         let lam = (kprime / ke).sqrt() as f32;
 
         for a in &mut self.atoms {
-            // todo temp break
-            // break;
-
             if a.static_ {
                 continue;
             }
-
-            // todo: Experimenting.
 
             a.vel *= lam;
         }
@@ -378,7 +390,15 @@ impl MdState {
     /// and ergodicity, but the friction parameter damps real dynamics as it grows. This applies an OU update.
     /// todo: Should this be based on f64?
     pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma_ps: f32, temp_tgt_k: f32) {
-        let c = (-gamma_ps * dt).exp();
+        // todo: More aggressive gamma for water init?
+        // let gamma = if self.water_only_sim_at_init {
+        //             GAMMA_WATER_INIT
+        //         } else {
+        //             gamma_ps
+        //         };
+        let gamma = gamma_ps;
+
+        let c = (-gamma * dt).exp();
         let s2 = (1.0 - c * c).max(0.0); // numerical guard
 
         for a in &mut self.atoms {
@@ -398,7 +418,7 @@ impl MdState {
             a.vel.z = c * a.vel.z + sigma * nz;
         }
 
-        self.apply_langevin_thermostat_water(dt, gamma_ps, temp_tgt_k);
+        self.apply_langevin_thermostat_water(dt, gamma, temp_tgt_k);
     }
 
     /// Part of the langevin thermostat.
