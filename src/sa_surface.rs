@@ -2,7 +2,6 @@
 //! taken up by molecules when adding water, for the purpose of choosing how many water molecules
 //! to add in a given volume
 
-
 use lin_alg::f32::Vec3;
 use mcubes::{MarchingCubes, MeshSide};
 
@@ -25,21 +24,21 @@ pub fn vol_take_up_by_atoms(atoms: &[AtomDynamics]) -> f32 {
     let mut bb_min = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
     let mut bb_max = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
     let mut r_max: f32 = 0.0;
-    
+
     for a in atoms {
         let r = a.element.vdw_radius() + SOLVENT_RAD;
         r_max = r_max.max(r);
 
         bb_min = Vec3::new(
-            bb_min.x.min(a.posit.x ),
-            bb_min.y.min(a.posit.y ),
-            bb_min.z.min(a.posit.z ),
+            bb_min.x.min(a.posit.x),
+            bb_min.y.min(a.posit.y),
+            bb_min.z.min(a.posit.z),
         );
 
         bb_max = Vec3::new(
-            bb_max.x.max(a.posit.x ),
-            bb_max.y.max(a.posit.y ),
-            bb_max.z.max(a.posit.z ),
+            bb_max.x.max(a.posit.x),
+            bb_max.y.max(a.posit.y),
+            bb_max.z.max(a.posit.z),
         );
     }
     bb_min -= Vec3::splat(r_max + PRECISION);

@@ -360,21 +360,23 @@ impl MdState {
             }
         }
 
-        if self.step_count.is_multiple_of(200) {
-            self.print_ambient_data(pressure);
-        }
+        if !self.water_only_sim_at_init {
+            if self.step_count.is_multiple_of(500) {
+                self.print_ambient_data(pressure);
+            }
 
-        let start = Instant::now(); // Not sure how else to handle. (Option would work)
-        self.take_snapshot_if_required(pressure);
+            let start = Instant::now(); // Not sure how else to handle. (Option would work)
+            self.take_snapshot_if_required(pressure);
 
-        if log_time {
-            let elapsed = start.elapsed().as_micros() as u64;
-            self.computation_time.snapshot_sum += elapsed;
-        }
+            if log_time {
+                let elapsed = start.elapsed().as_micros() as u64;
+                self.computation_time.snapshot_sum += elapsed;
+            }
 
-        if log_time {
-            let elapsed = start_entire_step.elapsed().as_micros() as u64;
-            self.computation_time.total += elapsed;
+            if log_time {
+                let elapsed = start_entire_step.elapsed().as_micros() as u64;
+                self.computation_time.total += elapsed;
+            }
         }
     }
 

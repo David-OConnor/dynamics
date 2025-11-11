@@ -6,13 +6,16 @@
 
 use std::{f32::consts::TAU, time::Instant};
 
-use lin_alg::f32::{Mat3 as Mat3F32, Quaternion as QuaternionF32, Quaternion, Vec3};
-use rand::{Rng, distr::Uniform, seq::SliceRandom};
-use rand::rngs::ThreadRng;
-use rand_distr::Normal;
-use rand_distr::Distribution;
+use lin_alg::f32::{Mat3 as Mat3F32, Quaternion as QuaternionF32, Vec3};
+use rand::{Rng, distr::Uniform, rngs::ThreadRng};
+use rand_distr::{Distribution, Normal};
 
-use crate::{ACCEL_CONVERSION_INV, AtomDynamics, ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox}, water_opc::WaterMol, sa_surface, MdState};
+use crate::{
+    ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, MdState,
+    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
+    sa_surface,
+    water_opc::WaterMol,
+};
 
 // 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing
 // and maintaining the water density and molecule count.
@@ -32,23 +35,13 @@ const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 
 // Don't generate water molecules that are too close to other atoms.
 // Vdw contact distance between water molecules and organic molecules is roughly 3.5 Å.
-const MIN_NONWATER_DIST: f32 = 3.75;
-// A conservative water-water (Oxygen-Oxygen) minimum distance. 2.7 - 3.2 Å is suitable.
-const MIN_WATER_OO_DIST: f32 = 2.8;
+const MIN_NONWATER_DIST: f32 = 3.75; // todo: Lower this?
+const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 
-// todo: Look into what this is doing
-// "coarse but safe"?
-// const VOXEL_SIZE: f32 = 2.8;
-
-const MAX_GEN_ATTEMPTS: usize = 50; // todo: Tune A/R.
-// Max amount in each direction to move each atom from the grid. Makes the initialization
-// less crystaline.
-const JITTER: f32 = 5.;
-
-// todo: Adjust this as required, e.g. perhaps simulate until the atoms are all deconflicted.
-const NUM_SIM_STEPS: usize = 100;
-const SIM_DT: f32 = 0.010; // ps. What should this be?
-
+// Higher is better, but slower. After hydrogen bond networks are settled, higher doens't
+// improve things.
+const NUM_SIM_STEPS: usize = 600;
+const SIM_DT: f32 = 0.002;
 
 /// Generate water molecules to meet a temperature target, using standard density assumptions.
 /// We deconflict with (solute) atoms in the simulation, and base the number of molecules to add
@@ -58,11 +51,13 @@ const SIM_DT: f32 = 0.010; // ps. What should this be?
 /// - Compute the solvent-free volume using an isosurface
 /// - Compute the number of molecules to add
 /// - Add them on a regular grid with random orientations, and velocities in a random distribution
-/// that matches the target temperature.
+/// that matches the target temperature. Move molecules to the edge that are too close to
+/// solute atoms.
 /// - Run a brief simulation with the solute
 /// atoms as static, to intially position water molecules realistically. This
-/// takes advantage of our simulations' acceleration limits to deconflict water molecules
-/// from the solute and each other.
+/// takes advantage of our simulations' acceleration limits to set up realistic geometry using
+/// hydrogen bond networks, and breaks the crystal lattice.
+
 pub fn make_water_mols(
     cell: &SimBox,
     temperature_tgt: f32,
@@ -84,7 +79,7 @@ pub fn make_water_mols(
     let n_mols = (WATER_MOLS_PER_VOL * free_vol).round() as usize;
 
     println!(
-        "Solvent-free vol: {:.2} Cell vol: {:.2} (Å³ / 1,000)  |  Mols to add: {n_mols}",
+        "Solvent-free vol: {:.2} Cell vol: {:.2} (Å³ / 1,000)",
         free_vol / 1_000.,
         cell_volume / 1_000.
     );
@@ -110,7 +105,14 @@ pub fn make_water_mols(
     let spacing_y = ly / n_y as f32;
     let spacing_z = lz / n_z as f32;
 
-    for i in 0..n_mols {
+    // Solute
+    let atom_posits: Vec<_> = atoms.iter().map(|a| a.posit).collect();
+
+    let fault_ratio = 2; // Prevents unbounded looping.
+    let mut num_added = 0;
+    let mut loops_used = 0;
+
+    for i in 0..n_mols * fault_ratio {
         let a = i % n_x;
         let b = (i / n_x) % n_y;
         let c = i / (n_x * n_y);
@@ -121,39 +123,52 @@ pub fn make_water_mols(
             cell.bounds_low.z + (c as f32 + 0.5) * spacing_z,
         );
 
+        // If overlapping with a solute atom, don't place. We'll catch it at the end.
+        // todo: I'm unclear on how this works. Adds to the outside? Potentially wraps?
+        // todo: Just fills up part of the last grid "rect" in the cube?
+        let mut skip_this = false;
+        for atom_p in &atom_posits {
+            let dist_sq = (*atom_p - posit).magnitude_squared();
+            if dist_sq < MIN_NONWATER_DIST_SQ {
+                skip_this = true;
+                break;
+            }
+        }
+        if skip_this {
+            loops_used += 1;
+            continue;
+        }
+
         result.push(WaterMol::new(
             posit,
             Vec3::new_zero(),
             random_quaternion(&mut rng, distro),
         ));
+        num_added += 1;
+
+        if num_added == n_mols {
+            break;
+        }
+        loops_used += 1;
     }
-
-    // todo: Should we run the sim before, or after initializing velocities?
-
-    // Run a brief simulation
-    //
-    // // todo... hmm.
-    // let md = MdState::new(
-    //     dev,
-    //     MdConfig {
-    //         ..Default::default()
-    //     },
-    //     param_set,
-    // );
-    //
-    // for _ in 0..NUM_SIM_STEPS {
-    //     md.step(SIM_DT);
-    // }
 
     // Set velocities consistent with the temperature target.
     init_velocities_rigid(&mut result, temperature_tgt, zero_com_drift, &mut rng);
 
     let elapsed = start.elapsed().as_millis();
-    println!("Added {} water mols in {elapsed} ms.", result.len());
+    println!(
+        "Added {} / {n_mols} water mols in {elapsed} ms. Used {loops_used} loops",
+        result.len()
+    );
     result
 }
 
-fn init_velocities_rigid(mols: &mut [WaterMol], t_target: f32, zero_com_drift: bool, rng: &mut ThreadRng) {
+fn init_velocities_rigid(
+    mols: &mut [WaterMol],
+    t_target: f32,
+    zero_com_drift: bool,
+    rng: &mut ThreadRng,
+) {
     let kT = KB_A2_PS2_PER_K_PER_AMU * t_target;
 
     for m in mols.iter_mut() {
@@ -290,7 +305,6 @@ fn remove_com_velocity(mols: &mut [WaterMol]) {
     }
 }
 
-
 // todo: It might be nice to have this in lin_alg, although I don't want to add the rand
 // todo dependency to it.
 fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> QuaternionF32 {
@@ -305,5 +319,41 @@ fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> QuaternionF32
         sqrt_u1 * theta2.sin(),
         sqrt_u1 * theta2.cos(),
     )
-        .to_normalized()
+    .to_normalized()
+}
+
+impl MdState {
+    /// Use this to help initialize water molecules to realistic geometry of hydrogen bond networks,
+    /// prior to the first proper simulation step. Runs MD on water only.
+    /// Make sure to only run this after state is properly initialized, e.g. towards the end
+    /// of init; not immediately after populating waters.
+    pub fn md_on_water_only(&mut self, dev: &ComputationDevice) {
+        println!("Initializing water H bond networks...");
+        let start = Instant::now();
+
+        // This disables things like snapshot saving, and certain prints.
+        self.water_only_sim_at_init = true;
+
+        // Mark all non-water atoms as static; keep track of their original state here.
+        let mut static_state = Vec::with_capacity(self.atoms.len());
+        for a in &mut self.atoms {
+            static_state.push(a.static_);
+            a.static_ = true;
+        }
+
+        for _ in 0..NUM_SIM_STEPS {
+            self.step(dev, SIM_DT);
+        }
+
+        // Restore the original static state.
+        for (i, a) in self.atoms.iter_mut().enumerate() {
+            a.static_ = static_state[i];
+        }
+
+        self.water_only_sim_at_init = false;
+        self.step_count = 0; // Reset.
+
+        let elapsed = start.elapsed().as_millis();
+        println!("Water H bond networks complete in {elapsed} ms");
+    }
 }

@@ -103,9 +103,9 @@ mod com_zero;
 mod gpu_interface;
 pub mod minimize_energy;
 
+mod sa_surface;
 #[cfg(test)]
 mod tests;
-mod sa_surface;
 // mod h_bond_inference;
 
 #[cfg(feature = "cuda")]
@@ -655,6 +655,8 @@ pub struct MdState {
     thermo_dof: usize,
     /// Used to track which molecule each atom is associated with in our flattened structures.
     pub mol_start_indices: Vec<usize>,
+    /// A flag we set to disable certain things like snapshots during this MD phase.
+    water_only_sim_at_init: bool,
 }
 
 impl Display for MdState {
@@ -907,8 +909,11 @@ impl MdState {
         #[cfg(target_arch = "x86_64")]
         result.pack_atoms();
 
-        // todo: Add to config A/R,
-        if let Some(max_iters) = cfg.max_init_relaxation_iters {
+        if !result.cfg.overrides.skip_water {
+            result.md_on_water_only(dev);
+        }
+
+        if let Some(max_iters) = result.cfg.max_init_relaxation_iters {
             result.minimize_energy(dev, max_iters);
         }
 
