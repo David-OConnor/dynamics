@@ -161,9 +161,6 @@ impl LjTables {
                     println!("J > J: {j} std: {}", self.n_std);
                 }
 
-                // todo temp
-                assert!(i < self.n_std && j < self.n_std && i != j);
-
                 // Elements before row i: sum_{r=0}^{i-1} (N-1-r) = i*(2N - i - 1)/2
                 // Offset within row i: (j - i - 1)
                 let idx = i * (2 * self.n_std - i - 1) / 2 + (j - i - 1);
@@ -537,7 +534,6 @@ impl MdState {
                             tgt: BodyRef::NonWater(i_std),
                             src: BodyRef::Water { mol: i_water, site },
                             scale_14: false,
-                            // todo: Ensure you reverse it.
                             lj_indices: LjTableIndices::StdWater(i_std),
                             calc_lj: site == WaterSite::O,
                             calc_coulomb: site != WaterSite::O,
