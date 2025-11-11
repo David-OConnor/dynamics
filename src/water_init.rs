@@ -35,12 +35,23 @@ const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 
 // Don't generate water molecules that are too close to other atoms.
 // Vdw contact distance between water molecules and organic molecules is roughly 3.5 Å.
-const MIN_NONWATER_DIST: f32 = 3.75; // todo: Lower this?
+// todo: Hmm. We could get lower, but there's some risk of an H atom being too close,
+// todo and we're currently only measuring water o dist to atoms.
+// const MIN_NONWATER_DIST: f32 = 3.75;
+const MIN_NONWATER_DIST: f32 = 1.7;
 const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
+
+// This seems low, but allows more flexibility in placement, and isn't so low
+// as to cause the system to blow up. Distances will be set up accurately
+// in the initial water-only sim.
+// in the initial water-only sim.
+const MIN_WATER_O_O_DIST: f32 = 1.7;
+const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
 
 // Higher is better, but slower. After hydrogen bond networks are settled, higher doens't
 // improve things.
 const NUM_SIM_STEPS: usize = 600;
+// Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 const SIM_DT: f32 = 0.002;
 
 /// Generate water molecules to meet a temperature target, using standard density assumptions.
@@ -57,7 +68,9 @@ const SIM_DT: f32 = 0.002;
 /// atoms as static, to intially position water molecules realistically. This
 /// takes advantage of our simulations' acceleration limits to set up realistic geometry using
 /// hydrogen bond networks, and breaks the crystal lattice.
-
+///
+/// Note: If we're able to place most, but not all waters, the barostat should adjust the sim box size
+/// to account for the lower-than-specific pressure.
 pub fn make_water_mols(
     cell: &SimBox,
     temperature_tgt: f32,
@@ -108,14 +121,18 @@ pub fn make_water_mols(
     // Solute
     let atom_posits: Vec<_> = atoms.iter().map(|a| a.posit).collect();
 
-    let fault_ratio = 2; // Prevents unbounded looping.
+    // Prevents unbounded looping. A higher value means we're more likely to succed,
+    // but the run time could be higher.
+    let fault_ratio = 3;
+
     let mut num_added = 0;
     let mut loops_used = 0;
 
-    for i in 0..n_mols * fault_ratio {
+    'outer: for i in 0..n_mols * fault_ratio {
         let a = i % n_x;
         let b = (i / n_x) % n_y;
-        let c = i / (n_x * n_y);
+        let c = (i / (n_x * n_y)) % n_z;
+        // let c = i / (n_x * n_y);
 
         let posit = Vec3::new(
             cell.bounds_low.x + (a as f32 + 0.5) * spacing_x,
@@ -124,19 +141,20 @@ pub fn make_water_mols(
         );
 
         // If overlapping with a solute atom, don't place. We'll catch it at the end.
-        // todo: I'm unclear on how this works. Adds to the outside? Potentially wraps?
-        // todo: Just fills up part of the last grid "rect" in the cube?
-        let mut skip_this = false;
         for atom_p in &atom_posits {
             let dist_sq = (*atom_p - posit).magnitude_squared();
             if dist_sq < MIN_NONWATER_DIST_SQ {
-                skip_this = true;
-                break;
+                loops_used += 1;
+                continue 'outer;
             }
         }
-        if skip_this {
-            loops_used += 1;
-            continue;
+
+        for w in &result {
+            let dist_sq = (w.o.posit - posit).magnitude_squared();
+            if dist_sq < MIN_WATER_O_O_DIST_SQ {
+                loops_used += 1;
+                continue 'outer;
+            }
         }
 
         result.push(WaterMol::new(
@@ -162,6 +180,7 @@ pub fn make_water_mols(
     );
     result
 }
+
 
 fn init_velocities_rigid(
     mols: &mut [WaterMol],
