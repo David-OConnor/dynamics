@@ -5,6 +5,9 @@
 
 pub(crate) mod files;
 pub(crate) mod frcmod;
+
+// #[cfg(feature = "")]
+pub(crate) mod train;
 // Pub so the training program can access it.
 
 use std::{
@@ -22,23 +25,23 @@ use bio_files::{
     md_params::{DihedralParams, ForceFieldParams},
     mol2::Mol2,
 };
-use candle_core::{CudaDevice, DType, Device, IndexOp, Module, Tensor};
+use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn as nn;
 use candle_nn::{Embedding, Linear, VarBuilder, ops::sigmoid};
 
 use crate::param_inference::{
-    files::{MODEL_PATH, VOCAB_PATH},
+    files::MODEL_PATH,
     frcmod::{DIHEDRAL_FEATS, MAX_DIHEDRAL_TERMS},
 };
 
 /// We save this to file during training, and load it during inference.
 #[derive(Debug, Encode, Decode)]
-pub(crate) struct Vocabs {
+pub(crate) struct AtomVocab {
     pub el: HashMap<String, usize>,
     pub atom_type: HashMap<String, usize>,
 }
 
-impl Vocabs {
+impl AtomVocab {
     pub fn new(mol2_paths: &[PathBuf]) -> candle_core::Result<Self> {
         let mut elems: BTreeSet<String> = BTreeSet::new();
         let mut ff_types: BTreeSet<String> = BTreeSet::new();
@@ -339,7 +342,7 @@ fn build_dih_tensors(
 /// are generally Dihedral and improper only, but we've observed bond and angle as well.
 fn run_inference(
     model: &MolGNN,
-    vocabs: &Vocabs,
+    vocabs: &AtomVocab,
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     device: &Device,
@@ -439,7 +442,7 @@ pub fn infer_params(
 
     let start = Instant::now();
 
-    let vocabs: Vocabs = load_from_bytes(&vocab_bytes)?;
+    let vocabs: AtomVocab = load_from_bytes(&vocab_bytes)?;
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();
     let hidden_dim = 128;
@@ -498,7 +501,7 @@ pub fn infer_params(
                 continue;
             }
 
-            terms_vec.push(bio_files::md_params::DihedralParams {
+            terms_vec.push(DihedralParams {
                 atom_types: (ti.clone(), tj.clone(), tk.clone(), tl.clone()),
                 divider: 1,
                 barrier_height: barrier,
@@ -548,6 +551,9 @@ pub fn infer_params(
                 continue;
             }
 
+            // todo tremp
+            println!("Adding inferred dihedral for {:?}", (a.clone(), b.clone(), c.clone(), d.clone()));
+
             params.dihedral.insert(
                 (a.clone(), b.clone(), c.clone(), d.clone()),
                 vec![DihedralParams {
@@ -567,6 +573,12 @@ pub fn infer_params(
 
     let elapsed = start.elapsed().as_millis();
     println!("Inference complete in {elapsed} ms");
+
+    // We know that most molecules in the GeoStd set don't specify  bond or
+    // valence angles (although some do) We can therefor assume that every 3
+    // sets of linear atoms should be represented by gaff2.dat. Conduct a review
+    // of these, identify missing ones, and adjust FF types IOC to match valid gaff2.dat types.
+    // todo: Update Dihedrals based on this (?)
 
     Ok((ff_types, charges, params))
 }

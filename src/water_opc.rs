@@ -62,7 +62,7 @@ const O_RSTAR: f32 = 1.777_167_268;
 pub const O_SIGMA: f32 = O_RSTAR * SIGMA_FACTOR;
 pub const O_EPS: f32 = 0.212_800_813_0;
 
-// Partial charges. See the OPC paper, Table 2. None on O.
+// Partial charges in elementary charge.. See the OPC paper, Table 2. None on O.
 const Q_H: f32 = 0.6791 * CHARGE_UNIT_SCALER;
 const Q_EP: f32 = -2. * Q_H;
 

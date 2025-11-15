@@ -106,6 +106,7 @@ pub mod minimize_energy;
 mod sa_surface;
 #[cfg(test)]
 mod tests;
+mod inference_new;
 // mod h_bond_inference;
 
 #[cfg(feature = "cuda")]
@@ -1016,6 +1017,9 @@ impl MdState {
                         // self.unpack_apply_pme_forces(forces, &[]);
                         // todo: This is a C+P from the unpack fn! We are getting a borrow error otherwise.
                         let water_start = self.atoms.len();
+
+                        // todo: SPME is injecting energy into the system; fix!
+                        // todo: The thermostat is struggling to keep up.
 
                         for (i, f) in forces.iter().enumerate() {
                             if i < water_start {
