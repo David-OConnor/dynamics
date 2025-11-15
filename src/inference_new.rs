@@ -11,7 +11,7 @@
 
 use std::path::Path;
 use std::io;
-use bio_files::{AtomGeneric, BondGeneric, amber_typedef::{DefFile, AtomTypeDef}};
+use bio_files::{AtomGeneric, BondGeneric, amber_typedef::{AmberDef, AtomTypeDef}};
 use na_seq::Element;
 use crate::util::build_adjacency_list;
 
@@ -53,32 +53,34 @@ fn build_env(atoms: &[AtomGeneric], adj: &[Vec<usize>]) -> Vec<AtomEnv> {
 }
 
 /// Note: We've commented out all but the ones we need for small organic molecules.
-pub struct Defs {
+pub struct AmberDefSet {
     /// Newer AM1-BCC charge model. Use this with Gaff2 for small organic molecules?
-    pub abcg2: DefFile,
+    pub abcg2: AmberDef,
     // /// Protein, DNA, RNA?
-    // pub amber: DefFile,
+    // pub amber: AmberDef,
     // /// AM1-BCC for BCC corrections? For small organic molecules?
-    // pub bcc: DefFile,
+    // pub bcc: AmberDef,
     // /// Gas-phase ESP/RESP setups? Niche.
-    // pub gas: DefFile,
+    // pub gas: AmberDef,
     // /// Legacy Gaff?
-    // pub gff: DefFile,
+    // pub gff: AmberDef,
     /// Gaff2, for small organic molecules
-    pub gff2: DefFile,
+    pub gff2: AmberDef,
     // /// Used in TRIPOS/DOCK and old QSAR tools?
-    // pub sybyl: DefFile,
+    // pub sybyl: AmberDef,
 }
 
-impl Defs {
-    fn new() -> io::Result<Self> {
-        let abcg2 = DefFile::load(Path::new(DEF_ABCG2))?;
-        // let amber = DefFile::load(Path::new(DEF_AMBER))?;
-        // let bcc = DefFile::load(Path::new(DEF_BCC))?;
-        // let gas = DefFile::load(Path::new(DEF_GAS))?;
-        // let gff = DefFile::load(Path::new(DEF_GFF))?;
-        let gff2 = DefFile::load(Path::new(DEF_GFF2))?;
-        // let sybyl = DefFile::load(Path::new(DEF_SYBYL))?;
+impl AmberDefSet {
+    pub fn new() -> io::Result<Self> {
+        let abcg2 = AmberDef::new(DEF_ABCG2)?;
+        
+        // let amber = AmberDef::new(DEF_AMBER)?;
+        // let bcc = AmberDef::new(DEF_BCC)?;
+        // let gas = AmberDef::new(DEF_GAS)?;
+        // let gff = AmberDef::new(DEF_GFF)?;
+        
+        let gff2 = AmberDef::new(DEF_GFF2)?;
+        // let sybyl = AmberDef::new(DEF_SYBYL));
         
         Ok(Self {
             abcg2,
@@ -95,7 +97,7 @@ impl Defs {
 /// Find Amber force field types for atoms in a small organic molecule.
 /// todo: Partial charge here, or elsewhere?
 /// todo: Load
-pub fn find_ff_types(atoms: &[AtomGeneric], bonds: &[BondGeneric], defs: &Defs) -> Vec<String> {
+pub fn find_ff_types(atoms: &[AtomGeneric], bonds: &[BondGeneric], defs: &AmberDefSet) -> Vec<String> {
     let adj = build_adjacency_list(atoms, bonds).unwrap();
     let env = build_env(atoms, &adj);
 
@@ -105,7 +107,6 @@ pub fn find_ff_types(atoms: &[AtomGeneric], bonds: &[BondGeneric], defs: &Defs) 
         let env_i = &env[i];
 
         // The order of rules in the DEF file matters; we keep it.
-        // todo: Which def file[s] should we use?
         for def in &defs.gff2.atomtypes {
             if matches_def(def, atom, env_i) {
                 result.push(def.name.clone());
