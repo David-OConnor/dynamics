@@ -5,7 +5,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, loss};
 use rand::seq::SliceRandom;
 
-use crate::param_inference::{
+use crate::param_inference_ml::{
     AtomVocab, MolGNN,
     files::{GEOSTD_PATH, MODEL_PATH, VOCAB_PATH, find_paths},
     frcmod::{DIHEDRAL_FEATS, MAX_DIHEDRAL_TERMS},

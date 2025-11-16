@@ -1,632 +1,863 @@
-//! For inferring force field type and partial charge of small organic molecules using Amber's
-//! GeoStd library as training data. Uses a neural net.
+//! Uses reasoning similar to AnteChamber's to estimate force field parameters using DEF files.
+//! Specifically, we use DEF_GFF2 for Gaff2 force field names, and DEF_ABCG2 for FRCMOD
+//! bonded paraemter (generally dihedral) overrides.
+//! [Reference source code](https://github.com/Amber-MD/AmberClassic/tree/main/src/antechamber)
 //!
-//! todo: Use this to handle frcmod data as well.
+//! Reference Antechamber config files e.g. Also review the Antechamber config files in the Amber install dir: ATOMTYPE_BCC.DEF in $AMBERHOME/dat/antechamber
+//!
+//! Description of its parts: https://ambermd.org/antechamber/ac.html#am1bcc
+//! Of interest:
+//! -[Atomtype](https://github.com/Amber-MD/AmberClassic/blob/main/src/antechamber/atomtype.c)
+//! -[Bondtype](https://github.com/Amber-MD/AmberClassic/blob/main/src/antechamber/bondtype.c)
+//! -[Parmchk](https://github.com/Amber-MD/AmberClassic/blob/main/src/antechamber/parmchk2.c)
 
-pub(crate) mod files;
-pub(crate) mod frcmod;
+mod chem_env;
 
-// #[cfg(feature = "")]
-pub(crate) mod train;
-// Pub so the training program can access it.
+use chem_env::*;
 
-use std::{
-    collections::{BTreeSet, HashMap},
-    fs::File,
-    io,
-    io::{ErrorKind, Read, Write},
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{io, path::Path, time::Instant};
 
-use bincode::{Decode, Encode};
 use bio_files::{
-    AtomGeneric, BondGeneric,
-    md_params::{DihedralParams, ForceFieldParams},
-    mol2::Mol2,
+    AtomGeneric, BondGeneric, BondType,
+    amber_typedef::{AmberDef, AtomTypeDef},
 };
-use candle_core::{DType, Device, IndexOp, Module, Tensor};
-use candle_nn as nn;
-use candle_nn::{Embedding, Linear, VarBuilder, ops::sigmoid};
+use na_seq::Element;
 
-use crate::param_inference::{
-    files::MODEL_PATH,
-    frcmod::{DIHEDRAL_FEATS, MAX_DIHEDRAL_TERMS},
-};
+use crate::util::build_adjacency_list;
 
-/// We save this to file during training, and load it during inference.
-#[derive(Debug, Encode, Decode)]
-pub(crate) struct AtomVocab {
-    pub el: HashMap<String, usize>,
-    pub atom_type: HashMap<String, usize>,
+/// See note: Only loading ones we need for small organic molecules.
+const DEF_ABCG2: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_ABCG2.DEF");
+// const DEF_AMBER: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_AMBER.DEF");
+// const DEF_BCC: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_BCC.DEF");
+// const DEF_GAS: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_GAS.DEF");
+// const DEF_GFF: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_GFF.DEF");
+const DEF_GFF2: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_GFF2.DEF");
+// const DEF_SYBYL: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_SYBYL.DEF");
+
+/// Note: We've commented out all but the ones we need for small organic molecules.
+pub struct AmberDefSet {
+    /// Newer AM1-BCC charge model. Use this with Gaff2 for small organic molecules?
+    pub abcg2: AmberDef,
+    // /// Protein, DNA, RNA?
+    // pub amber: AmberDef,
+    // /// AM1-BCC for BCC corrections? For small organic molecules?
+    // pub bcc: AmberDef,
+    // /// Gas-phase ESP/RESP setups? Niche.
+    // pub gas: AmberDef,
+    // /// Legacy Gaff?
+    // pub gff: AmberDef,
+    /// Gaff2, for small organic molecules
+    pub gff2: AmberDef,
+    // /// Used in TRIPOS/DOCK and old QSAR tools?
+    // pub sybyl: AmberDef,
 }
 
-impl AtomVocab {
-    pub fn new(mol2_paths: &[PathBuf]) -> candle_core::Result<Self> {
-        let mut elems: BTreeSet<String> = BTreeSet::new();
-        let mut ff_types: BTreeSet<String> = BTreeSet::new();
+impl AmberDefSet {
+    pub fn new() -> io::Result<Self> {
+        let abcg2 = AmberDef::new(DEF_ABCG2)?;
 
-        for path in mol2_paths {
-            let mol = Mol2::load(path)?;
+        // let amber = AmberDef::new(DEF_AMBER)?;
+        // let bcc = AmberDef::new(DEF_BCC)?;
+        // let gas = AmberDef::new(DEF_GAS)?;
+        // let gff = AmberDef::new(DEF_GFF)?;
 
-            for atom in mol.atoms.iter() {
-                elems.insert(atom.element.to_letter());
-
-                // Ideally we won't encounter this with the Geostd data set.
-                let Some(ff) = &atom.force_field_type else {
-                    eprintln!("Error: Missing FF type on Geostd atom: {atom}");
-                    continue;
-                };
-
-                ff_types.insert(ff.clone());
-            }
-        }
-
-        let mut el_map = HashMap::new();
-        for (i, el) in elems.into_iter().enumerate() {
-            el_map.insert(el, i);
-        }
-
-        let mut atom_type_map = HashMap::new();
-        for (i, t) in ff_types.into_iter().enumerate() {
-            atom_type_map.insert(t, i);
-        }
+        let gff2 = AmberDef::new(DEF_GFF2)?;
+        // let sybyl = AmberDef::new(DEF_SYBYL));
 
         Ok(Self {
-            el: el_map,
-            atom_type: atom_type_map,
+            abcg2,
+            // amber,
+            // bcc,
+            // gas,
+            // gff,
+            gff2,
+            // sybyl,
         })
     }
 }
 
-// -------- GRU cell (hidden_dim -> hidden_dim) --------
 
-struct GruCell {
-    w_ih: Linear, // in -> 3*h
-    w_hh: Linear, // h -> 3*h
-    hidden_dim: usize,
+/// Describes an atom with information about the atoms it's bonded to, for
+/// the purposes of assigning it's FF type.
+#[derive(Debug)]
+struct AtomEnvData {
+    degree: u8,
+    num_attached_h: u8,
+    ring_sizes: Vec<u8>,
+    is_aromatic: bool,
+    num_double_bonds: u8,
+    num_triple_bonds: u8,
+    has_double_to_hetero: bool,
+    // todo: Do we need a struct that accurately represents the f9 chem env data? Is this it?
+    // e.g. something that has a `From<String>` method that parses `(XD4[sb',db])	&`(C(N4))`, etc (f9 col)
 }
 
-impl GruCell {
-    fn new(vb: VarBuilder, hidden_dim: usize) -> candle_core::Result<Self> {
-        let w_ih = nn::linear(hidden_dim, 3 * hidden_dim, vb.pp("w_ih"))?;
-        let w_hh = nn::linear(hidden_dim, 3 * hidden_dim, vb.pp("w_hh"))?;
-        Ok(Self {
-            w_ih,
-            w_hh,
-            hidden_dim,
-        })
+/// Part of the ring detection pipeline.
+fn dfs_find_rings(
+    start: usize,
+    current: usize,
+    depth: u8,
+    max_size: u8,
+    visited: &mut [bool],
+    path: &mut Vec<usize>,
+    adj: &[Vec<usize>],
+    ring_sizes: &mut [Vec<u8>],
+) {
+    if depth >= max_size {
+        return;
     }
 
-    fn forward(&self, x: &Tensor, h: &Tensor) -> candle_core::Result<Tensor> {
-        // x, h: [N, H]
-        let ih = self.w_ih.forward(x)?; // [N, 3H]
-        let hh = self.w_hh.forward(h)?; // [N, 3H]
-
-        let hsize = self.hidden_dim;
-        let i_r = ih.narrow(1, 0, hsize)?;
-        let i_z = ih.narrow(1, hsize, hsize)?;
-        let i_n = ih.narrow(1, 2 * hsize, hsize)?;
-
-        let h_r = hh.narrow(1, 0, hsize)?;
-        let h_z = hh.narrow(1, hsize, hsize)?;
-        let h_n = hh.narrow(1, 2 * hsize, hsize)?;
-
-        let r = sigmoid(&(i_r + h_r)?)?;
-        let z = sigmoid(&(i_z + h_z)?)?;
-        let n = (i_n + (r * h_n)?)?.tanh()?;
-
-        let one = Tensor::ones_like(&z)?;
-        let one_minus_z = one.sub(&z)?;
-
-        (&one_minus_z * n)? + (&z * h)?
-    }
-}
-
-// -------- Message passing layer --------
-
-struct MessagePassingLayer {
-    msg: Linear,
-    gru: GruCell,
-    // hidden_dim: usize,
-}
-
-impl MessagePassingLayer {
-    fn new(vb: VarBuilder, hidden_dim: usize) -> candle_core::Result<Self> {
-        let msg = nn::linear(hidden_dim * 2, hidden_dim, vb.pp("msg"))?;
-        let gru = GruCell::new(vb.pp("gru"), hidden_dim)?;
-        Ok(Self {
-            msg,
-            gru,
-            // hidden_dim,
-        })
-    }
-
-    fn forward(&self, h: &Tensor, edge_index: &Tensor) -> candle_core::Result<Tensor> {
-        if edge_index.dims()[0] == 0 {
-            return Ok(h.clone());
-        }
-
-        let src = edge_index.i((.., 0))?.contiguous()?;
-        let dst = edge_index.i((.., 1))?.contiguous()?;
-
-        let h_src = h.index_select(&src, 0)?;
-        let h_dst = h.index_select(&dst, 0)?;
-
-        let m_in = Tensor::cat(&[h_src, h_dst], 1)?;
-        let m = self.msg.forward(&m_in)?.relu()?;
-
-        let mut agg = Tensor::zeros_like(h)?.contiguous()?;
-        let m = m.contiguous()?;
-
-        agg = agg.index_add(&dst, &m, 0)?;
-
-        let h_new = self.gru.forward(&agg, h)?;
-        Ok(h_new)
-    }
-}
-
-// -------- Model --------
-
-pub(crate) struct MolGNN {
-    elem_emb: Embedding,
-    coord_lin: Linear,
-    mp1: MessagePassingLayer,
-    mp2: MessagePassingLayer,
-    mp3: MessagePassingLayer,
-    type_head: Linear,
-    charge_head: Linear,
-    dihedral_head: Linear, // new
-    improper_head: Linear,
-}
-
-impl MolGNN {
-    pub fn new(
-        vb: VarBuilder,
-        n_elems: usize,
-        n_atom_types: usize,
-        hidden_dim: usize,
-    ) -> candle_core::Result<Self> {
-        let elem_emb = nn::embedding(n_elems + 1, hidden_dim, vb.pp("elem_emb"))?;
-
-        let coord_lin = nn::linear(3, hidden_dim, vb.pp("coord_lin"))?;
-        let mp1 = MessagePassingLayer::new(vb.pp("mp1"), hidden_dim)?;
-        let mp2 = MessagePassingLayer::new(vb.pp("mp2"), hidden_dim)?;
-        let mp3 = MessagePassingLayer::new(vb.pp("mp3"), hidden_dim)?;
-        let type_head = nn::linear(hidden_dim, n_atom_types, vb.pp("type_head"))?;
-        let charge_head = nn::linear(hidden_dim, 1, vb.pp("charge_head"))?;
-
-        let dihedral_head = nn::linear(
-            hidden_dim * 4,
-            MAX_DIHEDRAL_TERMS * DIHEDRAL_FEATS,
-            vb.pp("dih_head"),
-        )?;
-        let improper_head = nn::linear(
-            hidden_dim * 4,
-            MAX_DIHEDRAL_TERMS * DIHEDRAL_FEATS,
-            vb.pp("improper_head"),
-        )?;
-
-        Ok(Self {
-            elem_emb,
-            coord_lin,
-            mp1,
-            mp2,
-            mp3,
-            type_head,
-            charge_head,
-            dihedral_head,
-            improper_head,
-        })
-    }
-
-    pub fn forward(
-        &self,
-        elem_ids: &Tensor,
-        coords: &Tensor,
-        edge_index: &Tensor,
-        dihedral_index: &Tensor,
-        improper_index: &Tensor,
-    ) -> candle_core::Result<(Tensor, Tensor, Tensor, Tensor)> {
-        let h_emb = self.elem_emb.forward(elem_ids)?;
-        let h_coord = self.coord_lin.forward(coords)?;
-        let mut h = (h_emb + h_coord)?;
-
-        h = self.mp1.forward(&h, edge_index)?;
-        h = self.mp2.forward(&h, edge_index)?;
-        h = self.mp3.forward(&h, edge_index)?;
-
-        let type_logits = self.type_head.forward(&h)?;
-        let charges = self.charge_head.forward(&h)?.squeeze(1)?;
-        // dihedrals
-        let dih_pred = if dihedral_index.dims()[0] == 0 {
-            Tensor::zeros(
-                (0, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS),
-                DType::F32,
-                h.device(),
-            )?
-        } else {
-            let i_idx = dihedral_index.i((.., 0))?.contiguous()?;
-            let j_idx = dihedral_index.i((.., 1))?.contiguous()?;
-            let k_idx = dihedral_index.i((.., 2))?.contiguous()?;
-            let l_idx = dihedral_index.i((.., 3))?.contiguous()?;
-
-            let hi = h.index_select(&i_idx, 0)?;
-            let hj = h.index_select(&j_idx, 0)?;
-            let hk = h.index_select(&k_idx, 0)?;
-            let hl = h.index_select(&l_idx, 0)?;
-
-            let dih_in = Tensor::cat(&[hi, hj, hk, hl], 1)?;
-            let dih_flat = self.dihedral_head.forward(&dih_in)?;
-            let n_dih = dihedral_index.dims()[0];
-            dih_flat.reshape((n_dih, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS))?
-        };
-
-        // impropers (same pattern)
-        let improper_pred = if improper_index.dims()[0] == 0 {
-            Tensor::zeros(
-                (0, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS),
-                DType::F32,
-                h.device(),
-            )?
-        } else {
-            let i_idx = improper_index.i((.., 0))?.contiguous()?;
-            let j_idx = improper_index.i((.., 1))?.contiguous()?;
-            let k_idx = improper_index.i((.., 2))?.contiguous()?;
-            let l_idx = improper_index.i((.., 3))?.contiguous()?;
-
-            let hi = h.index_select(&i_idx, 0)?;
-            let hj = h.index_select(&j_idx, 0)?;
-            let hk = h.index_select(&k_idx, 0)?;
-            let hl = h.index_select(&l_idx, 0)?;
-
-            let improper_in = Tensor::cat(&[hi, hj, hk, hl], 1)?;
-            let improper_flat = self.improper_head.forward(&improper_in)?;
-            let n_imp = improper_index.dims()[0];
-            improper_flat.reshape((n_imp, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS))?
-        };
-
-        Ok((type_logits, charges, dih_pred, improper_pred))
-    }
-}
-
-// -------- Inference --------
-
-fn build_dih_tensors(
-    atoms: &[AtomGeneric],
-    bonds: &[BondGeneric],
-    device: &Device,
-) -> candle_core::Result<(Tensor, Tensor)> {
-    let n = atoms.len();
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for b in bonds {
-        let i = (b.atom_0_sn - 1) as usize;
-        let j = (b.atom_1_sn - 1) as usize;
-        adj[i].push(j);
-        adj[j].push(i);
-    }
-
-    let mut dih_indices: Vec<i64> = Vec::new();
-    for b in bonds {
-        let j = (b.atom_0_sn - 1) as usize;
-        let k = (b.atom_1_sn - 1) as usize;
-        for &i in adj[j].iter() {
-            if i == k {
-                continue;
-            }
-            for &l in adj[k].iter() {
-                if l == j {
-                    continue;
+    for &nbr in &adj[current] {
+        if nbr == start && depth + 1 >= 3 {
+            let size = depth + 1;
+            for &idx in path.iter() {
+                if !ring_sizes[idx].contains(&size) {
+                    ring_sizes[idx].push(size);
                 }
-                dih_indices.push(i as i64);
-                dih_indices.push(j as i64);
-                dih_indices.push(k as i64);
-                dih_indices.push(l as i64);
             }
+        } else if !visited[nbr] {
+            visited[nbr] = true;
+            path.push(nbr);
+            dfs_find_rings(
+                start,
+                nbr,
+                depth + 1,
+                max_size,
+                visited,
+                path,
+                adj,
+                ring_sizes,
+            );
+            path.pop();
+            visited[nbr] = false;
+        }
+    }
+}
+
+/// This is used to identify rings the atom is part of; this is important for
+/// assigning the correct atom type, e.g. "c6" if the atom is part of a 6-member ring,
+/// instead of "c3".
+fn detect_rings(adj: &[Vec<usize>], max_size: u8) -> Vec<Vec<u8>> {
+    let n = adj.len();
+    let mut ring_sizes = vec![Vec::<u8>::new(); n];
+
+    for start in 0..n {
+        let mut visited = vec![false; n];
+        visited[start] = true;
+        let mut path = vec![start];
+        dfs_find_rings(
+            start,
+            start,
+            0,
+            max_size,
+            &mut visited,
+            &mut path,
+            adj,
+            &mut ring_sizes,
+        );
+    }
+
+    ring_sizes
+}
+
+// todo: Should we use bonds here too, which have BondType::Aromatic?
+fn is_aromatic_atom(
+    idx: usize,
+    atoms: &[AtomGeneric],
+    adj: &[Vec<usize>],
+    ring_sizes: &[Vec<u8>],
+) -> bool {
+    let rs = &ring_sizes[idx];
+
+    if !rs.iter().any(|&s| (5..=7).contains(&s)) {
+        return false;
+    }
+
+    let neighbors = &adj[idx];
+
+    if neighbors.len() != 3 {
+        return false;
+    }
+
+    let shared_ring_neighbors = neighbors
+        .iter()
+        .filter(|&&j| {
+            atoms[j].element != Element::Hydrogen && ring_sizes[j].iter().any(|s| rs.contains(s))
+        })
+        .count();
+
+    shared_ring_neighbors >= 2
+}
+
+fn build_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], adj: &[Vec<usize>]) -> Vec<AtomEnvData> {
+    let ring_sizes = detect_rings(adj, 8);
+
+    let mut aromatic_bond_counts = vec![0u8; atoms.len()];
+    let mut num_double_bonds = vec![0u8; atoms.len()];
+    let mut num_triple_bonds = vec![0u8; atoms.len()];
+    let mut has_double_to_hetero = vec![false; atoms.len()];
+
+    for bond in bonds {
+        let i = bond.atom_0_sn as usize - 1;
+        let j = bond.atom_1_sn as usize - 1;
+
+        match bond.bond_type {
+            BondType::Aromatic => {
+                let in_ring_i = ring_sizes[i].iter().any(|s| (5..=7).contains(s));
+                let in_ring_j = ring_sizes[j].iter().any(|s| (5..=7).contains(s));
+
+                if in_ring_i && in_ring_j {
+                    aromatic_bond_counts[i] = aromatic_bond_counts[i].saturating_add(1);
+                    aromatic_bond_counts[j] = aromatic_bond_counts[j].saturating_add(1);
+                }
+            }
+            BondType::Double => {
+                num_double_bonds[i] = num_double_bonds[i].saturating_add(1);
+                num_double_bonds[j] = num_double_bonds[j].saturating_add(1);
+
+                let ei = atoms[i].element;
+                let ej = atoms[j].element;
+
+                let i_hetero = matches!(
+                    ei,
+                    Element::Oxygen
+                        | Element::Nitrogen
+                        | Element::Sulfur
+                        | Element::Phosphorus
+                );
+                let j_hetero = matches!(
+                    ej,
+                    Element::Oxygen
+                        | Element::Nitrogen
+                        | Element::Sulfur
+                        | Element::Phosphorus
+                );
+
+                if i_hetero && !j_hetero {
+                    has_double_to_hetero[j] = true;
+                } else if j_hetero && !i_hetero {
+                    has_double_to_hetero[i] = true;
+                }
+            }
+            BondType::Triple => {
+                num_triple_bonds[i] = num_triple_bonds[i].saturating_add(1);
+                num_triple_bonds[j] = num_triple_bonds[j].saturating_add(1);
+            }
+            _ => {}
         }
     }
 
-    let n_dih = dih_indices.len() / 4;
-    let dihedral_index = if n_dih == 0 {
-        Tensor::zeros((0, 4), DType::I64, device)?
-    } else {
-        Tensor::from_slice(&dih_indices, (n_dih, 4), device)?
-    };
-
-    let improper_index = Tensor::zeros((0, 4), DType::I64, device)?;
-
-    Ok((dihedral_index, improper_index))
-}
-
-/// Find bond force field type, partial charge, and parameter overrides. (Paramater overrides
-/// are generally Dihedral and improper only, but we've observed bond and angle as well.
-fn run_inference(
-    model: &MolGNN,
-    vocabs: &AtomVocab,
-    atoms: &[AtomGeneric],
-    bonds: &[BondGeneric],
-    device: &Device,
-) -> candle_core::Result<(
-    Vec<String>,
-    Vec<f32>,
-    Tensor, // dihedral_pred: [n_dih, MAX_DIHEDRAL_TERMS, DIHEDRAL_FEATS]
-    Tensor, // dihedral_index: [n_dih, 4]
-)> {
-    let mut elem_ids = Vec::with_capacity(atoms.len());
-    let mut coords = Vec::with_capacity(atoms.len() * 3);
-
-    let oov_elem_id = vocabs.el.len();
-
-    for atom in atoms.iter() {
-        let el = &atom.element;
-        elem_ids.push(
-            vocabs
-                .el
-                .get(&el.to_letter())
-                .cloned()
-                .unwrap_or(oov_elem_id) as i64,
-        );
-
-        coords.push(atom.posit.x as f32);
-        coords.push(atom.posit.y as f32);
-        coords.push(atom.posit.z as f32);
-    }
-
-    let mut edge_index_vec: Vec<i64> = Vec::new();
-    for bond in bonds.iter() {
-        let i = (bond.atom_0_sn - 1) as i64;
-        let j = (bond.atom_1_sn - 1) as i64;
-        edge_index_vec.push(i);
-        edge_index_vec.push(j);
-        edge_index_vec.push(j);
-        edge_index_vec.push(i);
-    }
-
-    let elem_ids = Tensor::from_slice(&elem_ids, (atoms.len(),), device)?;
-    let coords = Tensor::from_slice(&coords, (atoms.len(), 3), device)?;
-    let edge_index = if edge_index_vec.is_empty() {
-        Tensor::zeros((0, 2), DType::I64, device)?
-    } else {
-        Tensor::from_slice(&edge_index_vec, (edge_index_vec.len() / 2, 2), device)?
-    };
-
-    // rebuild dihedrals for this molecule
-    let (dihedral_index, improper_index) = build_dih_tensors(atoms, bonds, device)?;
-
-    let (type_logits, charges_t, dihedral_pred, _improper_pred) = model.forward(
-        &elem_ids,
-        &coords,
-        &edge_index,
-        &dihedral_index,
-        &improper_index,
-    )?;
-
-    let type_ids = type_logits.argmax(1)?.to_dtype(DType::I64)?;
-    let type_ids: Vec<i64> = type_ids.to_vec1()?;
-    let charges: Vec<f32> = charges_t.to_vec1()?;
-
-    let inv_type_vocab: HashMap<usize, String> = vocabs
-        .atom_type
+    atoms
         .iter()
-        .map(|(k, v)| (*v, k.clone()))
-        .collect();
+        .enumerate()
+        .map(|(idx, _atom)| {
+            let neighbors = &adj[idx];
 
-    let mut ff_types = Vec::with_capacity(atoms.len());
-    for tid in type_ids {
-        ff_types.push(inv_type_vocab[&(tid as usize)].clone());
-    }
+            let degree = neighbors.len() as u8;
 
-    Ok((ff_types, charges, dihedral_pred, dihedral_index))
+            let num_attached_h = neighbors
+                .iter()
+                .filter(|&&j| atoms[j].element == Element::Hydrogen)
+                .count() as u8;
+
+            let is_in_ring_5_7 = ring_sizes[idx].iter().any(|s| (5..=7).contains(s));
+            let is_aromatic = is_in_ring_5_7 && aromatic_bond_counts[idx] >= 2;
+
+            AtomEnvData {
+                degree,
+                num_attached_h,
+                ring_sizes: ring_sizes[idx].clone(),
+                is_aromatic,
+                num_double_bonds: num_double_bonds[idx],
+                num_triple_bonds: num_triple_bonds[idx],
+                has_double_to_hetero: has_double_to_hetero[idx],
+            }
+        })
+        .collect()
 }
 
-/// Infer force field type, partial charge, and dihedral atoms for a molecule for
-/// which we don't have them.
-///
-/// We infer FF type and partial charge for each atom. We infer missing FRCMODM params (Generally
-/// dihedrals and impropers; occasionally others) based partially on which ones (defined by sets of
-/// 4 FF types) are present in this mol, but aren't in GAFF2. Note: This is trickier for Impropers,
-/// as it's authorized to ommit these in some cases. Proper dihedrals, on the other hand, are
-/// not permitted to be missing.
-pub fn infer_params(
-    atoms: &[AtomGeneric],
-    bonds: &[BondGeneric],
-    // todo: Consider bond stretching and valence angles eventually as well.
-    dihedrals_missing: Vec<(String, String, String, String)>,
-    improper_missing: Vec<(String, String, String, String)>,
-    gaff2: &ForceFieldParams,
-    model_bytes: &[u8], // E.g. included with application binary.
-    vocab_bytes: &[u8], // E.g. included with application binary.
-) -> candle_core::Result<(Vec<String>, Vec<f32>, ForceFieldParams)> {
-    // Note: CUDA doesn't seem faster here.
-    let dev_candle = Device::Cpu;
+fn parse_ring_size(s: &str) -> Option<u8> {
+    let s = s.trim();
+    let pos = s.find("RG")?;
+    let start = pos + 2;
+    let mut digits = String::new();
 
-    let start = Instant::now();
+    for ch in s[start..].chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+        } else {
+            break;
+        }
+    }
 
-    let vocabs: AtomVocab = load_from_bytes(&vocab_bytes)?;
-    let n_elems = vocabs.el.len();
-    let n_atom_types = vocabs.atom_type.len();
-    let hidden_dim = 128;
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
 
-    let mut varmap = candle_nn::VarMap::new();
-    let vb = VarBuilder::from_varmap(&mut varmap, DType::F32, &dev_candle);
-    let model = MolGNN::new(vb, n_elems, n_atom_types, hidden_dim)?;
+/// Used when determining which type of hydrogen to match, based on withdrawal count.
+fn is_elec_withdrawing_element(el: Element) -> bool {
+    use Element::*;
+    matches!(
+        el,
+        Oxygen | Nitrogen | Sulfur | Phosphorus | Fluorine | Chlorine | Bromine | Iodine
+    )
+}
 
-    // todo: Sort this out.
-    varmap.load(MODEL_PATH)?;
-    // varmap.load(model_bytes)?;
+/// Electron withdrawal. Used to determine H type.
+fn ew_count_for_heavy(idx: usize, atoms: &[AtomGeneric], adj: &[Vec<usize>]) -> u8 {
+    let mut count = 0u8;
 
-    let (ff_types, charges, dihedrals_pred, dihedral_index) =
-        run_inference(&model, &vocabs, atoms, bonds, &dev_candle)?;
+    for &j in &adj[idx] {
+        let nb = &atoms[j];
 
-    let mut params = ForceFieldParams::default();
-
-    let dihedrals = dihedrals_pred.to_vec3::<f32>()?;
-    let dih_idx = dihedral_index.to_vec2::<i64>()?;
-
-    // cache to reuse for missing list
-    let mut produced: std::collections::HashMap<
-        (String, String, String, String),
-        Vec<bio_files::md_params::DihedralParams>,
-    > = std::collections::HashMap::new();
-
-    // 1) all 4-atom lines we found in the mol
-    for (d_i, idxs) in dih_idx.iter().enumerate() {
-        let i = idxs[0] as usize;
-        let j = idxs[1] as usize;
-        let k = idxs[2] as usize;
-        let l = idxs[3] as usize;
-
-        let ti = ff_types[i].clone();
-        let tj = ff_types[j].clone();
-        let tk = ff_types[k].clone();
-        let tl = ff_types[l].clone();
-
-        let key = (ti.clone(), tj.clone(), tk.clone(), tl.clone());
-
-        if let Some(terms) =
-            gaff2.get_dihedral(&(ti.clone(), tj.clone(), tk.clone(), tl.clone()), false)
-        {
-            params.dihedral.insert(key.clone(), terms.clone());
-            produced.insert(key, terms.clone());
+        if nb.element == Element::Hydrogen {
             continue;
         }
 
-        let mut terms_vec = Vec::new();
-        for t in 0..MAX_DIHEDRAL_TERMS {
-            let barrier = dihedrals[d_i][t][0];
-            let phase = dihedrals[d_i][t][1];
-            let periodicity = dihedrals[d_i][t][2];
-
-            if barrier.abs() < 1e-5 {
-                continue;
-            }
-
-            terms_vec.push(DihedralParams {
-                atom_types: (ti.clone(), tj.clone(), tk.clone(), tl.clone()),
-                divider: 1,
-                barrier_height: barrier,
-                phase,
-                periodicity: periodicity.round() as u8,
-                comment: None,
-            });
+        if is_elec_withdrawing_element(nb.element) {
+            count = count.saturating_add(1);
         }
-
-        if terms_vec.is_empty() {
-            let barrier0 = dihedrals[d_i][0][0];
-            let phase0 = dihedrals[d_i][0][1];
-            let per0 = dihedrals[d_i][0][2];
-
-            terms_vec.push(DihedralParams {
-                atom_types: (ti.clone(), tj.clone(), tk.clone(), tl.clone()),
-                divider: 1,
-                barrier_height: if barrier0.abs() < 1e-5 { 0.1 } else { barrier0 },
-                phase: if phase0.abs() < 1e-5 { 0.0 } else { phase0 },
-                periodicity: if per0.abs() < 0.5 {
-                    1
-                } else {
-                    per0.round() as u8
-                },
-                comment: None,
-            });
-        }
-
-        // 2) caller-supplied missing dihedrals (already checked both orders upstream)
-        for (a, b, c, d) in &dihedrals_missing {
-            let key = (a.clone(), b.clone(), c.clone(), d.clone());
-            if params.dihedral.contains_key(&key) {
-                continue;
-            }
-
-            if let Some(terms) =
-                gaff2.get_dihedral(&(a.clone(), b.clone(), c.clone(), d.clone()), false)
-            {
-                params.dihedral.insert(key, terms.clone());
-                continue;
-            }
-
-            if let Some(terms) = produced.get(&(a.clone(), b.clone(), c.clone(), d.clone())) {
-                params
-                    .dihedral
-                    .insert((a.clone(), b.clone(), c.clone(), d.clone()), terms.clone());
-                continue;
-            }
-
-            // todo tremp
-            println!(
-                "Adding inferred dihedral for {:?}",
-                (a.clone(), b.clone(), c.clone(), d.clone())
-            );
-
-            params.dihedral.insert(
-                (a.clone(), b.clone(), c.clone(), d.clone()),
-                vec![DihedralParams {
-                    atom_types: (a.clone(), b.clone(), c.clone(), d.clone()),
-                    divider: 1,
-                    barrier_height: 0.1,
-                    phase: 0.0,
-                    periodicity: 1,
-                    comment: None,
-                }],
-            );
-        }
-
-        params.dihedral.insert(key.clone(), terms_vec.clone());
-        produced.insert(key, terms_vec);
     }
 
-    let elapsed = start.elapsed().as_millis();
-    println!("Inference complete in {elapsed} ms");
-
-    // We know that most molecules in the GeoStd set don't specify  bond or
-    // valence angles (although some do) We can therefor assume that every 3
-    // sets of linear atoms should be represented by gaff2.dat. Conduct a review
-    // of these, identify missing ones, and adjust FF types IOC to match valid gaff2.dat types.
-    // todo: Update Dihedrals based on this (?)
-
-    Ok((ff_types, charges, params))
+    // h1/h2/h3 only go up to 3; clamp to keep behavior sane.
+    count.min(3)
 }
 
-// C+P from graphics.
-/// Save to file, using Bincode. We currently use this for preference files.
-pub(crate) fn save<T: Encode>(path: &Path, data: &T) -> io::Result<()> {
-    let config = bincode::config::standard();
-
-    let encoded: Vec<u8> = bincode::encode_to_vec(data, config).unwrap();
-
-    let mut file = File::create(path)?;
-    file.write_all(&encoded)?;
-    Ok(())
-}
-
-// C+P from graphics.
-/// Load from file, using Bincode. We currently use this for preference files.
-pub(crate) fn load<T: Decode<()>>(path: &Path) -> io::Result<T> {
-    let config = bincode::config::standard();
-
-    let mut file = File::open(path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-
-    let (decoded, _len) = match bincode::decode_from_slice(&buffer, config) {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("Error loading from file. Did the format change?");
-            return Err(io::Error::new(ErrorKind::Other, "error loading"));
+/// Electron withdrawal. Used to determine H type.
+fn ew_count_for_atom(idx: usize, atoms: &[AtomGeneric], adj: &[Vec<usize>]) -> u8 {
+    if atoms[idx].element == Element::Hydrogen {
+        if let Some(nb) = single_heavy_neighbor(idx, atoms, adj) {
+            ew_count_for_heavy(nb, atoms, adj)
+        } else {
+            0
         }
-    };
-    Ok(decoded)
+    } else {
+        ew_count_for_heavy(idx, atoms, adj)
+    }
 }
 
-/// Load from file, using Bincode. We currently use this for preference files.
-pub(crate) fn load_from_bytes<T: Decode<()>>(buffer: &[u8]) -> io::Result<T> {
-    let config = bincode::config::standard();
+fn non_h_env_matches(
+    env_str: &str,
+    idx: usize,
+    _atoms: &[AtomGeneric],
+    env_all: &[AtomEnvData],
+    adj: &[Vec<usize>],
+) -> bool {
+    let env_str = env_str.trim();
 
-    let (decoded, _len) = match bincode::decode_from_slice(&buffer, config) {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("Error loading from file. Did the format change?");
-            return Err(io::Error::new(ErrorKind::Other, "error loading"));
+    if env_str == "&" {
+        return true;
+    }
+
+    if !env_str.starts_with('(') || !env_str.ends_with(')') {
+        return false;
+    }
+
+    let inner = &env_str[1..env_str.len() - 1].trim();
+    let parts: Vec<&str> = inner
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    if parts.is_empty() {
+        return false;
+    }
+
+    // We *only* support XX[AR...] patterns here.
+    // Examples:
+    //   (XX[AR1],XX[AR1],XX[AR1])  -- cp
+    //   (XX[AR1.AR2.AR3])         -- nu/nv/etc
+    let all_xx = parts.iter().all(|p| p.starts_with("XX[") && p.ends_with(']'));
+    if !all_xx {
+        // Unknown env syntax (C3[DB], C3(XA1), N2[DB], etc) – we treat as "doesn't match"
+        return false;
+    }
+
+    let mut required_aromatic_neighbors = 0usize;
+
+    for part in &parts {
+        let inside = &part[3..part.len() - 1]; // between "XX[" and "]"
+        let tags: Vec<&str> = inside.split('.').map(str::trim).collect();
+
+        if tags.iter().any(|t| t.starts_with("AR")) {
+            required_aromatic_neighbors += 1;
+        } else {
+            // XX[…] without AR – we don't know how to interpret it, fail
+            return false;
         }
+    }
+
+    if required_aromatic_neighbors == 0 {
+        return false;
+    }
+
+    let aromatic_neighbors = adj[idx]
+        .iter()
+        .filter(|&&j| env_all[j].is_aromatic)
+        .count();
+
+    aromatic_neighbors >= required_aromatic_neighbors
+}
+
+fn atomic_property_matches(
+    prop: &str,
+    idx: usize,
+    _atoms: &[AtomGeneric],
+    env_all: &[AtomEnvData],
+) -> bool {
+    let prop = prop.trim();
+    let env = &env_all[idx];
+
+    // RGn ring size (e.g. [RG3], [RG4])
+    if let Some(ring_size) = parse_ring_size(prop) {
+        if !env.ring_sizes.contains(&ring_size) {
+            return false;
+        }
+    }
+
+    // Any AR* tag → must be aromatic
+    if prop.contains("AR") && !env.is_aromatic {
+        return false;
+    }
+
+    // Gently handle [DB] / [TB] when they appear as plain tokens inside [...]
+    if let (Some(l), Some(r)) = (prop.find('['), prop.rfind(']')) {
+        if r > l + 1 {
+            let inside = &prop[l + 1..r];
+            let tokens: Vec<&str> = inside.split(',').map(str::trim).collect();
+
+            let mut needs_db = false;
+            let mut needs_tb = false;
+
+            for t in tokens {
+                match t {
+                    "DB" => needs_db = true,
+                    "TB" => needs_tb = true,
+                    _ => {}
+                }
+            }
+
+            if needs_db && env.num_double_bonds == 0 {
+                return false;
+            }
+
+            if needs_tb && env.num_triple_bonds == 0 {
+                return false;
+            }
+        }
+    }
+
+    // We intentionally ignore DL, sb, numeric qualifiers (2DL, 1DB, 3sb, …) here.
+    true
+}
+
+/// Checks each atom against a FF def to determine if it's a match. If it is, we assign the FF
+/// type from the def.
+///
+fn matches_def(
+    def: &AtomTypeDef,
+    idx: usize,
+    atoms: &[AtomGeneric],
+    env_all: &[AtomEnvData],
+    bonds: &[BondGeneric],
+    adj: &[Vec<usize>],
+) -> bool {
+    let atom = &atoms[idx];
+    let env = &env_all[idx];
+
+    if let Some(e) = def.element {
+        if atom.element != e {
+            return false;
+        }
+    }
+
+    if let Some(n) = def.attached_atoms {
+        if env.degree != n {
+            return false;
+        }
+    }
+
+    if let Some(nh) = def.attached_h {
+        if env.num_attached_h != nh {
+            return false;
+        }
+    }
+
+    if let Some(ew_needed) = def.electron_withdrawal_count {
+        let ew_here = ew_count_for_atom(idx, atoms, adj);
+        if ew_here != ew_needed {
+            return false;
+        }
+    }
+
+    if let Some(ref prop) = def.atomic_property {
+        if let Some(ring_size) = parse_ring_size(prop) {
+            if !env.ring_sizes.contains(&ring_size) {
+                return false;
+            }
+        }
+
+        if prop.contains("AR") && !env.is_aromatic {
+            return false;
+        }
+        // You can later route more of F8 through a similar pattern struct if you like.
+    }
+
+    if let Some(ref env_str) = def.chem_env {
+        if env_str != "&" {
+            if atom.element == Element::Hydrogen {
+                if !hydrogen_env_matches(env_str, idx, atoms, env_all, adj) {
+                    return false;
+                }
+            } else {
+                let pattern: ChemEnvPattern = env_str.as_str().into();
+                if !pattern.matches(idx, atoms, env_all, bonds, adj) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+/// Used for assigning atom types on Hydrogens.
+fn single_heavy_neighbor(idx: usize, atoms: &[AtomGeneric], adj: &[Vec<usize>]) -> Option<usize> {
+    let neighbors = &adj[idx];
+
+    let mut heavy = neighbors
+        .iter()
+        .copied()
+        .filter(|&j| atoms[j].element != Element::Hydrogen);
+
+    let first = heavy.next()?;
+    if heavy.next().is_some() {
+        return None;
+    }
+    Some(first)
+}
+
+fn hydrogen_env_matches(
+    env_str: &str,
+    idx: usize,
+    atoms: &[AtomGeneric],
+    env_all: &[AtomEnvData],
+    adj: &[Vec<usize>],
+) -> bool {
+    let env_str = env_str.trim();
+
+    if env_str == "&" {
+        return true;
+    }
+
+    if !env_str.starts_with('(') || !env_str.ends_with(')') {
+        return false;
+    }
+
+    let inner = env_str[1..env_str.len() - 1].trim();
+
+    let nb = match single_heavy_neighbor(idx, atoms, adj) {
+        Some(i) => i,
+        None => return false,
     };
-    Ok(decoded)
+
+    let nb_atom = &atoms[nb];
+    let nb_env = &env_all[nb];
+
+    match inner {
+        "O" => nb_atom.element == Element::Oxygen,
+        "N" => nb_atom.element == Element::Nitrogen,
+        "S" => nb_atom.element == Element::Sulfur,
+        "P" => nb_atom.element == Element::Phosphorus,
+
+        inner if inner.starts_with('C') => {
+            // (C4), (C3), (C) ...
+            let digits = &inner[1..].trim();
+            if digits.is_empty() {
+                nb_atom.element == Element::Carbon
+            } else if let Ok(target_deg) = digits.parse::<u8>() {
+                nb_atom.element == Element::Carbon && nb_env.degree == target_deg
+            } else {
+                false
+            }
+        }
+
+        _ => false,
+    }
+}
+
+/// This converts SP2 carbons to the correct types after the main algorithm infers
+/// types from DEF files. E.g. "cc", "cd", "c" etc.
+/// Adjust field names / bond-order enum to match your BondGeneric definition.
+fn postprocess_sp2_carbons(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
+    // Neighbour list with bond orders.
+    let mut nb: Vec<Vec<(usize, BondType)>> = vec![Vec::new(); atoms.len()];
+
+    for bond in bonds {
+        let i = bond.atom_0_sn as usize - 1;
+        let j = bond.atom_1_sn as usize - 1;
+        let order = bond.bond_type;
+
+        nb[i].push((j, order));
+        nb[j].push((i, order));
+    }
+
+    // Pass 1: identify carbonyl carbons: C=O / C=N / C=S / C=P.
+    // Only refine generic sp2 carbons (`c2`).
+    for i in 0..atoms.len() {
+        if atoms[i].element != Element::Carbon {
+            continue;
+        }
+
+        if types[i].as_str() != "c2" {
+            continue;
+        }
+
+        let mut double_to_hetero = false;
+
+        for &(j, order) in &nb[i] {
+            if matches!(order, BondType::Double) {
+                match atoms[j].element {
+                    Element::Oxygen
+                    | Element::Nitrogen
+                    | Element::Sulfur
+                    | Element::Phosphorus => {
+                        double_to_hetero = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if double_to_hetero {
+            types[i] = "c".to_string();
+        }
+    }
+
+    // Pass 2: cc / cd for remaining sp² carbons (still `c2`).
+    for i in 0..atoms.len() {
+        if atoms[i].element != Element::Carbon {
+            continue;
+        }
+
+        // Only refine generic sp² (`c2`); keep `c3` as truly sp³.
+        if types[i].as_str() != "c2" {
+            continue;
+        }
+
+        let mut double_to_carbon = 0u8;
+        let mut single_to_aromatic = false;
+        let mut single_to_carbonyl = false;
+
+        for &(j, order) in &nb[i] {
+            match order {
+                BondType::Double if atoms[j].element == Element::Carbon => {
+                    double_to_carbon += 1;
+                }
+                BondType::Single => {
+                    if types[j] == "c" {
+                        single_to_carbonyl = true;
+                    }
+                    if types[j] == "ca" || types[j] == "cp" {
+                        single_to_aromatic = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if single_to_carbonyl {
+            // sp² C directly attached to a carbonyl carbon → cd
+            types[i] = "cd".to_string();
+        } else if double_to_carbon > 0 || single_to_aromatic {
+            // Conjugated sp² C (C=C or vinyl attached to aromatic) → cc
+            types[i] = "cc".to_string();
+        }
+    }
+}
+
+/// Run this towards the end of the pipeline to correctly mark "nh" etc, instead of
+/// "n3".
+fn postprocess_nh_from_aromatic_neighbors(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
+    // Build simple adjacency without caring about bond order.
+    let mut nb: Vec<Vec<usize>> = vec![Vec::new(); atoms.len()];
+
+    for bond in bonds {
+        let i = bond.atom_0_sn as usize - 1;
+        let j = bond.atom_1_sn as usize - 1;
+        nb[i].push(j);
+        nb[j].push(i);
+    }
+
+    for i in 0..atoms.len() {
+        if atoms[i].element != Element::Nitrogen {
+            continue;
+        }
+
+        // Only retag nitrogens that are currently generic sp3 `n3`.
+        if types[i].as_str() != "n3" {
+            continue;
+        }
+
+        // Look for at least one aromatic carbon neighbor (ca/cp).
+        let has_aromatic_neighbor = nb[i].iter().any(|&j| {
+            matches!(types[j].as_str(), "ca" | "cp")
+        });
+
+        if has_aromatic_neighbor {
+            types[i] = "nh".to_string();
+        }
+    }
+}
+
+fn postprocess_sulfonyl_s(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
+    // We only need adjacency + degrees; reuse the same helper.
+    let adj = match build_adjacency_list(atoms, bonds) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    for (i, atom) in atoms.iter().enumerate() {
+        // Only consider sulfur currently typed as generic s6.
+        if atom.element != Element::Sulfur {
+            continue;
+        }
+
+        if types[i].as_str() != "s6" {
+            continue;
+        }
+
+        // Sulfonyl S here has 4 neighbors.
+        let degree = adj[i].len();
+        if degree != 4 {
+            continue;
+        }
+
+        // Count "double-bond-like" oxygens: O with only one neighbor (the S).
+        let double_like_o = adj[i]
+            .iter()
+            .filter(|&&j| {
+                atoms[j].element == Element::Oxygen && adj[j].len() == 1
+            })
+            .count();
+
+        // If S has at least two such O neighbors, treat it as sulfonyl S (`sy`).
+        if double_like_o >= 2 {
+            types[i] = "sy".to_string();
+        }
+    }
+}
+
+fn postprocess_ns_from_env(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
+    let adj = match build_adjacency_list(atoms, bonds) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    for (i, atom) in atoms.iter().enumerate() {
+        if atom.element != Element::Nitrogen {
+            continue;
+        }
+
+        // Only refine Ns currently typed as generic `n7`.
+        if types[i].as_str() != "n7" {
+            continue;
+        }
+
+        let neighbors = &adj[i];
+
+        // ns expects 3 neighbors total.
+        if neighbors.len() != 3 {
+            continue;
+        }
+
+        // Exactly one hydrogen neighbor.
+        let num_h = neighbors
+            .iter()
+            .filter(|&&j| atoms[j].element == Element::Hydrogen)
+            .count();
+
+        if num_h != 1 {
+            continue;
+        }
+
+        let mut has_aromatic_c = false;
+        let mut has_carbonyl_c = false;
+
+        for &j in neighbors {
+            if atoms[j].element != Element::Carbon {
+                continue;
+            }
+
+            match types[j].as_str() {
+                "ca" | "cp" => has_aromatic_c = true,
+                "c" => has_carbonyl_c = true,
+                _ => {}
+            }
+        }
+
+        if has_aromatic_c && has_carbonyl_c {
+            types[i] = "ns".to_string();
+        }
+    }
+}
+
+/// Find Amber force field types for atoms in a small organic molecule. Usese reasoning similar to
+/// Amber's Antechamber program to assign these based on atom type, and neighboring atoms and bonds.
+/// For example, if in a ring, the nature of the ring, the elements of neighbors etc.
+/// todo: Partial charge here, or elsewhere?
+/// todo: Load
+pub fn find_ff_types(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    defs: &AmberDefSet,
+) -> Vec<String> {
+    let start = Instant::now();
+
+    let adj = build_adjacency_list(atoms, bonds).unwrap();
+    let env = build_env(atoms, bonds, &adj);
+
+    let mut result = Vec::with_capacity(atoms.len());
+
+    'atom_loop: for (i, atom) in atoms.iter().enumerate() {
+        let _env_i = &env[i];
+
+        for def in &defs.gff2.atomtypes {
+            if matches_def(def, i, atoms, &env, bonds, &adj) {
+                result.push(def.name.clone());
+                continue 'atom_loop;
+            }
+        }
+
+        result.push("du".to_string());
+    }
+
+    // You can optionally re-enable postprocess_sp2_carbons here once you like
+    // postprocess_sp2_carbons(atoms, bonds, &mut result);
+
+    let elapsed = start.elapsed().as_micros();
+    println!("Complete in {elapsed} μs");
+
+    result
 }

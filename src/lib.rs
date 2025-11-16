@@ -87,7 +87,7 @@ mod forces;
 pub mod integrate;
 mod neighbors;
 mod non_bonded;
-pub mod param_inference;
+pub mod param_inference_ml;
 pub mod params;
 mod prep;
 #[cfg(target_arch = "x86_64")]
@@ -103,7 +103,7 @@ mod com_zero;
 mod gpu_interface;
 pub mod minimize_energy;
 
-pub mod inference_new;
+pub mod param_inference;
 mod sa_surface;
 #[cfg(test)]
 mod tests;
