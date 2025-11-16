@@ -103,10 +103,10 @@ mod com_zero;
 mod gpu_interface;
 pub mod minimize_energy;
 
+pub mod inference_new;
 mod sa_surface;
 #[cfg(test)]
 mod tests;
-pub mod inference_new;
 // mod h_bond_inference;
 
 #[cfg(feature = "cuda")]

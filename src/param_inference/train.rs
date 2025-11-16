@@ -6,7 +6,7 @@ use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder, loss};
 use rand::seq::SliceRandom;
 
 use crate::param_inference::{
-    MolGNN, AtomVocab,
+    AtomVocab, MolGNN,
     files::{GEOSTD_PATH, MODEL_PATH, VOCAB_PATH, find_paths},
     frcmod::{DIHEDRAL_FEATS, MAX_DIHEDRAL_TERMS},
     save,

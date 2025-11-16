@@ -552,7 +552,10 @@ pub fn infer_params(
             }
 
             // todo tremp
-            println!("Adding inferred dihedral for {:?}", (a.clone(), b.clone(), c.clone(), d.clone()));
+            println!(
+                "Adding inferred dihedral for {:?}",
+                (a.clone(), b.clone(), c.clone(), d.clone())
+            );
 
             params.dihedral.insert(
                 (a.clone(), b.clone(), c.clone(), d.clone()),
