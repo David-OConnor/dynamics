@@ -3,6 +3,7 @@
 
 use bio_files::{AtomGeneric, BondGeneric, BondType};
 use na_seq::Element;
+
 use crate::param_inference::AtomEnvData;
 
 /// For DEF col f9 constraints
@@ -10,6 +11,44 @@ use crate::param_inference::AtomEnvData;
 enum NeighborBase {
     AnyXX,
     Code(String), // e.g. "C3", "O1", "N2", "XB2", "XD3", ...
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SecondHopPattern {
+    base: NeighborBase,
+}
+
+impl SecondHopPattern {
+    fn matches_second_hop(
+        &self,
+        center: usize,
+        nb: usize,
+        atoms: &[AtomGeneric],
+        _env_all: &[AtomEnvData],
+        bonds: &[BondGeneric],
+        adj: &[Vec<usize>],
+    ) -> bool {
+        match &self.base {
+            NeighborBase::Code(code) if code == "XA1" => {
+                // C3(XA1): neighbor is a carbonyl carbon
+                is_xa1_like_carbon(nb, atoms, bonds)
+            }
+            NeighborBase::Code(code) if code == "C3" || code == "C2" || code == "XB2" => {
+                // For C3(C3), C3(C2), XB2(C3), XB2(C2), XB2(XB2) we approximate:
+                // neighbor-of-neighbor (excluding center) must be a heavy atom, usually C.
+                adj[nb]
+                    .iter()
+                    .copied()
+                    .filter(|&j| j != center)
+                    .any(|j| atoms[j].element != Element::Hydrogen)
+            }
+            NeighborBase::AnyXX => {
+                // Any neighbor-of-neighbor (excluding center)
+                adj[nb].iter().any(|&j| j != center)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// For DEF col f9 constraints
@@ -20,7 +59,8 @@ pub(super) struct NeighborPattern {
     requires_aromatic: bool,  // AR1/AR2/AR3
     requires_db: bool,        // DB
     requires_tb: bool,        // TB
-    other_flags: Vec<String>, // sb, sb', DL, XA1, etc (for future extension)
+    other_flags: Vec<String>, // sb, sb', DL, XA1, etc (for future extension)\
+    second_hop: Option<SecondHopPattern>,
 }
 
 impl NeighborPattern {
@@ -31,6 +71,7 @@ impl NeighborPattern {
         atoms: &[AtomGeneric],
         env_all: &[AtomEnvData],
         bonds: &[BondGeneric],
+        adj: &[Vec<usize>],
     ) -> bool {
         let nb_atom = &atoms[nb];
 
@@ -38,7 +79,7 @@ impl NeighborPattern {
             NeighborBase::AnyXX => {}
             NeighborBase::Code(code) => {
                 match code.as_str() {
-                    "C" | "C2" | "C3" => {
+                    "C" | "C2" | "C3" | "C4" => {
                         if nb_atom.element != Element::Carbon {
                             return false;
                         }
@@ -48,26 +89,28 @@ impl NeighborPattern {
                             return false;
                         }
                     }
-                    "N" | "N2" => {
+                    "N" | "N1" | "N2" | "N3" => {
                         if nb_atom.element != Element::Nitrogen {
                             return false;
                         }
                     }
-                    "P" | "P2" => {
+                    "P" | "P2" | "P3" | "P4" => {
                         if nb_atom.element != Element::Phosphorus {
                             return false;
                         }
                     }
-                    _ => {
-                        // Unknown base code (XB2, XD3, XA1, ...) – be conservative.
-                        return false;
-                    }
+                    // XB2, XD3, XD4, XA1, etc are handled either via second_hop
+                    // or in other_flags; for now we don't accept them as bare bases.
+                    _ => return false,
                 }
             }
         }
 
-        if self.requires_aromatic && !env_all[nb].is_aromatic {
-            return false;
+        if self.requires_aromatic {
+            let env = &env_all[nb];
+            if !env.is_aromatic && env.ring_sizes.is_empty() {
+                return false;
+            }
         }
 
         if let Some(rs) = self.ring_size {
@@ -100,11 +143,17 @@ impl NeighborPattern {
             }
         }
 
+        if let Some(ref hop) = self.second_hop {
+            if !hop.matches_second_hop(center, nb, atoms, env_all, bonds, adj) {
+                return false;
+            }
+        }
+
         true
     }
 }
 
-/// For DEF col f9 constraints
+/// For DEF col f9 constraints. Corresponds to a line from a Def file.
 #[derive(Debug, Clone)]
 pub(super) struct ChemEnvPattern {
     neighbors: Vec<NeighborPattern>,
@@ -142,6 +191,7 @@ impl ChemEnvPattern {
             atoms: &[AtomGeneric],
             env_all: &[AtomEnvData],
             bonds: &[BondGeneric],
+            adj: &[Vec<usize>],
         ) -> bool {
             if pat_idx == pattern.len() {
                 return true;
@@ -154,7 +204,7 @@ impl ChemEnvPattern {
                     continue;
                 }
 
-                if pat.matches_neighbor(center, nb, atoms, env_all, bonds) {
+                if pat.matches_neighbor(center, nb, atoms, env_all, bonds, adj) {
                     used[n_i] = true;
                     if backtrack(
                         pat_idx + 1,
@@ -165,6 +215,7 @@ impl ChemEnvPattern {
                         atoms,
                         env_all,
                         bonds,
+                        adj,
                     ) {
                         return true;
                     }
@@ -185,15 +236,19 @@ impl ChemEnvPattern {
             atoms,
             env_all,
             bonds,
+            adj,
         )
     }
 }
 
 impl From<&str> for ChemEnvPattern {
+    /// Parse a line from a DEF file.
     fn from(s: &str) -> Self {
         let s = s.trim();
         if s.is_empty() || s == "&" {
-            return Self { neighbors: Vec::new() };
+            return Self {
+                neighbors: Vec::new(),
+            };
         }
 
         let inner = if s.starts_with('(') && s.ends_with(')') && s.len() >= 2 {
@@ -204,25 +259,38 @@ impl From<&str> for ChemEnvPattern {
 
         let mut neighbors = Vec::new();
 
-        // No nested []/() in these patterns, so a simple split is fine.
-        for raw in inner.split(',') {
+        for raw in split_env_neighbors(inner) {
             let raw = raw.trim();
             if raw.is_empty() {
                 continue;
             }
 
-            // Split into base and [flags]
-            let (base_str, flags_str) = if let Some(pos) = raw.find('[') {
-                // assume last char is ']' if '[' exists; DEF format is well-formed
-                (&raw[..pos], Some(&raw[pos + 1..raw.len() - 1]))
+            // First split off [flags] if present.
+            let (main, flags_str) = if let Some(pos) = raw.find('[') {
+                (&raw[..pos], Some(&raw[pos + 1..raw.len() - 1])) // strip '[' and ']'
             } else {
                 (raw, None)
             };
 
-            let base = match base_str {
-                "XX" => NeighborBase::AnyXX,
-                _ => NeighborBase::Code(base_str.to_string()),
+            // Then split off nested "(...)" if present, e.g. C3(XA1), C3(C3), XB2(C2)
+            let (base_token, nested_token) = if let Some(pos) = main.find('(') {
+                (&main[..pos], Some(&main[pos + 1..main.len() - 1])) // strip '(' and ')'
+            } else {
+                (main, None)
             };
+
+            let base = match base_token {
+                "XX" => NeighborBase::AnyXX,
+                _ => NeighborBase::Code(base_token.to_string()),
+            };
+
+            let second_hop = nested_token.map(|t| SecondHopPattern {
+                base: if t == "XX" {
+                    NeighborBase::AnyXX
+                } else {
+                    NeighborBase::Code(t.to_string())
+                },
+            });
 
             let mut ring_size = None;
             let mut requires_aromatic = false;
@@ -248,15 +316,9 @@ impl From<&str> for ChemEnvPattern {
                             requires_aromatic = true;
                             other_flags.push(t.to_string());
                         }
-                        "DB" => {
-                            requires_db = true;
-                        }
-                        "TB" => {
-                            requires_tb = true;
-                        }
-                        other => {
-                            other_flags.push(other.to_string());
-                        }
+                        "DB" => requires_db = true,
+                        "TB" => requires_tb = true,
+                        other => other_flags.push(other.to_string()),
                     }
                 }
             }
@@ -268,6 +330,7 @@ impl From<&str> for ChemEnvPattern {
                 requires_db,
                 requires_tb,
                 other_flags,
+                second_hop,
             });
         }
 
@@ -279,4 +342,82 @@ impl From<String> for ChemEnvPattern {
     fn from(s: String) -> Self {
         ChemEnvPattern::from(s.as_str())
     }
+}
+
+fn split_env_neighbors(inner: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut depth_bracket = 0u8;
+
+    for c in inner.chars() {
+        match c {
+            '[' => {
+                depth_bracket += 1;
+                current.push(c);
+            }
+            ']' => {
+                if depth_bracket > 0 {
+                    depth_bracket -= 1;
+                }
+                current.push(c);
+            }
+            ',' if depth_bracket == 0 => {
+                if !current.trim().is_empty() {
+                    result.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+
+    if !current.trim().is_empty() {
+        result.push(current.trim().to_string());
+    }
+
+    result
+}
+
+fn is_xa1_like_carbon(idx: usize, atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> bool {
+    let atom = &atoms[idx];
+    if atom.element != Element::Carbon {
+        return false;
+    }
+
+    for b in bonds {
+        let i = b.atom_0_sn as usize - 1;
+        let j = b.atom_1_sn as usize - 1;
+        if i == idx || j == idx {
+            let other = if i == idx { j } else { i };
+            if atoms[other].element == Element::Oxygen && matches!(b.bond_type, BondType::Double) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+pub(super) fn is_carbonyl_carbon(idx: usize, atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> bool {
+    let atom = &atoms[idx];
+    if atom.element != Element::Carbon {
+        return false;
+    }
+
+    let mut has_c_o_double = false;
+
+    for b in bonds {
+        let i = b.atom_0_sn as usize - 1;
+        let j = b.atom_1_sn as usize - 1;
+        if i == idx || j == idx {
+            let other = if i == idx { j } else { i };
+            if atoms[other].element == Element::Oxygen {
+                if matches!(b.bond_type, BondType::Double) {
+                    has_c_o_double = true;
+                }
+            }
+        }
+    }
+
+    has_c_o_double
 }
