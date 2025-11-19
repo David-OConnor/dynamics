@@ -12,17 +12,22 @@
 //! -[Parmchk](https://github.com/Amber-MD/AmberClassic/blob/main/src/antechamber/parmchk2.c)
 
 mod chem_env;
+pub(crate) mod frcmod;
+mod post_process;
 
-use std::{io, path::Path, time::Instant};
+use std::{io, time::Instant};
 
 use bio_files::{
     AtomGeneric, BondGeneric, BondType,
     amber_typedef::{AmberDef, AtomTypeDef},
+    md_params::ForceFieldParams,
 };
 use chem_env::*;
+pub use frcmod::find_missing_params;
 use na_seq::Element;
+use post_process::*;
 
-use crate::util::build_adjacency_list;
+use crate::{partial_charge_inference::infer_charge, util::build_adjacency_list};
 
 /// See note: Only loading ones we need for small organic molecules.
 const DEF_ABCG2: &str = include_str!("../../param_data/antechamber_defs/ATOMTYPE_ABCG2.DEF");
@@ -32,6 +37,8 @@ const DEF_ABCG2: &str = include_str!("../../param_data/antechamber_defs/ATOMTYPE
 // const DEF_GFF: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_GFF.DEF");
 const DEF_GFF2: &str = include_str!("../../param_data/antechamber_defs/ATOMTYPE_GFF2.DEF");
 // const DEF_SYBYL: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_SYBYL.DEF");
+
+const BCCPARM: &str = include_str!("../../param_data/antechamber_defs/BCCPARM.DAT");
 
 /// Note: We've commented out all but the ones we need for small organic molecules.
 pub struct AmberDefSet {
@@ -49,6 +56,8 @@ pub struct AmberDefSet {
     pub gff2: AmberDef,
     // /// Used in TRIPOS/DOCK and old QSAR tools?
     // pub sybyl: AmberDef,
+    /// For partial charges, e.g. BCCPARM.DAT
+    bcc_parm: i8, // todo
 }
 
 impl AmberDefSet {
@@ -71,6 +80,7 @@ impl AmberDefSet {
             // gff,
             gff2,
             // sybyl,
+            bcc_parm: 0,
         })
     }
 }
@@ -157,35 +167,35 @@ fn detect_rings(adj: &[Vec<usize>], max_size: u8) -> Vec<Vec<u8>> {
 
     ring_sizes
 }
-
-// todo: Should we use bonds here too, which have BondType::Aromatic?
-fn is_aromatic_atom(
-    idx: usize,
-    atoms: &[AtomGeneric],
-    adj: &[Vec<usize>],
-    ring_sizes: &[Vec<u8>],
-) -> bool {
-    let rs = &ring_sizes[idx];
-
-    if !rs.iter().any(|&s| (5..=7).contains(&s)) {
-        return false;
-    }
-
-    let neighbors = &adj[idx];
-
-    if neighbors.len() != 3 {
-        return false;
-    }
-
-    let shared_ring_neighbors = neighbors
-        .iter()
-        .filter(|&&j| {
-            atoms[j].element != Element::Hydrogen && ring_sizes[j].iter().any(|s| rs.contains(s))
-        })
-        .count();
-
-    shared_ring_neighbors >= 2
-}
+//
+// // todo: Should we use bonds here too, which have BondType::Aromatic?
+// fn is_aromatic_atom(
+//     idx: usize,
+//     atoms: &[AtomGeneric],
+//     adj: &[Vec<usize>],
+//     ring_sizes: &[Vec<u8>],
+// ) -> bool {
+//     let rs = &ring_sizes[idx];
+//
+//     if !rs.iter().any(|&s| (5..=7).contains(&s)) {
+//         return false;
+//     }
+//
+//     let neighbors = &adj[idx];
+//
+//     if neighbors.len() != 3 {
+//         return false;
+//     }
+//
+//     let shared_ring_neighbors = neighbors
+//         .iter()
+//         .filter(|&&j| {
+//             atoms[j].element != Element::Hydrogen && ring_sizes[j].iter().any(|s| rs.contains(s))
+//         })
+//         .count();
+//
+//     shared_ring_neighbors >= 2
+// }
 
 fn build_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], adj: &[Vec<usize>]) -> Vec<AtomEnvData> {
     let ring_sizes = detect_rings(adj, 8);
@@ -294,7 +304,7 @@ fn is_elec_withdrawing_element(el: Element) -> bool {
     use Element::*;
     matches!(
         el,
-        Oxygen | Nitrogen | Sulfur | Phosphorus | Fluorine | Chlorine | Bromine | Iodine
+        Oxygen | Nitrogen | Sulfur | Fluorine | Chlorine | Bromine | Iodine
     )
 }
 
@@ -462,7 +472,7 @@ fn matches_def(
 
     // ---- cd: fully heuristic, ignore DEF f5/f6 details ----
     if def.name == "cd" {
-        return is_cd_like(idx, atoms, env, bonds, adj);
+        return false;
     }
 
     if let Some(e) = def.element {
@@ -699,222 +709,6 @@ fn hydrogen_env_matches(
     }
 }
 
-/// This converts SP2 carbons to the correct types after the main algorithm infers
-/// types from DEF files. E.g. "cc", "cd", "c" etc.
-/// Adjust field names / bond-order enum to match your BondGeneric definition.
-fn postprocess_sp2_carbons(atoms: &[AtomGeneric], bonds: &[BondGeneric], types: &mut [String]) {
-    // Neighbour list with bond orders.
-    let mut nb: Vec<Vec<(usize, BondType)>> = vec![Vec::new(); atoms.len()];
-
-    for bond in bonds {
-        let i = bond.atom_0_sn as usize - 1;
-        let j = bond.atom_1_sn as usize - 1;
-        let order = bond.bond_type;
-
-        nb[i].push((j, order));
-        nb[j].push((i, order));
-    }
-
-    // Pass 1: identify carbonyl carbons: C=O / C=N / C=S / C=P.
-    // Only refine generic sp2 carbons (`c2`).
-    for i in 0..atoms.len() {
-        if atoms[i].element != Element::Carbon {
-            continue;
-        }
-
-        if types[i].as_str() != "c2" {
-            continue;
-        }
-
-        let mut double_to_hetero = false;
-
-        for &(j, order) in &nb[i] {
-            if matches!(order, BondType::Double) {
-                match atoms[j].element {
-                    Element::Oxygen | Element::Nitrogen | Element::Sulfur | Element::Phosphorus => {
-                        double_to_hetero = true;
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        if double_to_hetero {
-            types[i] = "c".to_string();
-        }
-    }
-
-    // Pass 2: cc / cd for remaining sp² carbons (still `c2`).
-    for i in 0..atoms.len() {
-        if atoms[i].element != Element::Carbon {
-            continue;
-        }
-
-        // Only refine generic sp² (`c2`); keep `c3` as truly sp³.
-        if types[i].as_str() != "c2" {
-            continue;
-        }
-
-        let mut double_to_carbon = 0u8;
-        let mut single_to_aromatic = false;
-        let mut single_to_carbonyl = false;
-
-        for &(j, order) in &nb[i] {
-            match order {
-                BondType::Double if atoms[j].element == Element::Carbon => {
-                    double_to_carbon += 1;
-                }
-                BondType::Single => {
-                    if types[j] == "c" {
-                        single_to_carbonyl = true;
-                    }
-                    if types[j] == "ca" || types[j] == "cp" {
-                        single_to_aromatic = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if single_to_carbonyl {
-            // sp² C directly attached to a carbonyl carbon → cd
-            types[i] = "cd".to_string();
-        } else if double_to_carbon > 0 || single_to_aromatic {
-            // Conjugated sp² C (C=C or vinyl attached to aromatic) → cc
-            types[i] = "cc".to_string();
-        }
-    }
-}
-
-/// Run this towards the end of the pipeline to correctly mark "nh" etc, instead of
-/// "n3".
-fn postprocess_nh_from_aromatic_neighbors(
-    atoms: &[AtomGeneric],
-    bonds: &[BondGeneric],
-    types: &mut [String],
-) {
-    // Build simple adjacency without caring about bond order.
-    let mut nb: Vec<Vec<usize>> = vec![Vec::new(); atoms.len()];
-
-    for bond in bonds {
-        let i = bond.atom_0_sn as usize - 1;
-        let j = bond.atom_1_sn as usize - 1;
-        nb[i].push(j);
-        nb[j].push(i);
-    }
-
-    for i in 0..atoms.len() {
-        if atoms[i].element != Element::Nitrogen {
-            continue;
-        }
-
-        // Only retag nitrogens that are currently generic sp3 `n3`.
-        if types[i].as_str() != "n3" {
-            continue;
-        }
-
-        // Look for at least one aromatic carbon neighbor (ca/cp).
-        let has_aromatic_neighbor = nb[i]
-            .iter()
-            .any(|&j| matches!(types[j].as_str(), "ca" | "cp"));
-
-        if has_aromatic_neighbor {
-            types[i] = "nh".to_string();
-        }
-    }
-}
-
-fn postprocess_sulfonyl_s(atoms: &[AtomGeneric], bonds: &[BondGeneric], types: &mut [String]) {
-    // We only need adjacency + degrees; reuse the same helper.
-    let adj = match build_adjacency_list(atoms, bonds) {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-
-    for (i, atom) in atoms.iter().enumerate() {
-        // Only consider sulfur currently typed as generic s6.
-        if atom.element != Element::Sulfur {
-            continue;
-        }
-
-        if types[i].as_str() != "s6" {
-            continue;
-        }
-
-        // Sulfonyl S here has 4 neighbors.
-        let degree = adj[i].len();
-        if degree != 4 {
-            continue;
-        }
-
-        // Count "double-bond-like" oxygens: O with only one neighbor (the S).
-        let double_like_o = adj[i]
-            .iter()
-            .filter(|&&j| atoms[j].element == Element::Oxygen && adj[j].len() == 1)
-            .count();
-
-        // If S has at least two such O neighbors, treat it as sulfonyl S (`sy`).
-        if double_like_o >= 2 {
-            types[i] = "sy".to_string();
-        }
-    }
-}
-
-fn postprocess_ns_from_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], types: &mut [String]) {
-    let adj = match build_adjacency_list(atoms, bonds) {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-
-    for (i, atom) in atoms.iter().enumerate() {
-        if atom.element != Element::Nitrogen {
-            continue;
-        }
-
-        // Only refine Ns currently typed as generic `n7`.
-        if types[i].as_str() != "n7" {
-            continue;
-        }
-
-        let neighbors = &adj[i];
-
-        // ns expects 3 neighbors total.
-        if neighbors.len() != 3 {
-            continue;
-        }
-
-        // Exactly one hydrogen neighbor.
-        let num_h = neighbors
-            .iter()
-            .filter(|&&j| atoms[j].element == Element::Hydrogen)
-            .count();
-
-        if num_h != 1 {
-            continue;
-        }
-
-        let mut has_aromatic_c = false;
-        let mut has_carbonyl_c = false;
-
-        for &j in neighbors {
-            if atoms[j].element != Element::Carbon {
-                continue;
-            }
-
-            match types[j].as_str() {
-                "ca" | "cp" => has_aromatic_c = true,
-                "c" => has_carbonyl_c = true,
-                _ => {}
-            }
-        }
-
-        if has_aromatic_c && has_carbonyl_c {
-            types[i] = "ns".to_string();
-        }
-    }
-}
-
 /// Find Amber force field types for atoms in a small organic molecule. Usese reasoning similar to
 /// Amber's Antechamber program to assign these based on atom type, and neighboring atoms and bonds.
 /// For example, if in a ring, the nature of the ring, the elements of neighbors etc.
@@ -939,196 +733,23 @@ pub fn find_ff_types(
     let adj = build_adjacency_list(atoms, bonds).unwrap();
     let env = build_env(atoms, bonds, &adj);
 
-    let result = assign_types(&defs.gff2.atomtypes, atoms, &env, bonds, &adj);
+    let mut result = assign_types(&defs.gff2.atomtypes, atoms, &env, bonds, &adj);
 
-    // You can optionally re-enable postprocess_sp2_carbons here once you like
-    // postprocess_sp2_carbons(atoms, bonds, &mut result);
+    // Enforce cc/cd parity (cc–cc and cd–cd are conjugated single bonds, cc–cd is double).
+    postprocess_cc_cd(atoms, bonds, &mut result);
+
+    postprocess_carbonyl_c(atoms, bonds, &mut result);
+    postprocess_ring_n_types(atoms, bonds, &adj, &env, &mut result);
+    postprocess_nd_sp2_hetero(atoms, bonds, &adj, &env, &mut result);
+    postprocess_ne_to_n2(atoms, bonds, &mut result);
+    postprocess_nb_aromatic(atoms, bonds, &adj, &env, &mut result);
+    postprocess_p5(atoms, bonds, &mut result);
+    postprocess_nu_to_n7(atoms, bonds, &mut result);
 
     let elapsed = start.elapsed().as_micros();
     println!("Complete in {elapsed} μs");
 
     result
-}
-
-/// A specific override. Hopefully we don't need too many of these!
-fn is_cd_like(
-    idx: usize,
-    atoms: &[AtomGeneric],
-    env: &AtomEnvData,
-    bonds: &[BondGeneric],
-    adj: &[Vec<usize>],
-) -> bool {
-    let atom = &atoms[idx];
-
-    // Only consider carbons
-    if atom.element != Element::Carbon {
-        return false;
-    }
-
-    // Must be at least roughly sp2 (at least one double bond)
-    if env.num_double_bonds == 0 {
-        return false;
-    }
-
-    // Look for a double bond to a heavy atom, but NOT to oxygen (carbonyls are "c").
-    let mut has_db_to_heavy = false;
-    let mut has_db_to_oxygen = false;
-    let mut db_partner: Option<usize> = None;
-
-    for b in bonds {
-        let i = b.atom_0_sn as usize - 1;
-        let j = b.atom_1_sn as usize - 1;
-
-        if i == idx || j == idx {
-            if matches!(b.bond_type, BondType::Double) {
-                let other = if i == idx { j } else { i };
-
-                if atoms[other].element != Element::Hydrogen {
-                    has_db_to_heavy = true;
-                    if atoms[other].element == Element::Oxygen {
-                        has_db_to_oxygen = true;
-                    }
-
-                    if atoms[other].element == Element::Carbon {
-                        db_partner.get_or_insert(other);
-                    }
-                }
-            }
-        }
-    }
-
-    if !has_db_to_heavy {
-        return false;
-    }
-
-    // carbonyl C=O is handled as "c"
-    if has_db_to_oxygen {
-        return false;
-    }
-
-    // Neighbour analysis
-    let mut hetero_count: u8 = 0;
-    let mut has_s_neighbor = false;
-    let mut has_o_single_neighbor = false;
-    let mut has_aromatic_c_neighbor = false;
-    let mut has_carbonyl_neighbor = false;
-
-    for &nb in &adj[idx] {
-        let el = atoms[nb].element;
-
-        if el != Element::Carbon && el != Element::Hydrogen {
-            hetero_count = hetero_count.saturating_add(1);
-        }
-
-        if el == Element::Sulfur {
-            has_s_neighbor = true;
-        }
-
-        // O single-bonded directly to this carbon (e.g. C–O in an enol/ether)
-        if el == Element::Oxygen {
-            for b in bonds {
-                let i = b.atom_0_sn as usize - 1;
-                let j = b.atom_1_sn as usize - 1;
-
-                if ((i == idx && j == nb) || (i == nb && j == idx))
-                    && matches!(b.bond_type, BondType::Single)
-                {
-                    has_o_single_neighbor = true;
-                    break;
-                }
-            }
-        }
-
-        if el == Element::Carbon {
-            // Is this neighbour carbon aromatic?
-            for b in bonds {
-                let i = b.atom_0_sn as usize - 1;
-                let j = b.atom_1_sn as usize - 1;
-
-                if (i == nb || j == nb) && matches!(b.bond_type, BondType::Aromatic) {
-                    has_aromatic_c_neighbor = true;
-                }
-            }
-
-            // Is this neighbour a carbonyl carbon (C with a double bond to O/N/S/P)?
-            if is_carbonyl_carbon(nb, atoms, bonds) {
-                has_carbonyl_neighbor = true;
-            }
-        }
-    }
-
-    // Does our C=C partner sit next to a carbonyl carbon?
-    let partner_has_carbonyl = db_partner.map_or(false, |p| {
-        for &nb in &adj[p] {
-            if atoms[nb].element == Element::Carbon && is_carbonyl_carbon(nb, atoms, bonds) {
-                return true;
-            }
-        }
-        false
-    });
-
-    // 1) Strongly activated: S neighbour or ≥2 hetero neighbours → cd
-    if has_s_neighbor || hetero_count >= 2 {
-        return true;
-    }
-
-    // 2) O-substituted vinyl attached to an aromatic ring (O9T-style case),
-    //    but only when the C=C partner is *not* itself next to a carbonyl (avoid CPB atom 11).
-    if hetero_count == 1
-        && has_o_single_neighbor
-        && has_aromatic_c_neighbor
-        && !partner_has_carbonyl
-    {
-        return true;
-    }
-
-    // 3) Enone bridge: sp2 carbon that has a carbonyl-carbon neighbour and
-    //    at least one other hetero-substituted carbon neighbour.
-    if has_carbonyl_neighbor {
-        let mut het_sub_neighbors: u8 = 0;
-
-        for &nb in &adj[idx] {
-            let el = atoms[nb].element;
-
-            if el != Element::Carbon && el != Element::Hydrogen {
-                // direct hetero neighbour
-                het_sub_neighbors = het_sub_neighbors.saturating_add(1);
-                continue;
-            }
-
-            if el == Element::Carbon {
-                // neighbour is a carbonyl carbon?
-                if is_carbonyl_carbon(nb, atoms, bonds) {
-                    het_sub_neighbors = het_sub_neighbors.saturating_add(1);
-                    continue;
-                }
-
-                // neighbour carbon with a single-bonded oxygen (like C2 in CPB)
-                'inner: for b in bonds {
-                    let i = b.atom_0_sn as usize - 1;
-                    let j = b.atom_1_sn as usize - 1;
-
-                    if i == nb || j == nb {
-                        let other = if i == nb { j } else { i };
-                        if atoms[other].element == Element::Oxygen
-                            && matches!(b.bond_type, BondType::Single)
-                        {
-                            het_sub_neighbors = het_sub_neighbors.saturating_add(1);
-                            break 'inner;
-                        }
-                    }
-                }
-            }
-        }
-
-        if het_sub_neighbors >= 2 {
-            // e.g. CPB atom 12: neighbour to carbonyl C and to an O-substituted C
-            return true;
-        }
-    }
-
-    // Everything else: not cd; leave it as cc/c2/etc.
-    false
 }
 
 fn assign_types(
@@ -1141,7 +762,7 @@ fn assign_types(
     let mut types = Vec::with_capacity(atoms.len());
 
     for idx in 0..atoms.len() {
-        let mut ty = "DU".to_owned();
+        let mut ty = "du".to_owned();
 
         for def in defs {
             // Don't take cd directly from the DEF; we’ll assign it heuristically
@@ -1155,15 +776,44 @@ fn assign_types(
             }
         }
 
-        // --- cd refinement: override certain sp2 carbons as cd ---
-        if is_cd_like(idx, atoms, &env_all[idx], bonds, adj) {
-            if ty == "ce" || ty == "c2" || ty == "cc" || ty == "ca" {
-                ty = "cd".to_owned();
-            }
-        }
-
         types.push(ty);
     }
 
     types
+}
+
+/// A high level interface for param inference: Updates FF type, partial charge for
+/// each atom in a small organic molecule, and provides molecule-specfiic (FRCMOD) overrides.
+///
+/// Provide Adjacency list if cached; if not, we'll build it.
+pub fn update_small_mol_params(
+    atoms: &mut [AtomGeneric],
+    bonds: &[BondGeneric],
+    adjacency_list: Option<&[Vec<usize>]>,
+    gaff2: &ForceFieldParams,
+) -> io::Result<ForceFieldParams> {
+    // todo: Move this elsewhere; you no longer need geostd.
+    let defs = AmberDefSet::new().unwrap();
+    let ff_types = find_ff_types(atoms, bonds, &defs);
+
+    for (i, atom) in atoms.iter_mut().enumerate() {
+        atom.force_field_type = Some(ff_types[i].clone());
+    }
+
+    let charge =
+        infer_charge(&atoms, &bonds).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    for (i, atom) in atoms.iter_mut().enumerate() {
+        atom.partial_charge = Some(charge[i]);
+    }
+
+    let adj_list = match adjacency_list {
+        Some(a) => a,
+        None => &build_adjacency_list(atoms, bonds)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+    };
+
+    let params = find_missing_params(atoms, adj_list, gaff2)?;
+
+    Ok(params)
 }

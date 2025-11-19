@@ -148,7 +148,7 @@ positions to reduce the amount of energy that comes from initial conditions devi
 
 ### Floating point precision
 Mixed precision: 32-bit floating points for most operations. We use 64-bit accumulators, and in thermostat 
-and barostat computations.
+and barostat computations. This is especially relevant, as consumer GPUs have poor f64 performance.
 
 
 ### How pH adjustment works
@@ -166,8 +166,7 @@ Snapshots of results can be returned in memory, or saved to disk in [DCD](https:
 We plan to support carbohydrates and lipids later. If you're interested in these, please add a Github Issue.
 
 These general parameters do not need to be loaded externally; they provide the information needed to perform
-MD with any amino acid sequence, and provide a baseline for dynamics of small organic molecules. You may wish to load
-frcmod data over these that have overrides for specific small molecules.
+MD with any amino acid sequence, and provide a baseline for dynamics of small organic molecules.
 
 This program can automatically load ligands with Amber parameters, for the
 *Amber Geostd* set. This includes many common small organic molecules with force field parameters,
@@ -181,13 +180,10 @@ For details on how dynamics using this parameterized approach works, see the
 [Amber Reference Manual](https://ambermd.org/doc12/Amber25.pdf). Section 3 and 15 are of particular
 interest, regarding force field parameters.
 
-Molecule-specific overrides to these general parameters can be loaded from *.frcmod* and *.dat* files.
-We delegate this to the [bio files](https://github.com/david-OConnor/bio_files) library.
-
 We load partial charges for ligands from *mol2*, *PDBQT* etc files. Protein dynamics and water can be simulated
-using parameters built-in to the program (The Amber one above). Simulating ligands requires the loaded
-file (e.g. *mol2*) include partial charges. we recommend including ligand-specific override
-files as well, e.g. to load dihedral angles from *.frcmod* that aren't present in *Gaff2*.
+using parameters built-in to the program (The Amber one above). For small organic  molecules, we infer force field
+params, and partial charges for each atom, as well as molecule-specific *frcmod* overrides from GAFF2: Generally, this
+is proper and improper dihedral angles. It is, occasionally, bond and angle parameters.
 
 You can load (and save) combined atom and forcefield data from Amber PRMTOP files; these combine
 these two data types into one file.
@@ -208,7 +204,7 @@ Example use (Python):
 ```python
 from mol_dynamics import *
 
-def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParams) -> MdState:
+def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet) -> MdState:
     """
     Set up dynamics between a small molecule we treat with full dynamics, and a rigid one 
     which acts on the system, but doesn't move.
@@ -231,9 +227,7 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
             # Pass your own from cache if you want, or it will build.
             adjacency_list=None,
             static_=False,
-            # This is usually mandatory for small organic molecules. Provided, for example,
-            # in Amber FRCMOD files. Overrides general params.
-            mol_specific_params=lig_specific,
+            mol_specific_params=None,
             bonded_only=False,
         ),
         MolDynamics(
@@ -261,7 +255,8 @@ def main():
     protein = MmCif.load("1c8k.cif")
 
     param_set = FfParamSet.new_amber()
-    lig_specific = ForceFieldParams.load_frcmod("CPB.frcmod")
+    # Optional; the library infers FRCMOD overrides on its own.
+    _lig_specific = ForceFieldParams.load_frcmod("CPB.frcmod")
     
     # Or, instead of loading atoms and mol-specific params separately:
     # mol, lig_specific = load_prmtop("my_mol.prmtop")
@@ -277,7 +272,7 @@ def main():
     # A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
     # lists, for flexibility.
     
-    md = setup_dynamics(mol, protein, param_set, lig_specific)
+    md = setup_dynamics(mol, protein, param_set)
     
     n_steps = 100
     dt = 0.002  # picoseconds.
@@ -320,7 +315,6 @@ fn setup_dynamics(
     mol: &Mol2,
     protein: &MmCif,
     param_set: &FfParamSet,
-    lig_specific: ForceFieldParams,
 ) -> MdState {
     
     // Or, consider using these terse helpers instead for small organic molecules.
@@ -340,9 +334,7 @@ fn setup_dynamics(
             // Pass your own from cache if you want, or it will build.
             adjacency_list: None,
             static_: false,
-            // This is usually mandatory for small organic molecules. Provided, for example,
-            // in Amber FRCMOD files. Overrides general params.
-            mol_specific_params: Some(lig_specific),
+            mol_specific_params: None,
             bonded_only: false,
         },
         MolDynamics {
@@ -367,7 +359,8 @@ fn main() {
 
     let mut protein = MmCif::load(Path::new("1c8k.cif")).unwrap();
     let mol = Mol2::load(Path::new("CPB.mol2")).unwrap();
-    let mol_specific = ForceFieldParams::load_frcmod(Path::new("CPB.frcmod")).unwrap();
+    // Optional; the library infers FRCMOD overrides on its own.
+    let _mol_specific = ForceFieldParams::load_frcmod(Path::new("CPB.frcmod")).unwrap();
 
     // Or, instead of loading atoms and mol-specific params separately:
     // let (mol, lig_specific) = load_prmtop("my_mol.prmtop");
@@ -389,7 +382,7 @@ fn main() {
     // A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
     // lists, for flexibility.
 
-    let mut md = setup_dynamics(&dev, &mol, &protein, &param_set, mol_specific);
+    let mut md = setup_dynamics(&dev, &mol, &protein, &param_set);
 
     let n_steps = 100;
     let dt = 0.002; // picoseconds.

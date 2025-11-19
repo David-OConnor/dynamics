@@ -4,10 +4,10 @@
 //! See the [https://github.com/David-OConnor/dynamics/blob/main/README.md](Readme) for a general overview.
 //! The textual information here is informal, and aimed at code maintenance; not library use.
 //!
-//! This module contains a traditional molecular dynamics approach.
+//! This module contains high-level tools for running Newtonian molecular dynamics simulations.
 //!
 //! [Good article](https://www.owlposting.com/p/a-primer-on-molecular-dynamics)
-//! [A summary paper](https://arxiv.org/pdf/1401.1181)
+//! [A summary  on molecular dynamics](https://arxiv.org/pdf/1401.1181)
 //!
 //! [Amber Force Fields reference](https://ambermd.org/AmberModels.php)
 //! [Small molucules using GAFF2](https://ambermd.org/downloads/amber_geostd.tar.bz2)
@@ -19,23 +19,17 @@
 //! Base units: Å, ps (10^-12), Dalton (AMU), native charge units (derive from other base units;
 //! not a traditional named unit).
 //!
-//! We are using f64, and CPU-only for now, unless we confirm f32 will work.
-//! Maybe a mixed approach: Coordinates, velocities, and forces in 32-bit; sensitive global
-//! reductions (energy, virial, integration) in 64-bit.
-//!
-//! We use Verlet integration. todo: Velocity verlet? Other techniques that improve and build upon it?
-//!
-//! Amber: ff19SB for proteins, gaff2 for ligands. (Based on recs from https://ambermd.org/AmberModels.php).
+//! Amber: ff19SB for proteins, gaff2 for ligands. (Based on recommendations from https://ambermd.org/AmberModels.php).
 //!
 //! We use the term "Non-bonded" interactions to refer to Coulomb, and Lennard Interactions, the latter
-//! of which is an approximation for Van der Waals force.
+//! of which is an approximation for both Van der Waals force and exclusion.
 //!
 //! ## A broad list of components of this simulation:
 //! - Water: Rigid OPC water molecules that have mutual non-bonded interactions with dynamic atoms and water
 //! - Thermostat/barostat, with a way to specify temp, pressure, water density
 //! - OPC water model
 //! - Cell wrapping
-//! - Verlet integration (Water and non-water)
+//! - Velocity Verlet integration (Water and non-water)
 //! - Amber parameters for mass, partial charge, VdW (via LJ), dihedral/improper, angle, bond len
 //! - Optimizations for Coulomb: Ewald/SPME.
 //! - Optimizations for LJ: Dist cutoff for now.
@@ -44,6 +38,8 @@
 //! - WIP SIMD and CUDA parallelization of non-bonded forces, depending on hardware availability. todo
 //! - A thermostat and barostat
 //! - An energy-measuring system.
+//! - An integrated tool for inferring atom types, bonded-parameter overrides, and partial charges for arbitrary
+//! small organic molecules. (Similar to Amber's Antechamber)
 //!
 //! --------
 //! A timing test, using bond-stretching forces between two atoms only. Measure the period
@@ -87,8 +83,8 @@ mod forces;
 pub mod integrate;
 mod neighbors;
 mod non_bonded;
-pub mod param_inference_ml;
 pub mod params;
+pub mod partial_charge_inference;
 mod prep;
 #[cfg(target_arch = "x86_64")]
 mod simd;

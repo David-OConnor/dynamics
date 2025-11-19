@@ -399,25 +399,42 @@ fn is_xa1_like_carbon(idx: usize, atoms: &[AtomGeneric], bonds: &[BondGeneric]) 
 }
 
 pub(super) fn is_carbonyl_carbon(idx: usize, atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> bool {
-    let atom = &atoms[idx];
-    if atom.element != Element::Carbon {
-        return false;
-    }
+    use na_seq::Element::Oxygen;
 
-    let mut has_c_o_double = false;
+    let mut neighbors: Vec<usize> = Vec::new();
+    let mut has_co_double = false;
 
     for b in bonds {
         let i = b.atom_0_sn as usize - 1;
         let j = b.atom_1_sn as usize - 1;
+
         if i == idx || j == idx {
             let other = if i == idx { j } else { i };
-            if atoms[other].element == Element::Oxygen {
-                if matches!(b.bond_type, BondType::Double) {
-                    has_c_o_double = true;
-                }
+
+            if !neighbors.contains(&other) {
+                neighbors.push(other);
+            }
+
+            if atoms[other].element == Oxygen && matches!(b.bond_type, BondType::Double) {
+                has_co_double = true;
             }
         }
     }
 
-    has_c_o_double
+    // Standard carbonyl: explicit C=O double bond.
+    if has_co_double {
+        return true;
+    }
+
+    // Carboxylate / carboxylic-type: trigonal carbon with two O neighbors.
+    let o_neighbors = neighbors
+        .iter()
+        .filter(|&&nb| atoms[nb].element == Oxygen)
+        .count();
+
+    if neighbors.len() == 3 && o_neighbors == 2 {
+        return true;
+    }
+
+    false
 }

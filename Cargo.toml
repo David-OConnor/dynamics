@@ -29,8 +29,6 @@ required-features = ["train-bin"]
 include = [
     "src/**",
     "param_data/*",
-    "geostd_model.safetensors",
-    "geostd_model.vocab",
     "Cargo.toml",
     "README.md",
     "README.md",
