@@ -23,7 +23,7 @@ use bio_files::{
     md_params::ForceFieldParams,
 };
 use chem_env::*;
-pub use frcmod::find_missing_params;
+pub use frcmod::assign_missing_params;
 use na_seq::Element;
 use post_process::*;
 
@@ -793,7 +793,7 @@ pub fn update_small_mol_params(
     gaff2: &ForceFieldParams,
 ) -> io::Result<ForceFieldParams> {
     // todo: Move this elsewhere; you no longer need geostd.
-    let defs = AmberDefSet::new().unwrap();
+    let defs = AmberDefSet::new()?;
     let ff_types = find_ff_types(atoms, bonds, &defs);
 
     for (i, atom) in atoms.iter_mut().enumerate() {
@@ -810,10 +810,10 @@ pub fn update_small_mol_params(
     let adj_list = match adjacency_list {
         Some(a) => a,
         None => &build_adjacency_list(atoms, bonds)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, "Problem building adjacency list"))?,
     };
 
-    let params = find_missing_params(atoms, adj_list, gaff2)?;
+    let params = assign_missing_params(atoms, adj_list, gaff2)?;
 
     Ok(params)
 }

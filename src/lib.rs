@@ -109,6 +109,7 @@ mod tests;
 use std::sync::Arc;
 use std::{
     collections::HashSet,
+    error::Error,
     fmt,
     fmt::{Display, Formatter},
     io,
@@ -145,6 +146,7 @@ use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 use crate::{
     ambient::BerendsenBarostat,
     non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
+    param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
@@ -707,10 +709,38 @@ impl MdState {
             // Filter out hetero atoms in proteins. These are often example ligands that we do
             // not wish to model.
             // We must perform this filter prior to most of the other steps in this function.
-            let atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
+            let mut atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
                 FfMolType::Peptide => mol.atoms.iter().filter(|a| !a.hetero).cloned().collect(),
                 _ => mol.atoms.to_vec(),
             };
+
+            let mut mol_specific_params = mol.mol_specific_params.clone();
+
+            // Update partial charge, FF names, and param overrides A/R.
+            if mol.ff_mol_type == FfMolType::SmallOrganic {
+                let mut needs_ff_type_or_q = false;
+                for atom in &atoms {
+                    if atom.force_field_type.is_none() || atom.partial_charge.is_none() {
+                        needs_ff_type_or_q = true;
+                        break;
+                    }
+                }
+
+                if needs_ff_type_or_q {
+                    // Note: This invalidates any passed by the user.
+                    mol_specific_params = Some(
+                        update_small_mol_params(
+                            &mut atoms,
+                            &mol.bonds,
+                            Some(&adjacency_list),
+                            &param_set.small_mol.as_ref().unwrap(),
+                        )
+                        .map_err(|_| ParamError {
+                            descrip: "Problem inferring params".to_string(),
+                        })?,
+                    );
+                }
+            }
 
             // If the atoms list isn't already filtered by Hetero, and a manual
             // adjacency list or atom posits is passed, this will get screwed up.
@@ -746,7 +776,7 @@ impl MdState {
                 // todo and don't affect general params.
                 params = merge_params(&params, params_general);
 
-                if let Some(p) = &mol.mol_specific_params {
+                if let Some(p) = &mol_specific_params {
                     params = merge_params(&params, p);
                 }
             }
