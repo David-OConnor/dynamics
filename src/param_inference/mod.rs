@@ -495,6 +495,19 @@ fn matches_def(
         }
     }
 
+    // --- SPECIAL: ce should not grab plain non-conjugated alkenes ---
+    if def.name == "ce" {
+        // Require at least one double bond at this atom
+        if env.num_double_bonds == 0 {
+            return false;
+        }
+
+        // And *either* be in a ring *or* be the carbon side of a C=O / C=N / C=S / C=P
+        if env.ring_sizes.is_empty() && !env.has_double_to_hetero {
+            return false;
+        }
+    }
+
     // --- SPECIAL: nh: sp3 N should be directly attached to an aromatic carbon ---
     if def.name == "nh" {
         let has_aromatic_c_neighbor = adj[idx]
@@ -725,12 +738,12 @@ pub fn find_ff_types(
 
     println!("\n\nDebug dump of dev env types: ");
 
-    for def in &defs.gff2.atomtypes {
-        if let Some(env) = &def.chem_env {
-            let pattern: ChemEnvPattern = env.as_str().into();
-            println!("Env pattern for {}:{:?}", def.name, pattern);
-        }
-    }
+    // for def in &defs.gff2.atomtypes {
+    //     if let Some(env) = &def.chem_env {
+    //         let pattern: ChemEnvPattern = env.as_str().into();
+    //         println!("Env pattern for {}:{:?}", def.name, pattern);
+    //     }
+    // }
 
     let adj = build_adjacency_list(atoms, bonds).unwrap();
     let env = build_env(atoms, bonds, &adj);

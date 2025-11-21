@@ -73,6 +73,8 @@ impl Parm {
 pub(in crate::param_inference) struct Corr {
     pub base: String,
     pub other: String,
+    /// I believe this encodes how far two types are. Possibly 0: Bond-len similarity, 1: bond-angle,
+    /// 2,3: angle center/outer, 4,5: dihedral inner/outer, 6: improper etc.
     pub vals: [f32; 9],
 }
 
@@ -333,6 +335,11 @@ pub(in crate::param_inference) fn load_atcor() -> io::Result<AtCor> {
 
         for col in &cols[3..] {
             remaining.push(col.to_string());
+        }
+
+        // todo: Experimenting. We see to not want to coerce h1 to hc in practice.
+        if cols[1] == "h1" {
+            continue;
         }
 
         result.insert(cols[1].to_owned(), (num, remaining));
