@@ -818,7 +818,7 @@ pub fn update_small_mol_params(
     let adj_list = match adjacency_list {
         Some(a) => a,
         None => &build_adjacency_list(atoms, bonds)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, "Problem building adjacency list"))?,
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Problem building adjacency list"))?,
     };
 
     let params = assign_missing_params(atoms, adj_list, gaff2)?;

@@ -49,7 +49,7 @@ impl MissingParams {
 
                 let key = (type_0.clone(), type_1.clone());
 
-                if gaff_params.get_bond(&key).is_none() {
+                if gaff_params.get_bond(&key, true).is_none() {
                     result.bond.push(key);
                 }
             }
@@ -77,7 +77,7 @@ impl MissingParams {
 
                 let key = (type_n0.clone(), type_ctr.clone(), type_n1.clone());
 
-                if gaff_params.get_valence_angle(&key).is_none() {
+                if gaff_params.get_valence_angle(&key, true).is_none() {
                     result.angle.push(key);
                 }
             }
@@ -132,7 +132,7 @@ impl MissingParams {
                             type_3.clone(),
                         );
 
-                        if gaff_params.get_dihedral(&key, true).is_none() {
+                        if gaff_params.get_dihedral(&key, true, true).is_none() {
                             result.dihedral.push(key);
                         }
                     }
@@ -195,7 +195,7 @@ impl MissingParams {
                         // have missing values. Impropers areonly, by Amber convention, for planar
                         // hub and spoke setups, so non-planar ones will be omitted. These may occur,
                         // for example, at ring intersections.
-                        if gaff_params.get_dihedral(&key, false).is_none() {
+                        if gaff_params.get_dihedral(&key, false, true).is_none() {
                             result.improper.push(key);
                         }
                     }

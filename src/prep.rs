@@ -221,7 +221,7 @@ impl ForceFieldParamsIndexed {
                 let type_0 = &atoms[i0].force_field_type;
                 let type_1 = &atoms[i1].force_field_type;
 
-                let data = params.get_bond(&(type_0.clone(), type_1.clone()));
+                let data = params.get_bond(&(type_0.clone(), type_1.clone()), true);
 
                 let Some(data) = data else {
                     // todo: Consider removing this, and return an error.
@@ -288,8 +288,8 @@ impl ForceFieldParamsIndexed {
                 let type_ctr = &atoms[ctr].force_field_type;
                 let type_n1 = &atoms[n1].force_field_type;
 
-                let data =
-                    params.get_valence_angle(&(type_n0.clone(), type_ctr.clone(), type_n1.clone()));
+                let data = params
+                    .get_valence_angle(&(type_n0.clone(), type_ctr.clone(), type_n1.clone()), true);
 
                 let Some(data) = data else {
                     // This comes up with the Hydrogen bound to NB in His. I don't know what to make of it.
@@ -379,7 +379,7 @@ impl ForceFieldParamsIndexed {
                             type_3.clone(),
                         );
 
-                        if let Some(dihes) = params.get_dihedral(&key, true) {
+                        if let Some(dihes) = params.get_dihedral(&key, true, true) {
                             let mut dihes = dihes.clone();
 
                             for d in &mut dihes {
@@ -457,7 +457,7 @@ impl ForceFieldParamsIndexed {
                         // have missing values. Impropers are only, by Amber convention, for planar
                         // hub and spoke setups, so non-planar ones will be omitted. These may occur,
                         // for example, at ring intersections.
-                        if let Some(dihes) = params.get_dihedral(&key, false) {
+                        if let Some(dihes) = params.get_dihedral(&key, false, true) {
                             let mut dihes = dihes.clone();
                             for d in &mut dihes {
                                 // Generally, there is no divisor for impropers, but set it up here
