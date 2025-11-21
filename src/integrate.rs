@@ -70,7 +70,7 @@ impl MdState {
     /// This method orchestrates the dynamics at each time step. Uses a Verlet Velocity base,
     /// with different thermostat approaches depending on configuration.
     pub fn step(&mut self, dev: &ComputationDevice, dt: f32) {
-        let mut start_entire_step = Instant::now();
+        let start_entire_step = Instant::now();
         let mut start = Instant::now(); // Re-used for different items
 
         let log_time = self.step_count.is_multiple_of(COMPUTATION_TIME_RATIO);

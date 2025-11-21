@@ -227,7 +227,7 @@ use crate::{
     util::build_adjacency_list,
 };
 
-pub(super) fn postprocess_ne_to_n2(
+pub(in crate::param_inference) fn postprocess_ne_to_n2(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     types: &mut [String],
@@ -261,7 +261,11 @@ pub(super) fn postprocess_ne_to_n2(
     }
 }
 
-pub(super) fn postprocess_p5(atoms: &[AtomGeneric], bonds: &[BondGeneric], types: &mut [String]) {
+pub(in crate::param_inference) fn postprocess_p5(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
         Err(_) => return,
@@ -288,7 +292,7 @@ pub(super) fn postprocess_p5(atoms: &[AtomGeneric], bonds: &[BondGeneric], types
     }
 }
 
-pub(super) fn postprocess_nu_to_n7(
+pub(in crate::param_inference) fn postprocess_nu_to_n7(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     types: &mut [String],
@@ -353,7 +357,7 @@ pub(super) fn postprocess_nu_to_n7(
 /// adjacently conjugated to a strong EWG (C=O, N, S, etc),
 /// or in a bridged / strongly polarized conjugated system,
 /// or in “β to carbonyl” / enone-like motifs, where that carbon is more electron-deficient.
-pub(super) fn postprocess_cc_cd(
+pub(in crate::param_inference) fn postprocess_cc_cd(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     types: &mut [String],
@@ -437,7 +441,7 @@ pub(super) fn postprocess_cc_cd(
     }
 }
 
-pub(super) fn postprocess_ring_n_types(
+pub(in crate::param_inference) fn postprocess_ring_n_types(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     adj: &[Vec<usize>],
@@ -528,7 +532,7 @@ pub(super) fn postprocess_ring_n_types(
     }
 }
 
-pub(super) fn postprocess_carbonyl_c(
+pub(in crate::param_inference) fn postprocess_carbonyl_c(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     types: &mut [String],
@@ -546,7 +550,7 @@ pub(super) fn postprocess_carbonyl_c(
     }
 }
 
-pub(super) fn postprocess_nd_sp2_hetero(
+pub(in crate::param_inference) fn postprocess_nd_sp2_hetero(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     adj: &[Vec<usize>],
@@ -581,7 +585,8 @@ pub(super) fn postprocess_nd_sp2_hetero(
 
         'outer: for &nb in &adj[idx] {
             let el = atoms[nb].element;
-            if !matches!(el, Oxygen | Nitrogen | Sulfur) {
+            // Only treat O / S single-bonded neighbours as the “extra hetero”
+            if !matches!(el, Oxygen | Sulfur) {
                 continue;
             }
 
@@ -608,66 +613,150 @@ pub(super) fn postprocess_nd_sp2_hetero(
     }
 }
 
-pub fn postprocess_nb_aromatic(
+pub(in crate::param_inference) fn postprocess_na_ring_bridge(
     atoms: &[AtomGeneric],
-    bonds: &[BondGeneric],
+    _bonds: &[BondGeneric],
     adj: &[Vec<usize>],
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen};
+    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
 
     for idx in 0..atoms.len() {
         if atoms[idx].element != Nitrogen {
             continue;
         }
 
+        // Only refine generic sp2-like nitrogens
         if types[idx].as_str() != "n2" {
             continue;
         }
 
         let env = &env_all[idx];
 
-        if !env.is_aromatic {
-            continue;
-        }
-
+        // Ring N in a 5- or 6-membered ring
         if !env.ring_sizes.iter().any(|&s| s == 5 || s == 6) {
             continue;
         }
 
-        if env.degree != 2 {
+        // 3-coordinate: two heavy neighbours + one H
+        if env.degree != 3 || env.num_attached_h != 1 {
             continue;
         }
 
-        let mut all_nb_are_aromatic_c = true;
+        let mut has_n_neighbor = false;
+        let mut has_sp2_c_neighbor = false;
+
         for &nb in &adj[idx] {
-            if atoms[nb].element != Carbon || !env_all[nb].is_aromatic {
-                all_nb_are_aromatic_c = false;
-                break;
+            match atoms[nb].element {
+                Hydrogen => {}
+                Nitrogen => {
+                    has_n_neighbor = true;
+                }
+                Carbon => {
+                    if matches!(types[nb].as_str(), "c" | "ca" | "cc" | "cd") {
+                        has_sp2_c_neighbor = true;
+                    }
+                }
+                _ => {}
             }
         }
 
-        if !all_nb_are_aromatic_c {
+        if has_n_neighbor && has_sp2_c_neighbor {
+            types[idx] = "na".to_owned();
+        }
+    }
+}
+
+pub fn postprocess_nb_aromatic(
+    atoms: &[AtomGeneric],
+    _bonds: &[BondGeneric],
+    adj: &[Vec<usize>],
+    env_all: &[AtomEnvData],
+    types: &mut [String],
+) {
+    use na_seq::Element::Nitrogen;
+
+    for idx in 0..atoms.len() {
+        if atoms[idx].element != Nitrogen {
             continue;
         }
 
-        let mut aromatic_bonds = 0u8;
-        for b in bonds {
-            let i = b.atom_0_sn as usize - 1;
-            let j = b.atom_1_sn as usize - 1;
+        let env = &env_all[idx];
 
-            if i == idx || j == idx {
-                if matches!(b.bond_type, BondType::Aromatic) {
-                    aromatic_bonds = aromatic_bonds.saturating_add(1);
-                }
+        // Only consider N in 5- or 6-membered rings
+        if !env.ring_sizes.iter().any(|&s| s == 5 || s == 6) {
+            continue;
+        }
+
+        // Candidate starting types that can become nb
+        let ty = types[idx].as_str();
+        if !matches!(ty, "n2" | "nu" | "n7") {
+            continue;
+        }
+
+        let neighbors = &adj[idx];
+
+        let mut ring_heavy_neighbors = 0u8;
+        let mut conjugated_neighbors = 0u8;
+
+        for &nb in neighbors {
+            if atoms[nb].element == Element::Hydrogen {
+                continue;
+            }
+
+            let nb_env = &env_all[nb];
+
+            if !nb_env.ring_sizes.is_empty() {
+                ring_heavy_neighbors = ring_heavy_neighbors.saturating_add(1);
+            }
+
+            if nb_env.num_double_bonds > 0 || nb_env.is_aromatic {
+                conjugated_neighbors = conjugated_neighbors.saturating_add(1);
             }
         }
 
-        if aromatic_bonds < 2 {
+        // Need at least two ring heavy neighbors and at least one conjugated neighbor
+        if ring_heavy_neighbors < 2 || conjugated_neighbors == 0 {
             continue;
         }
 
         types[idx] = "nb".to_owned();
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_nb_to_na_ring_with_h(
+    atoms: &[AtomGeneric],
+    _bonds: &[BondGeneric],
+    env_all: &[AtomEnvData],
+    types: &mut [String],
+) {
+    use na_seq::Element::Nitrogen;
+
+    for idx in 0..atoms.len() {
+        if atoms[idx].element != Nitrogen {
+            continue;
+        }
+
+        if types[idx].as_str() != "nb" {
+            continue;
+        }
+
+        let env = &env_all[idx];
+
+        // nb -> na only for ring nitrogens with exactly one attached H
+        if !env.ring_sizes.iter().any(|&s| s == 5 || s == 6) {
+            continue;
+        }
+
+        if env.degree != 3 {
+            continue;
+        }
+
+        if env.num_attached_h != 1 {
+            continue;
+        }
+
+        types[idx] = "na".to_owned();
     }
 }

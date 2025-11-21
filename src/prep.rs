@@ -21,10 +21,7 @@
 //
 // Best guess: Type 1 identifies labels within the residue only. Type 2 (AA) and Type 3 (small mol) are the FF types.
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-};
+use std::{collections::HashSet, fmt};
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
@@ -33,7 +30,7 @@ use bio_files::md_params::{
     MassParams,
 };
 use itertools::Itertools;
-use na_seq::{Element, Element::Hydrogen};
+use na_seq::Element::Hydrogen;
 
 use crate::{AtomDynamics, MdState, ParamError, params::ForceFieldParamsIndexed};
 

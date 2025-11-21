@@ -2,8 +2,6 @@
 
 use std::ops::AddAssign;
 
-#[cfg(feature = "cuda")]
-use cudarc::driver::CudaContext;
 use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
@@ -599,7 +597,7 @@ impl MdState {
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) -> (Vec<Vec3>, f64, f64) {
         let (pos_all, q_all) = self.pack_pme_pos_q();
 
-        let (mut f_recip, e_recip) = match &mut self.pme_recip {
+        let (f_recip, e_recip) = match &mut self.pme_recip {
             Some(pme_recip) => match dev {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]

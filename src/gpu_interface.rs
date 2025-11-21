@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
-use cudarc::driver::{
-    CudaFunction, CudaModule, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
-};
+use cudarc::driver::{CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
 use lin_alg::{
     f32::{Vec3, vec3s_from_dev},
     f64::Vec3 as Vec3F64,
@@ -164,7 +162,6 @@ impl PerNeighborGpu {
                         WaterSite::H1 => &water[j].h1,
                     }
                 }
-                _ => unreachable!(),
             }
             .partial_charge;
 

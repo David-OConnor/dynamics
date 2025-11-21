@@ -1075,7 +1075,6 @@ impl MdState {
     }
 
     pub(crate) fn take_snapshot_if_required(&mut self, pressure: f64) {
-        let mut updated_ke = false;
         let mut take_ss = false;
         let mut take_ss_file = false;
 

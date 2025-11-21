@@ -11,7 +11,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     fs::File,
     io,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     time::Instant,
 };

@@ -7,8 +7,8 @@ use std::{
 };
 
 use bio_files::{
-    AtomGeneric, BondGeneric, ChainGeneric, LipidStandard, MmCif, MolType, ResidueEnd,
-    ResidueGeneric, ResidueType, create_bonds,
+    AtomGeneric, BondGeneric, ChainGeneric, LipidStandard, MmCif, ResidueEnd, ResidueGeneric,
+    ResidueType, create_bonds,
     md_params::{
         AngleBendingParams, BondStretchingParams, ChargeParams, ChargeParamsLipid, DihedralParams,
         ForceFieldParams, LjParams, MassParams, load_amino_charges, parse_amino_charges,

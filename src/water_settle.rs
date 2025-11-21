@@ -3,7 +3,7 @@
 use lin_alg::f32::Vec3;
 
 use crate::{
-    ACCEL_CONVERSION, ACCEL_CONVERSION_INV,
+    ACCEL_CONVERSION_INV,
     ambient::SimBox,
     water_opc::{H_MASS, H_O_H_θ, O_EP_R_0, O_H_R, O_MASS, WaterMol},
 };
@@ -140,7 +140,7 @@ pub(crate) fn reset_angle(mol: &mut WaterMol, cell: &SimBox) {
     let h0_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
     let h1_local = o_pos + cell.min_image(mol.h1.posit - o_pos);
 
-    let mut u = (h0_local + h1_local - o_pos * 2.0).to_normalized();
+    let u = (h0_local + h1_local - o_pos * 2.0).to_normalized();
     let mut v = (h0_local - h1_local).to_normalized();
     v = (v - u * u.dot(v)).to_normalized();
 

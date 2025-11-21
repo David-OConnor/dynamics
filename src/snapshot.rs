@@ -11,7 +11,6 @@ use std::{
 use bincode::{Decode, Encode};
 use bio_files::{AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType};
 use lin_alg::f32::Vec3;
-use na_seq::Element;
 
 use crate::AtomDynamics;
 
@@ -225,7 +224,7 @@ impl Snapshot {
         let temperature = parse_le!(bytes, f32, i..i + 4);
         i += 4;
         let pressure = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
+        // i += 4;
 
         Ok(Self {
             time: time_f32 as f64,

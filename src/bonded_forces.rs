@@ -1,5 +1,3 @@
-use std::f32::consts::{PI, TAU};
-
 use bio_files::md_params::{AngleBendingParams, BondStretchingParams, DihedralParams};
 use lin_alg::f32::{Vec3, calc_dihedral_angle_v2};
 

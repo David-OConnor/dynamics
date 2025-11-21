@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use bio_files::{Mol2, md_params::ForceFieldParams};
+use bio_files::Mol2;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder};
 use rand::seq::SliceRandom;
