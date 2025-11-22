@@ -39,9 +39,16 @@ impl MissingParams {
 
                 if atoms[i0].force_field_type.is_none() || atoms[i1].force_field_type.is_none() {
                     eprintln!(
-                        "Error finding missing bond params for param inference: Missing FF type."
+                        "Error finding missing bond params for param inference: Missing FF type {} - {}",
+                        atoms[i0].serial_number, atoms[i1].serial_number
                     );
-                    return Err(io::Error::new(ErrorKind::Other, "Missing FF type"));
+                    return Err(io::Error::new(
+                        ErrorKind::Other,
+                        format!(
+                            "Missing FF type: {} - {}",
+                            atoms[i0].serial_number, atoms[i1].serial_number
+                        ),
+                    ));
                 }
 
                 let type_0 = atoms[i0].force_field_type.as_ref().unwrap();

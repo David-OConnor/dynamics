@@ -15,7 +15,6 @@ use bio_files::{
     AtomGeneric,
     md_params::{AngleBendingParams, BondStretchingParams, DihedralParams, ForceFieldParams},
 };
-use candle_nn::rnn::Direction;
 
 use crate::param_inference::{
     frcmod_missing_params::MissingParams,
@@ -86,6 +85,9 @@ pub fn assign_missing_params(
     eq_map.insert("c6".to_owned(), "c3");
     // ATCOR:
     eq_map.insert("ns".to_owned(), "n");
+    eq_map.insert("n7".to_owned(), "n3");
+    eq_map.insert("n8".to_owned(), "n3");
+    eq_map.insert("n9".to_owned(), "n3");
 
     // todo: Add these bonds and valence angles once dihedrals and impropers work.
     // --- bonds -------------------------------------------------------------
@@ -444,25 +446,84 @@ fn find_dihedral_alts(
     };
 
     let best = match (best_no_wc, best_wc) {
-        (Some((p0, params0)), Some((p1, params1))) => {
-            if p0 <= p1 {
-                Some(params0)
-            } else {
-                Some(params1)
-            }
+        (Some(b), None) => Some(b),
+        (None, Some(b)) => Some(b),
+        (Some(b1), Some(b2)) => {
+            // choose lower-penalty of the two
+            if b1.0 <= b2.0 { Some(b1) } else { Some(b2) }
         }
-        (Some((_, params)), None) | (None, Some((_, params))) => Some(params),
         (None, None) => None,
     };
 
-    if let Some(params) = best {
-        Some(params)
-    } else if !proper {
-        // Improper: fall back to a general default rather than omitting.
-        Some(vec![improper_default])
-    } else {
-        None
+    if proper {
+        // For proper dihedrals, *never* synthesize a default – just use GAFF2 matches.
+        return best.map(|(_, params)| params);
     }
+
+    // For impropers:
+
+    if let Some((_, p)) = best {
+        // We found a real GAFF2 / wildcard match → use it.
+        return Some(p);
+    }
+
+    let key_for_default = (key.0.as_str(), key.1.as_str(), key.2.as_str(), key.3.as_str());
+
+    // First: special-case carbonyl-like impropers (e.g. cd-n-c-o, n-ns-c-o)
+    if is_carbonyl_improper_candidate(key_for_default) {
+        let improper_carbonyl = DihedralParams {
+            atom_types: ("X".into(), "X".into(), "c".into(), "o".into()),
+            divider: 1,
+            barrier_height: 10.5,
+            phase: PI,
+            periodicity: 2,
+            comment: Some("Using general improper torsional angle  X- X- c- o".to_owned()),
+        };
+        return Some(vec![improper_carbonyl]);
+    }
+
+    // Otherwise: the generic 1.1 planar-ish default
+    if is_default_improper_candidate(key_for_default) {
+        let improper_default = DihedralParams {
+            atom_types: ("X".into(), "X".into(), "X".into(), "X".into()),
+            divider: 1,
+            barrier_height: 1.1,
+            phase: PI,
+            periodicity: 2,
+            comment: Some("Using the default value".to_owned()),
+        };
+
+        return Some(vec![improper_default]);
+    }
+
+    // Don't create an FRCMOD entry at all for random sp3/H junk.
+    None
+}
+
+fn is_carbonyl_improper_candidate(key: (&str, &str, &str, &str)) -> bool {
+    let (a, b, c, d) = key;
+    let ts = [a, b, c, d];
+
+    // Require at least one carbonyl carbon "c" and one carbonyl oxygen "o"
+    let has_c = ts.iter().any(|t| *t == "c");
+    let has_o = ts.iter().any(|t| *t == "o");
+
+    if !(has_c && has_o) {
+        return false;
+    }
+
+    // Reuse your existing "planar-ish" heuristics so we don't fire on nonsense.
+    let heavy_count = ts.iter().filter(|t| !is_hydrogen_ff_type(t)).count();
+    if heavy_count < 3 {
+        return false;
+    }
+
+    let sp2_like_count = ts.iter().filter(|t| is_sp2_like_ff_type(t)).count();
+    if sp2_like_count < 2 {
+        return false;
+    }
+
+    true
 }
 
 /// Helper to abstract over wildcards, and apply a scoring system.
@@ -572,34 +633,77 @@ fn dihedral_inner(
     best
 }
 
-/// We use this check to determien whether to include a default imporoper value, or leave it off.
-/// (Assuming no GAFF2 matches)
-fn should_use_improper_default(key0: &str, key1: &str, key2: &str, key3: &str) -> bool {
-    // We treat key2 as the central atom for impropers, consistent with GAFF patterns like X-X-ca-ha.
-    let center = key2;
+// /// We use this check to determien whether to include a default imporoper value, or leave it off.
+// /// (Assuming no GAFF2 matches)
+// fn should_use_improper_default(key0: &str, key1: &str, key2: &str, key3: &str) -> bool {
+//     // We treat key2 as the central atom for impropers, consistent with GAFF patterns like X-X-ca-ha.
+//     let center = key2;
+//
+//     if !matches!(
+//         center,
+//         "ca" | "ce"
+//             | "cf"
+//             | "c2"
+//             | "c"
+//             | "cc"
+//             | "cd"
+//             | "c6"
+//             | "na"
+//             | "nb"
+//             | "nc"
+//             | "nd"
+//             | "ne"
+//             | "n2"
+//     ) {
+//         return false;
+//     }
+//
+//     // Optional extra guard: require that not *all* substituents are hydrogens.
+//     let types = [key0, key1, key2, key3];
+//     let non_h_count = types.iter().filter(|t| !t.starts_with('h')).count();
+//
+//     non_h_count >= 3
+// }
 
-    if !matches!(
-        center,
-        "ca" | "ce"
-            | "cf"
-            | "c2"
-            | "c"
-            | "cc"
-            | "cd"
-            | "c6"
-            | "na"
-            | "nb"
-            | "nc"
-            | "nd"
-            | "ne"
-            | "n2"
-    ) {
+fn is_sp2_like_ff_type(t: &str) -> bool {
+    matches!(
+        t,
+        // carbons
+        "c"  | "c2" | "ca" | "cc" | "cd" | "ce" | "c6" |
+        // nitrogens
+        "n1" | "n2" | "na" | "nb" | "nc" | "nd" | "ne" | "ns" |
+        // oxygens/sulfur that are almost always planar-ish centers in GAFF2 impropers
+        "o"  | "os" | "oh" | "op" | "oq" | "s"  | "so" | "sx" | "sy"
+    )
+}
+
+fn is_hydrogen_ff_type(t: &str) -> bool {
+    matches!(
+        t,
+        "h1" | "h2" | "h3" | "ha" | "hc" | "hn" | "ho" | "hs" | "hp"
+    )
+}
+
+/// Decide if we should ever apply the synthetic 1.1 default improper
+/// for this 4-type key. This is *only* for impropers (`proper == false`).
+fn is_default_improper_candidate(key: (&str, &str, &str, &str)) -> bool {
+    let (a, b, c, d) = key;
+
+    // Treat the third type as the central atom, consistent with GAFF patterns
+    // like X -X -ca-ha (center = ca).
+    let center = c;
+
+    // Only consider synthetic defaults if the central atom is clearly sp2-like
+    // (aromatic, carbonyl, sp2 N, etc.).
+    if !is_sp2_like_ff_type(center) {
         return false;
     }
 
-    // Optional extra guard: require that not *all* substituents are hydrogens.
-    let types = [key0, key1, key2, key3];
-    let non_h_count = types.iter().filter(|t| !t.starts_with('h')).count();
+    // Neighbours are the other three atoms.
+    let neighbors = [a, b, d];
 
-    non_h_count >= 3
+    // Require at least 2 heavy (non-H) neighbours around the center.
+    let heavy_neighbors = neighbors.iter().filter(|t| !is_hydrogen_ff_type(t)).count();
+
+    heavy_neighbors >= 2
 }

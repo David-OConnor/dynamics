@@ -3,225 +3,9 @@
 //!
 //! Warning: We are currently mixing up cc and cd atom types in many places.
 
-// /// Run this towards the end of the pipeline to correctly mark "nh" etc, instead of
-// /// "n3".
-// fn postprocess_nh_from_aromatic_neighbors(
-//     atoms: &[AtomGeneric],
-//     bonds: &[BondGeneric],
-//     types: &mut [String],
-// ) {
-//     // Build simple adjacency without caring about bond order.
-//     let mut nb: Vec<Vec<usize>> = vec![Vec::new(); atoms.len()];
-//
-//     for bond in bonds {
-//         let i = bond.atom_0_sn as usize - 1;
-//         let j = bond.atom_1_sn as usize - 1;
-//         nb[i].push(j);
-//         nb[j].push(i);
-//     }
-//
-//     for i in 0..atoms.len() {
-//         if atoms[i].element != Element::Nitrogen {
-//             continue;
-//         }
-//
-//         // Only retag nitrogens that are currently generic sp3 `n3`.
-//         if types[i].as_str() != "n3" {
-//             continue;
-//         }
-//
-//         // Look for at least one aromatic carbon neighbor (ca/cp).
-//         let has_aromatic_neighbor = nb[i]
-//             .iter()
-//             .any(|&j| matches!(types[j].as_str(), "ca" | "cp"));
-//
-//         if has_aromatic_neighbor {
-//             types[i] = "nh".to_string();
-//         }
-//     }
-// }
-//
-// fn postprocess_sulfonyl_s(atoms: &[AtomGeneric], bonds: &[BondGeneric], types: &mut [String]) {
-//     // We only need adjacency + degrees; reuse the same helper.
-//     let adj = match build_adjacency_list(atoms, bonds) {
-//         Ok(a) => a,
-//         Err(_) => return,
-//     };
-//
-//     for (i, atom) in atoms.iter().enumerate() {
-//         // Only consider sulfur currently typed as generic s6.
-//         if atom.element != Element::Sulfur {
-//             continue;
-//         }
-//
-//         if types[i].as_str() != "s6" {
-//             continue;
-//         }
-//
-//         // Sulfonyl S here has 4 neighbors.
-//         let degree = adj[i].len();
-//         if degree != 4 {
-//             continue;
-//         }
-//
-//         // Count "double-bond-like" oxygens: O with only one neighbor (the S).
-//         let double_like_o = adj[i]
-//             .iter()
-//             .filter(|&&j| atoms[j].element == Element::Oxygen && adj[j].len() == 1)
-//             .count();
-//
-//         // If S has at least two such O neighbors, treat it as sulfonyl S (`sy`).
-//         if double_like_o >= 2 {
-//             types[i] = "sy".to_string();
-//         }
-//     }
-// }
-//
-// fn postprocess_ns_from_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], types: &mut [String]) {
-//     let adj = match build_adjacency_list(atoms, bonds) {
-//         Ok(a) => a,
-//         Err(_) => return,
-//     };
-//
-//     for (i, atom) in atoms.iter().enumerate() {
-//         if atom.element != Element::Nitrogen {
-//             continue;
-//         }
-//
-//         // Only refine Ns currently typed as generic `n7`.
-//         if types[i].as_str() != "n7" {
-//             continue;
-//         }
-//
-//         let neighbors = &adj[i];
-//
-//         // ns expects 3 neighbors total.
-//         if neighbors.len() != 3 {
-//             continue;
-//         }
-//
-//         // Exactly one hydrogen neighbor.
-//         let num_h = neighbors
-//             .iter()
-//             .filter(|&&j| atoms[j].element == Element::Hydrogen)
-//             .count();
-//
-//         if num_h != 1 {
-//             continue;
-//         }
-//
-//         let mut has_aromatic_c = false;
-//         let mut has_carbonyl_c = false;
-//
-//         for &j in neighbors {
-//             if atoms[j].element != Element::Carbon {
-//                 continue;
-//             }
-//
-//             match types[j].as_str() {
-//                 "ca" | "cp" => has_aromatic_c = true,
-//                 "c" => has_carbonyl_c = true,
-//                 _ => {}
-//             }
-//         }
-//
-//         if has_aromatic_c && has_carbonyl_c {
-//             types[i] = "ns".to_string();
-//         }
-//     }
-// }
-
-// /// This converts SP2 carbons to the correct types after the main algorithm infers
-// /// types from DEF files. E.g. "cc", "cd", "c" etc.
-// /// Adjust field names / bond-order enum to match your BondGeneric definition.
-// fn postprocess_sp2_carbons(atoms: &[AtomGeneric], bonds: &[BondGeneric], types: &mut [String]) {
-//     // Neighbour list with bond orders.
-//     let mut nb: Vec<Vec<(usize, BondType)>> = vec![Vec::new(); atoms.len()];
-//
-//     for bond in bonds {
-//         let i = bond.atom_0_sn as usize - 1;
-//         let j = bond.atom_1_sn as usize - 1;
-//         let order = bond.bond_type;
-//
-//         nb[i].push((j, order));
-//         nb[j].push((i, order));
-//     }
-//
-//     // Pass 1: identify carbonyl carbons: C=O / C=N / C=S / C=P.
-//     // Only refine generic sp2 carbons (`c2`).
-//     for i in 0..atoms.len() {
-//         if atoms[i].element != Element::Carbon {
-//             continue;
-//         }
-//
-//         if types[i].as_str() != "c2" {
-//             continue;
-//         }
-//
-//         let mut double_to_hetero = false;
-//
-//         for &(j, order) in &nb[i] {
-//             if matches!(order, BondType::Double) {
-//                 match atoms[j].element {
-//                     Element::Oxygen | Element::Nitrogen | Element::Sulfur | Element::Phosphorus => {
-//                         double_to_hetero = true;
-//                         break;
-//                     }
-//                     _ => {}
-//                 }
-//             }
-//         }
-//
-//         if double_to_hetero {
-//             types[i] = "c".to_string();
-//         }
-//     }
-//
-//     // Pass 2: cc / cd for remaining sp² carbons (still `c2`).
-//     for i in 0..atoms.len() {
-//         if atoms[i].element != Element::Carbon {
-//             continue;
-//         }
-//
-//         // Only refine generic sp² (`c2`); keep `c3` as truly sp³.
-//         if types[i].as_str() != "c2" {
-//             continue;
-//         }
-//
-//         let mut double_to_carbon = 0u8;
-//         let mut single_to_aromatic = false;
-//         let mut single_to_carbonyl = false;
-//
-//         for &(j, order) in &nb[i] {
-//             match order {
-//                 BondType::Double if atoms[j].element == Element::Carbon => {
-//                     double_to_carbon += 1;
-//                 }
-//                 BondType::Single => {
-//                     if types[j] == "c" {
-//                         single_to_carbonyl = true;
-//                     }
-//                     if types[j] == "ca" || types[j] == "cp" {
-//                         single_to_aromatic = true;
-//                     }
-//                 }
-//                 _ => {}
-//             }
-//         }
-//
-//         if single_to_carbonyl {
-//             // sp² C directly attached to a carbonyl carbon → cd
-//             types[i] = "cd".to_string();
-//         } else if double_to_carbon > 0 || single_to_aromatic {
-//             // Conjugated sp² C (C=C or vinyl attached to aromatic) → cc
-//             types[i] = "cc".to_string();
-//         }
-//     }
-// }
 
 use bio_files::{AtomGeneric, BondGeneric, BondType};
-use na_seq::Element;
-
+use na_seq::Element::*;
 use crate::{
     param_inference::{AtomEnvData, chem_env::is_carbonyl_carbon},
     util::build_adjacency_list,
@@ -238,7 +22,7 @@ pub(in crate::param_inference) fn postprocess_ne_to_n2(
     };
 
     for (i, atom) in atoms.iter().enumerate() {
-        if atom.element != Element::Nitrogen {
+        if atom.element != Nitrogen {
             continue;
         }
 
@@ -249,7 +33,7 @@ pub(in crate::param_inference) fn postprocess_ne_to_n2(
         let mut o_neighbors = 0u8;
 
         for &j in &adj[i] {
-            if atoms[j].element == Element::Oxygen {
+            if atoms[j].element == Oxygen {
                 o_neighbors = o_neighbors.saturating_add(1);
             }
         }
@@ -272,7 +56,7 @@ pub(in crate::param_inference) fn postprocess_p5(
     };
 
     for (i, atom) in atoms.iter().enumerate() {
-        if atom.element != Element::Phosphorus {
+        if atom.element != Phosphorus {
             continue;
         }
 
@@ -283,7 +67,7 @@ pub(in crate::param_inference) fn postprocess_p5(
 
         let o_neighbors = adj[i]
             .iter()
-            .filter(|&&j| atoms[j].element == Element::Oxygen)
+            .filter(|&&j| atoms[j].element == Oxygen)
             .count();
 
         if o_neighbors >= 3 {
@@ -303,7 +87,7 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
     };
 
     for (i, atom) in atoms.iter().enumerate() {
-        if atom.element != Element::Nitrogen {
+        if atom.element != Nitrogen {
             continue;
         }
 
@@ -321,7 +105,7 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
 
         let h_count = neighbors
             .iter()
-            .filter(|&&j| atoms[j].element == Element::Hydrogen)
+            .filter(|&&j| atoms[j].element == Hydrogen)
             .count();
 
         if h_count == 0 {
@@ -377,8 +161,8 @@ pub(in crate::param_inference) fn postprocess_cc_cd(
 
         let both_group = matches!(ti, Some("cc") | Some("cd"))
             && matches!(tj, Some("cc") | Some("cd"))
-            && atoms[i].element == Element::Carbon
-            && atoms[j].element == Element::Carbon;
+            && atoms[i].element == Carbon
+            && atoms[j].element == Carbon;
 
         if !both_group {
             continue;
@@ -448,8 +232,6 @@ pub(in crate::param_inference) fn postprocess_ring_n_types(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use Element::*;
-
     for (idx, atom) in atoms.iter().enumerate() {
         if atom.element != Nitrogen {
             continue;
@@ -537,7 +319,7 @@ pub(in crate::param_inference) fn postprocess_carbonyl_c(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use Element::Carbon;
+    use Carbon;
 
     for (idx, atom) in atoms.iter().enumerate() {
         if atom.element != Carbon {
@@ -557,8 +339,6 @@ pub(in crate::param_inference) fn postprocess_nd_sp2_hetero(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Nitrogen, Oxygen, Sulfur};
-
     for idx in 0..atoms.len() {
         if atoms[idx].element != Nitrogen {
             continue;
@@ -615,24 +395,21 @@ pub(in crate::param_inference) fn postprocess_nd_sp2_hetero(
 
 pub(in crate::param_inference) fn postprocess_na_ring_bridge(
     atoms: &[AtomGeneric],
-    _bonds: &[BondGeneric],
     adj: &[Vec<usize>],
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
-
-    for idx in 0..atoms.len() {
-        if atoms[idx].element != Nitrogen {
+    for i in 0..atoms.len() {
+        if atoms[i].element != Nitrogen {
             continue;
         }
 
         // Only refine generic sp2-like nitrogens
-        if types[idx].as_str() != "n2" {
+        if types[i].as_str() != "n2" {
             continue;
         }
 
-        let env = &env_all[idx];
+        let env = &env_all[i];
 
         // Ring N in a 5- or 6-membered ring
         if !env.ring_sizes.iter().any(|&s| s == 5 || s == 6) {
@@ -647,7 +424,7 @@ pub(in crate::param_inference) fn postprocess_na_ring_bridge(
         let mut has_n_neighbor = false;
         let mut has_sp2_c_neighbor = false;
 
-        for &nb in &adj[idx] {
+        for &nb in &adj[i] {
             match atoms[nb].element {
                 Hydrogen => {}
                 Nitrogen => {
@@ -663,26 +440,23 @@ pub(in crate::param_inference) fn postprocess_na_ring_bridge(
         }
 
         if has_n_neighbor && has_sp2_c_neighbor {
-            types[idx] = "na".to_owned();
+            types[i] = "na".to_owned();
         }
     }
 }
 
 pub fn postprocess_nb_aromatic(
     atoms: &[AtomGeneric],
-    _bonds: &[BondGeneric],
     adj: &[Vec<usize>],
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::Nitrogen;
-
-    for idx in 0..atoms.len() {
-        if atoms[idx].element != Nitrogen {
+    for i in 0..atoms.len() {
+        if atoms[i].element != Nitrogen {
             continue;
         }
 
-        let env = &env_all[idx];
+        let env = &env_all[i];
 
         // Only consider N in 5- or 6-membered rings
         if !env.ring_sizes.iter().any(|&s| s == 5 || s == 6) {
@@ -690,18 +464,18 @@ pub fn postprocess_nb_aromatic(
         }
 
         // Candidate starting types that can become nb
-        let ty = types[idx].as_str();
+        let ty = types[i].as_str();
         if !matches!(ty, "n2" | "nu" | "n7") {
             continue;
         }
 
-        let neighbors = &adj[idx];
+        let neighbors = &adj[i];
 
         let mut ring_heavy_neighbors = 0u8;
         let mut conjugated_neighbors = 0u8;
 
         for &nb in neighbors {
-            if atoms[nb].element == Element::Hydrogen {
+            if atoms[nb].element == Hydrogen {
                 continue;
             }
 
@@ -721,28 +495,25 @@ pub fn postprocess_nb_aromatic(
             continue;
         }
 
-        types[idx] = "nb".to_owned();
+        types[i] = "nb".to_owned();
     }
 }
 
 pub(in crate::param_inference) fn postprocess_nb_to_na_ring_with_h(
     atoms: &[AtomGeneric],
-    _bonds: &[BondGeneric],
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::Nitrogen;
-
-    for idx in 0..atoms.len() {
-        if atoms[idx].element != Nitrogen {
+    for i in 0..atoms.len() {
+        if atoms[i].element != Nitrogen {
             continue;
         }
 
-        if types[idx].as_str() != "nb" {
+        if types[i].as_str() != "nb" {
             continue;
         }
 
-        let env = &env_all[idx];
+        let env = &env_all[i];
 
         // nb -> na only for ring nitrogens with exactly one attached H
         if !env.ring_sizes.iter().any(|&s| s == 5 || s == 6) {
@@ -757,6 +528,34 @@ pub(in crate::param_inference) fn postprocess_nb_to_na_ring_with_h(
             continue;
         }
 
-        types[idx] = "na".to_owned();
+        types[i] = "na".to_owned();
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_n7_to_nu(
+    atoms: &[AtomGeneric],
+    adj_list: &[Vec<usize>],
+    types: &mut [String],
+) {
+    for i in 0..atoms.len() {
+        if types[i] != "n7" {
+            continue;
+        }
+
+        let mut h_count = 0;
+        let mut c_count = 0;
+
+        for &i_neighbor in &adj_list[i] {
+            let nbr = &atoms[i_neighbor];
+            match nbr.element {
+                Hydrogen => h_count += 1,
+                Carbon => c_count += 1,
+                _ => {}
+            }
+        }
+
+        if h_count == 1 && c_count >= 2 {
+            types[i] = "nu".to_owned();
+        }
     }
 }

@@ -68,3 +68,12 @@ fn test_forces_on_pair() {
         results.push(0);
     }
 }
+
+// todo: This would be a good place to run a sample of the geostd set to validate
+// todo: FF types, partial charges, and FRCMOD overrides.
+
+fn test_ff_types_geostd() {
+    let geostd_path = Path::new("../../../Desktop/bio_misc/amber_geostd");
+
+
+}

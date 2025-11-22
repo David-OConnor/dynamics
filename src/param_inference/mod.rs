@@ -759,13 +759,14 @@ pub fn find_ff_types(
     postprocess_nd_sp2_hetero(atoms, bonds, &adj, &env, &mut result);
     postprocess_ne_to_n2(atoms, bonds, &mut result);
 
-    postprocess_na_ring_bridge(atoms, bonds, &adj, &env, &mut result);
+    postprocess_na_ring_bridge(atoms, &adj, &env, &mut result);
 
-    postprocess_nb_aromatic(atoms, bonds, &adj, &env, &mut result);
+    postprocess_nb_aromatic(atoms, &adj, &env, &mut result);
     postprocess_p5(atoms, bonds, &mut result);
     postprocess_nu_to_n7(atoms, bonds, &mut result);
 
-    postprocess_nb_to_na_ring_with_h(atoms, bonds, &env, &mut result);
+    postprocess_nb_to_na_ring_with_h(atoms, &env, &mut result);
+    postprocess_n7_to_nu(atoms, &adj, &mut result);
 
     let elapsed = start.elapsed().as_micros();
     println!("Complete in {elapsed} μs");
