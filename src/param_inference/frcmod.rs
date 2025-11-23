@@ -90,7 +90,7 @@ pub fn assign_missing_params(
     eq_map.insert("n8".to_owned(), "n3");
     eq_map.insert("n9".to_owned(), "n3");
     eq_map.insert("nv".to_owned(), "nh");
-        // todo: p2 or pc? Both are listed
+    // todo: p2 or pc? Both are listed
     eq_map.insert("pb".to_owned(), "p2");
     // todo: This may be an error in some mols; should be "pb".
     // eq_map.insert("Pb".to_owned(), "p2");
@@ -473,7 +473,12 @@ fn find_dihedral_alts(
         return Some(p);
     }
 
-    let key_for_default = (key.0.as_str(), key.1.as_str(), key.2.as_str(), key.3.as_str());
+    let key_for_default = (
+        key.0.as_str(),
+        key.1.as_str(),
+        key.2.as_str(),
+        key.3.as_str(),
+    );
 
     // First: special-case carbonyl-like impropers (e.g. cd-n-c-o, n-ns-c-o)
     if is_carbonyl_improper_candidate(key_for_default) {

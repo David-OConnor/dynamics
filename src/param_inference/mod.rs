@@ -769,10 +769,14 @@ pub fn find_ff_types(
     postprocess_sy_to_s6(atoms, &adj, &mut result);
     postprocess_c2_to_c_three_oxygens(atoms, &adj, &mut result);
     postprocess_na_to_n3(atoms, &adj, &mut result);
-    postprocess_nv_from_training(atoms, &mut result);
-    postprocess_nv_reconcile(atoms, &mut result);
+    // postprocess_nv_reconcile(atoms, &mut result);
 
-    postprocess_cz_to_c2(atoms, &mut result);
+    // postprocess_cz_to_c2(atoms, &mut result);
+    // postprocess_restore_misc_from_training(atoms, &mut result);
+    // postprocess_restore_c2_from_training(atoms, &mut result);
+    postprocess_cz_demote_ring_nd(atoms, bonds, &mut result);
+    // postprocess_n3_to_n_from_training(atoms, &mut result);
+    // postprocess_nu_reconcile(atoms, &mut result);
 
     // todo: Not working
     // postprocess_p5_to_py(atoms, &adj, &mut result);

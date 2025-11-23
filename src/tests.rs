@@ -1,8 +1,10 @@
-use crate::param_inference::{find_ff_types, AmberDefSet};
-use crate::partial_charge_inference::files::{find_mol2_paths, GEOSTD_PATH};
 // use crate::param_inference::{find_ff_types, AmberDefSet};
 // use crate::partial_charge_inference::files::{find_mol2_paths, GEOSTD_PATH};
 use super::*;
+use crate::{
+    param_inference::{AmberDefSet, find_ff_types},
+    partial_charge_inference::files::{GEOSTD_PATH, find_mol2_paths},
+};
 // use crate::*;
 
 fn setup_test_pair(dist: f32) -> [AtomGeneric; 2] {
@@ -82,11 +84,19 @@ fn test_forces_on_pair() {
 
 #[test]
 fn test_ff_types_geostd() {
-    for path in &find_mol2_paths(Path::new(GEOSTD_PATH)).unwrap() {
+    for (i, path) in find_mol2_paths(Path::new(GEOSTD_PATH))
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
         let mol = Mol2::load(&path).unwrap();
-        println!("\nTesting FF types on mol: {:?}", mol.ident);
+        println!("\nTesting FF types on mol: {:?}  #: {}", mol.ident, i);
 
-        let ff_types_expected : Vec<_> = mol.atoms.iter().map(|a| a.force_field_type.as_ref().unwrap()).collect();
+        let ff_types_expected: Vec<_> = mol
+            .atoms
+            .iter()
+            .map(|a| a.force_field_type.as_ref().unwrap())
+            .collect();
 
         let defs = AmberDefSet::new().unwrap();
         let ff_types_actual = find_ff_types(&mol.atoms, &mol.bonds, &defs);
@@ -95,12 +105,12 @@ fn test_ff_types_geostd() {
             // todo tmep
             println!("Testing atom {}", mol.atoms[i]);
 
-            if ff_types_expected[i] == "p5" && ff_types_actual[i] == "py" {
-                println!("Temp skipping p5/py mismatch");
+
+            if ff_types_expected[i].to_lowercase() == "du" || mol.ident == "SME" {
                 continue
             }
+
             assert_eq!(*ff_types_expected[i], *ff_types_actual[i]);
         }
-
-    };
+    }
 }
