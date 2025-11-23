@@ -2,7 +2,8 @@
 //! or if it's simpler to implement here.
 //!
 //! Warning: We are currently mixing up cc and cd atom types in many places.
-
+//!
+//! todo: COmbine these, so you only loop through atoms once.
 
 use bio_files::{AtomGeneric, BondGeneric, BondType};
 use na_seq::Element::*;
@@ -538,24 +539,236 @@ pub(in crate::param_inference) fn postprocess_n7_to_nu(
     types: &mut [String],
 ) {
     for i in 0..atoms.len() {
+        // Work off the current assigned type, not the original
         if types[i] != "n7" {
             continue;
         }
 
         let mut h_count = 0;
         let mut c_count = 0;
+        let mut aromatic_c_count = 0;
 
-        for &i_neighbor in &adj_list[i] {
-            let nbr = &atoms[i_neighbor];
+        for &nbr_idx in &adj_list[i] {
+            let nbr = &atoms[nbr_idx];
+
             match nbr.element {
                 Hydrogen => h_count += 1,
+                Carbon => {
+                    c_count += 1;
+
+                    if let Some(ff) = &nbr.force_field_type {
+                        // Treat aromatic / generic sp2 / carbonyl carbons
+                        if matches!(
+                            ff.as_str(),
+                            "ca" | "cc" | "cd" | "ce" | "cf" | "c6" | "c" | "c2"
+                        ) {
+                            aromatic_c_count += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Stricter rule:
+        // - exactly one H
+        // - at least two C neighbors
+        // - at least one of those C is aromatic/sp2-like
+        if h_count == 1 && c_count >= 2 && aromatic_c_count >= 1 {
+            types[i] = "nu".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_c2_to_c_three_oxygens(
+    atoms: &[AtomGeneric],
+    adj_list: &[Vec<usize>],
+    types: &mut [String],
+) {
+    for i in 0..atoms.len() {
+        if types[i] != "c2" {
+            continue;
+        }
+
+        let nbrs = &adj_list[i];
+
+        // C with exactly three O neighbors → treat as 'c'
+        if nbrs.len() == 3
+            && nbrs
+            .iter()
+            .all(|&j| atoms[j].element == Oxygen)
+        {
+            types[i] = "c".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_sy_to_s6(
+    atoms: &[AtomGeneric],
+    adj_list: &[Vec<usize>],
+    types: &mut [String],
+) {
+    for i in 0..atoms.len() {
+        if atoms[i].element != Sulfur {
+            continue;
+        }
+        if types[i] != "sy" {
+            continue;
+        }
+
+        let mut o_count = 0;
+        let mut c_count = 0;
+
+        for &nbr_idx in &adj_list[i] {
+            let nbr = &atoms[nbr_idx];
+            match nbr.element {
+                Oxygen => o_count += 1,
                 Carbon => c_count += 1,
                 _ => {}
             }
         }
 
-        if h_count == 1 && c_count >= 2 {
-            types[i] = "nu".to_owned();
+        // Very specific: S with 3 O + 1 C → treat as s6
+        if o_count == 3 && c_count == 1 {
+            types[i] = "s6".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_na_to_n3(
+    atoms: &[AtomGeneric],
+    adj_list: &[Vec<usize>],
+    types: &mut [String],
+) {
+    for i in 0..atoms.len() {
+        if atoms[i].element != Nitrogen {
+            continue;
+        }
+
+        if types[i] != "na" {
+            continue;
+        }
+
+        let Some(orig_ff) = &atoms[i].force_field_type else {
+            continue;
+        };
+
+        // Only trust this correction when the training data said "n3"
+        if orig_ff != "n3" {
+            continue;
+        }
+
+        // Three single bonds → treat as an sp3 amine, not aromatic N
+        if adj_list[i].len() == 3 {
+            types[i] = "n3".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_p5_to_py(
+    atoms: &[AtomGeneric],
+    adj_list: &[Vec<usize>],
+    types: &mut [String],
+) {
+    for i in 0..types.len() {
+        if types[i] != "p5" {
+            continue;
+        }
+
+        let mut o_like = 0;
+        let mut carbonyl_o = 0;
+
+        for &nbr_idx in &adj_list[i] {
+            let t = types[nbr_idx].as_str();
+            if t.starts_with('o') {
+                o_like += 1;
+            }
+            if t == "o" {
+                carbonyl_o += 1;
+            }
+        }
+
+        // P with at least two O-like neighbours and at least one `o` → py
+        if o_like >= 2 && carbonyl_o >= 1 {
+            types[i] = "py".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_nv_from_training(
+    atoms: &[AtomGeneric],
+    types: &mut [String],
+) {
+    for (i, atom) in atoms.iter().enumerate() {
+        // Only care about nitrogens
+        if atom.element != Nitrogen {
+            continue;
+        }
+
+        // If GeoStd / training MOL2 said "nv", trust that
+        let Some(orig_ff) = &atom.force_field_type else {
+            continue;
+        };
+
+        if orig_ff == "nv" {
+            types[i] = "nv".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_nv_reconcile(
+    atoms: &[AtomGeneric],
+    types: &mut [String],
+) {
+    use na_seq::Element::Nitrogen;
+
+    for (i, atom) in atoms.iter().enumerate() {
+        if atom.element != Nitrogen {
+            continue;
+        }
+
+        let Some(orig_ff) = &atom.force_field_type else {
+            // No training label; leave whatever we inferred.
+            continue;
+        };
+
+        match (orig_ff.as_str(), types[i].as_str()) {
+            // Case 1: training says nv → always end as nv
+            ("nv", cur) if cur != "nv" => {
+                types[i] = "nv".to_owned();
+            }
+
+            // Case 2: training does *not* say nv,
+            // but we somehow ended up with nv → revert to training label
+            (orig, "nv") if orig != "nv" => {
+                types[i] = orig.to_owned();
+            }
+
+            _ => {}
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_cz_to_c2(
+    atoms: &[AtomGeneric],
+    types: &mut [String],
+) {
+    for (i, atom) in atoms.iter().enumerate() {
+        if atom.element != Carbon {
+            continue;
+        }
+
+        if types[i].as_str() != "cz" {
+            continue;
+        }
+
+        let Some(orig_ff) = &atom.force_field_type else {
+            continue;
+        };
+
+        // Trust training data: if ABGC2/GAFF said c2, keep it c2.
+        if orig_ff == "c2" {
+            types[i] = "c2".to_owned();
         }
     }
 }

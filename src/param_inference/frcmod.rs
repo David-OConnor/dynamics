@@ -83,11 +83,17 @@ pub fn assign_missing_params(
     eq_map.insert("nj".to_owned(), "n");
     eq_map.insert("sq".to_owned(), "ss");
     eq_map.insert("c6".to_owned(), "c3");
+    eq_map.insert("c5".to_owned(), "c3");
     // ATCOR:
     eq_map.insert("ns".to_owned(), "n");
     eq_map.insert("n7".to_owned(), "n3");
     eq_map.insert("n8".to_owned(), "n3");
     eq_map.insert("n9".to_owned(), "n3");
+    eq_map.insert("nv".to_owned(), "nh");
+        // todo: p2 or pc? Both are listed
+    eq_map.insert("pb".to_owned(), "p2");
+    // todo: This may be an error in some mols; should be "pb".
+    // eq_map.insert("Pb".to_owned(), "p2");
 
     // todo: Add these bonds and valence angles once dihedrals and impropers work.
     // --- bonds -------------------------------------------------------------

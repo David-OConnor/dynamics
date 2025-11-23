@@ -7,7 +7,7 @@ use rand::seq::SliceRandom;
 
 use crate::partial_charge_inference::{
     AtomVocab, MolGNN,
-    files::{GEOSTD_PATH, MODEL_PATH, VOCAB_PATH, find_paths},
+    files::{GEOSTD_PATH, MODEL_PATH, VOCAB_PATH, find_mol2_paths},
     save,
 };
 
@@ -144,7 +144,7 @@ pub(crate) fn run_training() -> candle_core::Result<()> {
 
     println!("Training on GeoStd data with device: {device:?}");
 
-    let paths_mol2 = find_paths(Path::new(GEOSTD_PATH))?;
+    let paths_mol2 = find_mol2_paths(Path::new(GEOSTD_PATH))?;
 
     let vocabs = AtomVocab::new(&paths_mol2)?;
     let n_elems = vocabs.el.len();

@@ -13,13 +13,13 @@ use bincode::Decode;
 pub const MODEL_PATH: &str = "geostd_model.safetensors";
 pub const VOCAB_PATH: &str = "geostd_model.vocab";
 
-// pub const GEOSTD_PATH: &str = "C:/users/the_a/Desktop/bio_misc/amber_geostd";
-pub const GEOSTD_PATH: &str = "C:/users/the_a/Desktop/bio_misc/amber_geostd_test"; // todo temp
+pub const GEOSTD_PATH: &str = "C:/users/the_a/Desktop/bio_misc/amber_geostd";
+// pub const GEOSTD_PATH: &str = "C:/users/the_a/Desktop/bio_misc/amber_geostd_test"; // todo temp
 
-/// Find Mol2 and FRCMOD paths. Assumes there are per-letter subfolders one-layer deep.
+/// Find Mol2  paths. Assumes there are per-letter subfolders one-layer deep.
 /// todo: FRCmod as well
-pub fn find_paths(geostd_dir: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut mol2_paths = Vec::new();
+pub fn find_mol2_paths(geostd_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut result = Vec::new();
 
     for entry in fs::read_dir(geostd_dir)? {
         let entry = entry?;
@@ -35,13 +35,13 @@ pub fn find_paths(geostd_dir: &Path) -> io::Result<Vec<PathBuf>> {
                     .map(|e| e.to_string_lossy().to_lowercase())
                     == Some("mol2".to_string())
                 {
-                    mol2_paths.push(subpath);
+                    result.push(subpath);
                 }
             }
         }
     }
 
-    Ok(mol2_paths)
+    Ok(result)
 }
 
 // C+P from graphics.

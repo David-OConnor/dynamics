@@ -736,8 +736,7 @@ pub fn find_ff_types(
 ) -> Vec<String> {
     let start = Instant::now();
 
-    println!("\n\nDebug dump of dev env types: ");
-
+    // println!("\n\nDebug dump of dev env types: ");
     // for def in &defs.gff2.atomtypes {
     //     if let Some(env) = &def.chem_env {
     //         let pattern: ChemEnvPattern = env.as_str().into();
@@ -767,6 +766,16 @@ pub fn find_ff_types(
 
     postprocess_nb_to_na_ring_with_h(atoms, &env, &mut result);
     postprocess_n7_to_nu(atoms, &adj, &mut result);
+    postprocess_sy_to_s6(atoms, &adj, &mut result);
+    postprocess_c2_to_c_three_oxygens(atoms, &adj, &mut result);
+    postprocess_na_to_n3(atoms, &adj, &mut result);
+    postprocess_nv_from_training(atoms, &mut result);
+    postprocess_nv_reconcile(atoms, &mut result);
+
+    postprocess_cz_to_c2(atoms, &mut result);
+
+    // todo: Not working
+    // postprocess_p5_to_py(atoms, &adj, &mut result);
 
     let elapsed = start.elapsed().as_micros();
     println!("Complete in {elapsed} μs");
