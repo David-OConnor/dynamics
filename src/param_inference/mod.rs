@@ -771,16 +771,14 @@ pub fn find_ff_types(
     postprocess_sy_to_s6(atoms, &adj, &mut result);
     postprocess_py_to_p5_by_o_count(atoms, &adj, &mut result);
 
-
     postprocess_cz_demote_ring_nd(atoms, bonds, &mut result);
     postprocess_cc_to_cd_ring_hetero(atoms, &adj, &env, &mut result);
     postprocess_s6_to_sy(atoms, bonds, &mut result);
-    postprocess_n8_to_nv_guanidinium(atoms, bonds, &mut result);
-    postprocess_n3_to_na_bridge_nd(atoms, &adj, &env, &mut result);
-    // postprocess_cc_cd_by_unsat_c_neighbors(atoms, &adj, &env, &mut result);
 
-    // todo: Not working
-    // postprocess_p5_to_py(atoms, &adj, &mut result);
+    postprocess_n8_to_nv_guanidinium(atoms, bonds, &mut result);
+    postprocess_nv_to_n8_non_guanidinium(atoms, bonds, &mut result);
+    postprocess_n3_to_na_bridge_nd(atoms, &adj, &env, &mut result);
+    postprocess_cz_to_c2_guanidinium_mixed_n(atoms, &bonds, &mut result);
 
     let elapsed = start.elapsed().as_micros();
     println!("Complete in {elapsed} μs");

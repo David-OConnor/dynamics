@@ -88,19 +88,21 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
         Err(_) => return,
     };
 
-    for (i, atom) in atoms.iter().enumerate() {
-        if atom.element != Nitrogen {
+    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
+
+    for n_idx in 0..atoms.len() {
+        if atoms[n_idx].element != Nitrogen {
             continue;
         }
 
-        if types[i].as_str() != "nu" {
+        if types[n_idx].as_str() != "nu" {
             continue;
         }
 
-        let neighbors = &adj[i];
+        let neighbors = &adj[n_idx];
         let degree = neighbors.len();
 
-        // target: neutral 3-coordinate N with at least one H
+        // neutral 3-coordinate N with at least one H
         if degree != 3 {
             continue;
         }
@@ -120,7 +122,7 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
             let a0 = b.atom_0_sn as usize - 1;
             let a1 = b.atom_1_sn as usize - 1;
 
-            if a0 == i || a1 == i {
+            if a0 == n_idx || a1 == n_idx {
                 if !matches!(b.bond_type, BondType::Single | BondType::Aromatic) {
                     has_multiple_bond = true;
                     break;
@@ -132,10 +134,60 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
             continue;
         }
 
-        // looks like an n7-style N
-        types[i] = "n7".to_owned();
+        // Guard: skip urea/guanidinium-like nitrogens attached to a tri-N carbon
+        // with at least one C=N double bond to N.
+        let mut urea_like = false;
+
+        'outer: for &c_idx in neighbors {
+            if atoms[c_idx].element != Carbon {
+                continue;
+            }
+
+            // Count N neighbours of this carbon
+            let mut n_neigh = 0u8;
+            for &c_nb in &adj[c_idx] {
+                if atoms[c_nb].element == Nitrogen {
+                    n_neigh = n_neigh.saturating_add(1);
+                }
+            }
+
+            if n_neigh < 2 {
+                continue;
+            }
+
+            // Check for a C=N double bond from this carbon to any N
+            let mut has_double_to_n = false;
+            for b in bonds {
+                let a0 = b.atom_0_sn as usize - 1;
+                let a1 = b.atom_1_sn as usize - 1;
+
+                if a0 == c_idx || a1 == c_idx {
+                    if matches!(b.bond_type, BondType::Double) {
+                        let other = if a0 == c_idx { a1 } else { a0 };
+                        if atoms[other].element == Nitrogen {
+                            has_double_to_n = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if n_neigh >= 2 && has_double_to_n {
+                urea_like = true;
+                break 'outer;
+            }
+        }
+
+        if urea_like {
+            continue;
+        }
+
+        // Looks like an n7-style neutral amide/amine N
+        types[n_idx] = "n7".to_owned();
     }
 }
+
+
 
 pub(in crate::param_inference) fn postprocess_ring_n_types(
     atoms: &[AtomGeneric],
@@ -450,43 +502,65 @@ pub(in crate::param_inference) fn postprocess_nb_to_na_ring_with_h(
         types[i] = "na".to_owned();
     }
 }
-
 pub(in crate::param_inference) fn postprocess_n7_to_nu(
     atoms: &[AtomGeneric],
     adj_list: &[Vec<usize>],
     types: &mut [String],
 ) {
+    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
+
     for i in 0..atoms.len() {
-        // Only consider atoms currently labelled n7
+        if atoms[i].element != Nitrogen {
+            continue;
+        }
+
         if types[i].as_str() != "n7" {
             continue;
         }
 
-        let mut h_count = 0;
-        let mut c_count = 0;
-        let mut aromatic_c_count = 0;
+        let nbrs = &adj_list[i];
 
-        for &nbr_idx in &adj_list[i] {
-            let nbr = &atoms[nbr_idx];
+        let h_count = nbrs
+            .iter()
+            .filter(|&&j| atoms[j].element == Hydrogen)
+            .count();
 
-            match nbr.element {
-                Hydrogen => h_count += 1,
-                Carbon => {
-                    c_count += 1;
-                }
-                _ => {}
+        if h_count == 0 {
+            continue;
+        }
+
+        let c_neighbors: Vec<usize> = nbrs
+            .iter()
+            .copied()
+            .filter(|&j| atoms[j].element == Carbon)
+            .collect();
+
+        if c_neighbors.is_empty() {
+            continue;
+        }
+
+        let mut has_tri_n_carbon = false;
+
+        for &c_idx in &c_neighbors {
+            let n_neigh = adj_list[c_idx]
+                .iter()
+                .filter(|&&k| atoms[k].element == Nitrogen)
+                .count();
+
+            if n_neigh >= 2 {
+                has_tri_n_carbon = true;
+                break;
             }
         }
 
-        // Stricter rule:
-        // - exactly one H
-        // - at least two C neighbors
-        // - at least one of those C is aromatic/sp2-like
-        if h_count == 1 && c_count >= 2 && aromatic_c_count >= 1 {
-            types[i] = "nu".to_owned();
+        if !has_tri_n_carbon {
+            continue;
         }
+
+        types[i] = "nu".to_owned();
     }
 }
+
 
 pub(in crate::param_inference) fn postprocess_c2_to_c_three_oxygens(
     atoms: &[AtomGeneric],
@@ -841,98 +915,32 @@ pub(in crate::param_inference) fn postprocess_n8_to_nv_guanidinium(
         Err(_) => return,
     };
 
-    for (i, atom) in atoms.iter().enumerate() {
+    for (n_idx, atom) in atoms.iter().enumerate() {
         if atom.element != Nitrogen {
             continue;
         }
 
-        if types[i].as_str() != "n8" {
+        if types[n_idx].as_str() != "n8" {
             continue;
         }
 
-        let nbrs = &adj[i];
+        let nbrs = &adj[n_idx];
 
-        let mut c_nbr: Option<usize> = None;
-        let mut c_count = 0u8;
-        let mut h_count = 0u8;
-
-        for &j in nbrs {
-            match atoms[j].element {
-                Carbon => {
-                    c_count = c_count.saturating_add(1);
-                    if c_nbr.is_none() {
-                        c_nbr = Some(j);
-                    }
-                }
-                Hydrogen => {
-                    h_count = h_count.saturating_add(1);
-                }
-                _ => {}
-            }
-        }
-
-        // terminal NH2-like: one C neighbour, at least two H
-        if c_count != 1 || h_count < 2 {
-            continue;
-        }
-
-        let c_idx = match c_nbr {
-            Some(c_idx) => c_idx,
-            None => continue,
-        };
-
-        // Only treat guanidinium / carboxamidine-like central carbons
-        let c_ty = types[c_idx].as_str();
-        if c_ty != "ce" && c_ty != "cz" {
-            continue;
-        }
-
-        // Examine the central carbon: expect 1 carbon neighbour + 2 nitrogen neighbours
-        let mut c_carbon_nbrs = 0u8;
-        let mut c_nitrogen_nbrs: Vec<usize> = Vec::new();
-
-        for &j in &adj[c_idx] {
-            match atoms[j].element {
-                Carbon => c_carbon_nbrs = c_carbon_nbrs.saturating_add(1),
-                Nitrogen => c_nitrogen_nbrs.push(j),
-                _ => {}
-            }
-        }
-
-        if c_carbon_nbrs != 1 || c_nitrogen_nbrs.len() != 2 {
-            continue;
-        }
-
-        // Require: one of the *other* nitrogens is double-bonded to this carbon and typed n2
-        let mut has_double_n2_partner = false;
-
-        'outer: for &n_j in &c_nitrogen_nbrs {
-            if n_j == i {
+        let mut promote = false;
+        for &nb in nbrs {
+            if atoms[nb].element != Carbon {
                 continue;
             }
 
-            for b in bonds {
-                let a0 = b.atom_0_sn as usize - 1;
-                let a1 = b.atom_1_sn as usize - 1;
-
-                if (a0 == c_idx && a1 == n_j) || (a1 == c_idx && a0 == n_j) {
-                    if matches!(b.bond_type, BondType::Double) && types[n_j].as_str() == "n2" {
-                        has_double_n2_partner = true;
-                    }
-                    break;
-                }
-            }
-
-            if has_double_n2_partner {
-                break 'outer;
+            if is_terminal_guanidinium_nh2(n_idx, nb, atoms, bonds, &adj, types) {
+                promote = true;
+                break;
             }
         }
 
-        if !has_double_n2_partner {
-            continue;
+        if promote {
+            types[n_idx] = "nv".to_owned();
         }
-
-        types[i] = "nv".to_owned();
     }
 }
 
@@ -985,4 +993,173 @@ pub(in crate::param_inference) fn postprocess_n3_to_na_bridge_nd(
             types[i] = "na".to_owned();
         }
     }
+}
+
+pub(in crate::param_inference) fn postprocess_nv_to_n8_non_guanidinium(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
+    let adj = match build_adjacency_list(atoms, bonds) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    for (n_idx, atom) in atoms.iter().enumerate() {
+        if atom.element != Nitrogen {
+            continue;
+        }
+
+        if types[n_idx].as_str() != "nv" {
+            continue;
+        }
+
+        let nbrs = &adj[n_idx];
+
+        let mut in_valid_guanidinium = false;
+        for &nb in nbrs {
+            if atoms[nb].element != Carbon {
+                continue;
+            }
+
+            if is_terminal_guanidinium_nh2(n_idx, nb, atoms, bonds, &adj, types) {
+                in_valid_guanidinium = true;
+                break;
+            }
+        }
+
+        // If this nv is not attached to a proper guanidinium center, demote it.
+        if !in_valid_guanidinium {
+            types[n_idx] = "n8".to_owned();
+        }
+    }
+}
+
+
+pub(in crate::param_inference) fn postprocess_cz_to_c2_guanidinium_mixed_n(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
+    use na_seq::Element::{Carbon, Nitrogen, Hydrogen};
+
+    let adj = match build_adjacency_list(atoms, bonds) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    for (i, atom) in atoms.iter().enumerate() {
+        // Only consider carbon atoms
+        if atom.element != Carbon {
+            continue;
+        }
+
+        let nbrs = &adj[i];
+
+        // Guanidinium centre: exactly three neighbours, all nitrogens.
+        if nbrs.len() != 3 {
+            continue;
+        }
+
+        if !nbrs.iter().all(|&j| atoms[j].element == Nitrogen) {
+            continue;
+        }
+
+        // Count attached hydrogens for each nitrogen neighbour.
+        let mut h_counts = [0u8; 3];
+
+        for (k, &n_idx) in nbrs.iter().enumerate() {
+            let mut h_count = 0u8;
+            for &nn in &adj[n_idx] {
+                if atoms[nn].element == Hydrogen {
+                    h_count = h_count.saturating_add(1);
+                }
+            }
+            h_counts[k] = h_count;
+        }
+
+        // Ignore ordering of neighbours.
+        h_counts.sort_unstable();
+
+        // 00L’s guanidinium has one N with two H, two N with one H: [1, 1, 2].
+        if h_counts == [1, 1, 2] {
+            types[i] = "c2".to_owned();
+        }
+    }
+}
+
+fn is_terminal_guanidinium_nh2(
+    n_idx: usize,
+    c_idx: usize,
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    adj: &[Vec<usize>],
+    types: &[String],
+) -> bool {
+    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
+
+    // Centre must be carbon
+    if atoms[c_idx].element != Carbon {
+        return false;
+    }
+
+    // N–C must be a single bond
+    let mut is_single_nc = false;
+    for b in bonds {
+        let a0 = b.atom_0_sn as usize - 1;
+        let a1 = b.atom_1_sn as usize - 1;
+
+        if (a0 == n_idx && a1 == c_idx) || (a1 == n_idx && a0 == c_idx) {
+            if matches!(b.bond_type, BondType::Single) {
+                is_single_nc = true;
+            }
+            break;
+        }
+    }
+    if !is_single_nc {
+        return false;
+    }
+
+    // This N must be an NH₂: at least two attached hydrogens
+    let mut h_count = 0u8;
+    for &nb in &adj[n_idx] {
+        if atoms[nb].element == Hydrogen {
+            h_count = h_count.saturating_add(1);
+        }
+    }
+    if h_count < 2 {
+        return false;
+    }
+
+    // The carbon must have at least two nitrogen neighbours
+    let mut n_nbrs: Vec<usize> = Vec::new();
+    for &nb in &adj[c_idx] {
+        if atoms[nb].element == Nitrogen {
+            n_nbrs.push(nb);
+        }
+    }
+    if n_nbrs.len() < 2 {
+        return false;
+    }
+
+    // And at least one N neighbour must be double-bonded and typed n2 (C=N)
+    let mut has_double_n2 = false;
+    'outer: for &n_j in &n_nbrs {
+        for b in bonds {
+            let a0 = b.atom_0_sn as usize - 1;
+            let a1 = b.atom_1_sn as usize - 1;
+
+            if (a0 == c_idx && a1 == n_j) || (a1 == c_idx && a0 == n_j) {
+                if matches!(b.bond_type, BondType::Double) && types[n_j].as_str() == "n2" {
+                    has_double_n2 = true;
+                }
+                break;
+            }
+        }
+        if has_double_n2 {
+            break 'outer;
+        }
+    }
+
+    has_double_n2
 }
