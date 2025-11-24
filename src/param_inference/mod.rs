@@ -750,7 +750,7 @@ pub fn find_ff_types(
     let mut result = assign_types(&defs.gff2.atomtypes, atoms, &env, bonds, &adj);
 
     // Enforce cc/cd parity (cc–cc and cd–cd are conjugated single bonds, cc–cd is double).
-    postprocess_cc_cd(atoms, bonds, &mut result);
+    // postprocess_cc_cd(atoms, bonds, &mut result);
 
     postprocess_carbonyl_c(atoms, bonds, &mut result);
 
@@ -766,17 +766,18 @@ pub fn find_ff_types(
 
     postprocess_nb_to_na_ring_with_h(atoms, &env, &mut result);
     postprocess_n7_to_nu(atoms, &adj, &mut result);
-    postprocess_sy_to_s6(atoms, &adj, &mut result);
     postprocess_c2_to_c_three_oxygens(atoms, &adj, &mut result);
-    postprocess_na_to_n3(atoms, &adj, &mut result);
-    // postprocess_nv_reconcile(atoms, &mut result);
+    postprocess_na_to_n3(atoms, &adj, &env, &mut result);
+    postprocess_sy_to_s6(atoms, &adj, &mut result);
+    postprocess_py_to_p5_by_o_count(atoms, &adj, &mut result);
 
-    // postprocess_cz_to_c2(atoms, &mut result);
-    // postprocess_restore_misc_from_training(atoms, &mut result);
-    // postprocess_restore_c2_from_training(atoms, &mut result);
+
     postprocess_cz_demote_ring_nd(atoms, bonds, &mut result);
-    // postprocess_n3_to_n_from_training(atoms, &mut result);
-    // postprocess_nu_reconcile(atoms, &mut result);
+    postprocess_cc_to_cd_ring_hetero(atoms, &adj, &env, &mut result);
+    postprocess_s6_to_sy(atoms, bonds, &mut result);
+    postprocess_n8_to_nv_guanidinium(atoms, bonds, &mut result);
+    postprocess_n3_to_na_bridge_nd(atoms, &adj, &env, &mut result);
+    // postprocess_cc_cd_by_unsat_c_neighbors(atoms, &adj, &env, &mut result);
 
     // todo: Not working
     // postprocess_p5_to_py(atoms, &adj, &mut result);
