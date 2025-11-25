@@ -187,8 +187,6 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
     }
 }
 
-
-
 pub(in crate::param_inference) fn postprocess_ring_n_types(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
@@ -264,26 +262,45 @@ pub(in crate::param_inference) fn postprocess_ring_n_types(
             None => continue,
         };
 
-        // Count hetero neighbors (including us) on the double-bond partner
-        let mut partner_hetero_neighbors = 0u8;
-        for &nb in &adj[p] {
-            match atoms[nb].element {
-                Carbon | Hydrogen => {}
-                _ => {
-                    partner_hetero_neighbors = partner_hetero_neighbors.saturating_add(1);
-                }
+        // Count *other* hetero neighbors (excluding ourselves) on the double-bond partner.
+        // Only O/N count here; do NOT let thio-substitution (S) force nd.
+        let mut partner_on_hetero = 0u8;
+
+        // If this N is attached to an aromatic 6-member ring atom (fused aromatic),
+        // keep it as nc even if the C=N partner is hetero-substituted.
+        let mut fused_aryl_neighbor = false;
+        for &nb in &adj[i] {
+            if atoms[nb].element == Hydrogen {
+                continue;
+            }
+            let nb_env = &env_all[nb];
+            if nb_env.is_aromatic && nb_env.ring_sizes.iter().any(|&s| s == 6) {
+                fused_aryl_neighbor = true;
+                break;
             }
         }
 
-        // Partner strongly hetero-substituted → nd; otherwise nc
-        if partner_hetero_neighbors >= 2 {
+        // Count *other* hetero neighbors (excluding ourselves) on the double-bond partner.
+        // Here we include S again (needed for thiazole-like cases).
+        let mut partner_hetero = 0u8;
+        for &nb in &adj[p] {
+            if nb == i {
+                continue;
+            }
+            match atoms[nb].element {
+                Carbon | Hydrogen => {}
+                _ => partner_hetero = partner_hetero.saturating_add(1),
+            }
+        }
+
+        // Hetero-substituted partner → nd, unless we're fused to an aromatic 6-ring → nc
+        if partner_hetero >= 1 && !fused_aryl_neighbor {
             types[i] = "nd".to_owned();
         } else {
             types[i] = "nc".to_owned();
         }
     }
 }
-
 
 pub(in crate::param_inference) fn postprocess_carbonyl_c(
     atoms: &[AtomGeneric],
@@ -561,7 +578,6 @@ pub(in crate::param_inference) fn postprocess_n7_to_nu(
     }
 }
 
-
 pub(in crate::param_inference) fn postprocess_c2_to_c_three_oxygens(
     atoms: &[AtomGeneric],
     adj_list: &[Vec<usize>],
@@ -581,33 +597,6 @@ pub(in crate::param_inference) fn postprocess_c2_to_c_three_oxygens(
     }
 }
 
-pub(in crate::param_inference) fn postprocess_sy_to_s6(
-    atoms: &[AtomGeneric],
-    adj_list: &[Vec<usize>],
-    types: &mut [String],
-) {
-    for (i, atom) in atoms.iter().enumerate() {
-        if atom.element != Sulfur {
-            continue;
-        }
-
-        // Only refine things currently labelled as generic sulfur
-        if types[i].as_str() != "sy" {
-            continue;
-        }
-
-        let nbrs = &adj_list[i];
-        let o_neighbors = nbrs
-            .iter()
-            .filter(|&&j| atoms[j].element == Oxygen)
-            .count();
-
-        // Highly oxidised sulfur: at least two O neighbours and at least three total neighbours
-        if o_neighbors >= 2 && nbrs.len() >= 3 {
-            types[i] = "s6".to_owned();
-        }
-    }
-}
 
 pub(in crate::param_inference) fn postprocess_na_to_n3(
     atoms: &[AtomGeneric],
@@ -820,6 +809,35 @@ pub(in crate::param_inference) fn postprocess_cc_to_cd_ring_hetero(
         }
     }
 }
+pub(in crate::param_inference) fn postprocess_sy_to_s6(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    types: &mut [String],
+) {
+    let adj = match build_adjacency_list(atoms, bonds) {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    for (i, atom) in atoms.iter().enumerate() {
+        if atom.element != Sulfur {
+            continue;
+        }
+
+        if types[i].as_str() != "sy" {
+            continue;
+        }
+
+        let o_neighbors = adj[i]
+            .iter()
+            .filter(|&&j| atoms[j].element == Oxygen)
+            .count();
+
+        if o_neighbors >= 3 {
+            types[i] = "s6".to_owned();
+        }
+    }
+}
 
 pub(in crate::param_inference) fn postprocess_s6_to_sy(
     atoms: &[AtomGeneric],
@@ -836,7 +854,6 @@ pub(in crate::param_inference) fn postprocess_s6_to_sy(
             continue;
         }
 
-        // Only refine things we currently think are s6
         if types[i].as_str() != "s6" {
             continue;
         }
@@ -847,14 +864,13 @@ pub(in crate::param_inference) fn postprocess_s6_to_sy(
         }
 
         let mut o_double = 0u8;
-        let mut n_idx: Option<usize> = None;
-        let mut c_idx: Option<usize> = None;
+        let mut non_o: Vec<usize> = Vec::with_capacity(2);
 
         for &j in nbrs {
             match atoms[j].element {
                 Oxygen => {
-                    // Count O neighbours that are double-bonded to S
                     let mut is_double = false;
+
                     for b in bonds {
                         let a0 = b.atom_0_sn as usize - 1;
                         let a1 = b.atom_1_sn as usize - 1;
@@ -866,37 +882,37 @@ pub(in crate::param_inference) fn postprocess_s6_to_sy(
                             break;
                         }
                     }
+
                     if is_double {
                         o_double = o_double.saturating_add(1);
                     }
                 }
-                Nitrogen => {
-                    n_idx = Some(j);
-                }
-                Carbon => {
-                    if c_idx.is_none() {
-                        c_idx = Some(j);
-                    }
-                }
-                _ => {}
+                _ => non_o.push(j),
             }
         }
 
-        // We only care about S(=O)2 with two non-oxygen neighbours
-        if o_double != 2 {
+        if o_double != 2 || non_o.len() != 2 {
             continue;
         }
 
-        let (n_idx, c_idx) = match (n_idx, c_idx) {
-            (Some(n), Some(c)) => (n, c),
+        let a = non_o[0];
+        let b = non_o[1];
+
+        // sulfone: S(=O)2 with two carbon neighbours
+        if atoms[a].element == Carbon && atoms[b].element == Carbon {
+            types[i] = "sy".to_owned();
+            continue;
+        }
+
+        // sulfonamide-like: S(=O)2 - N7 - aryl
+        let (n_idx, c_idx) = match (atoms[a].element, atoms[b].element) {
+            (Nitrogen, Carbon) => (a, b),
+            (Carbon, Nitrogen) => (b, a),
             _ => continue,
         };
 
-        // Sulfonamide-like pattern:
-        //   S(=O)2-N7-aryl → sy
         let n_ty = types[n_idx].as_str();
         let c_ty = types[c_idx].as_str();
-
         let c_is_sp2_aromatic = matches!(c_ty, "ca" | "cc" | "cd" | "ce" | "cf" | "cg");
 
         if n_ty == "n7" && c_is_sp2_aromatic {
@@ -1035,13 +1051,12 @@ pub(in crate::param_inference) fn postprocess_nv_to_n8_non_guanidinium(
     }
 }
 
-
 pub(in crate::param_inference) fn postprocess_cz_to_c2_guanidinium_mixed_n(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen, Hydrogen};
+    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
 
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
@@ -1163,3 +1178,4 @@ fn is_terminal_guanidinium_nh2(
 
     has_double_n2
 }
+

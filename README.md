@@ -364,12 +364,7 @@ fn main() {
 
     // Or, instead of loading atoms and mol-specific params separately:
     // let (mol, lig_specific) = load_prmtop("my_mol.prmtop");
-    
-    // Or, if you have a small molecule available in Amber Geostd, load it remotely:
-    // let data = bio_apis::amber_geostd::load_mol_files("CPB");
-    // let mol = Mol2::new(&data.mol2);
-    // let mol_specific = ForceFieldParams::from_frcmod(&data.frcmod);
-    
+        
     // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
     // `populate_peptide_ff_and_q() separately. Add bonds.

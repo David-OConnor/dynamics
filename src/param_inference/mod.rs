@@ -768,7 +768,7 @@ pub fn find_ff_types(
     postprocess_n7_to_nu(atoms, &adj, &mut result);
     postprocess_c2_to_c_three_oxygens(atoms, &adj, &mut result);
     postprocess_na_to_n3(atoms, &adj, &env, &mut result);
-    postprocess_sy_to_s6(atoms, &adj, &mut result);
+    postprocess_sy_to_s6(atoms, bonds, &mut result);
     postprocess_py_to_p5_by_o_count(atoms, &adj, &mut result);
 
     postprocess_cz_demote_ring_nd(atoms, bonds, &mut result);

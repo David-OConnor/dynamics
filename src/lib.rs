@@ -245,6 +245,23 @@ pub struct MolDynamics {
     pub bonded_only: bool,
 }
 
+/// This is mainly for overriding, while specifying atoms, bonds, posits, and mol type explicitly.
+impl Default for MolDynamics {
+    fn default() -> Self {
+        Self {
+            ff_mol_type: FfMolType::SmallOrganic,
+            atoms: Vec::new(),
+            atom_posits: None,
+            atom_init_velocities: None,
+            bonds: Vec::new(),
+            adjacency_list: None,
+            static_: false,
+            mol_specific_params: None,
+            bonded_only: false,
+        }
+    }
+}
+
 impl MolDynamics {
     // todo: from_mmcif?
 

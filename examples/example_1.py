@@ -1,6 +1,7 @@
 from mol_dynamics import *
 
-def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specific: ForceFieldParams) -> MdState:
+
+def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet) -> MdState:
     """
     Set up dynamics between a small molecule we treat with full dynamics, and a rigid one
     which acts on the system, but doesn't move.
@@ -8,37 +9,45 @@ def setup_dynamics(mol: Mol2, protein: MmCif, param_set: FfParamSet, lig_specifi
 
     # Or, consider using these terse helpers instead for small organic molecules.
     # MolDynamics.from_amber_geostd("CPB")  # Can use with a PubChem CID as well.
-    # MolDynamics.from_mol2(mol, lig_specific)
-    # MolDynamics.from_sdf(mol, lig_specific)
+    # MolDynamics.from_mol2(mol)
+    # MolDynamics.from_sdf(mol)
 
     mols = [
         MolDynamics(
             ff_mol_type=FfMolType.SmallOrganic,
             atoms=mol.atoms,
+            bonds=mol.bonds,
             # Pass a [Vec3] of starting atom positions. If absent,
             # will use the positions stored in atoms.
             atom_posits=None,
             atom_init_velocities=None,
-            bonds=mol.bonds,
             # Pass your own from cache if you want, or it will build.
             adjacency_list=None,
             static_=False,
-            # This is usually mandatory for small organic molecules. Provided, for example,
-            # in Amber FRCMOD files. Overrides general params.
-            mol_specific_params=lig_specific,
+            mol_specific_params=None,
             bonded_only=False,
         ),
         MolDynamics(
             ff_mol_type=FfMolType.Peptide,
             atoms=protein.atoms,
+            bonds=[],  # Not required if static.
             atom_posits=None,
             atom_init_velocities=None,
-            bonds=[],  # Not required if static.
             adjacency_list=None,
             static_=True,
             mol_specific_params=None,
             bonded_only=False,
         ),
+    ]
+
+    We specified all fields above for demonstration, but you may wish to use default keyword
+    arguments for terser syntax:
+    mols = [
+        MolDynamics(
+            ff_mol_type=FfMolType.SmallOrganic,
+            atoms=mol.atoms,
+        ),
+        MolDynamics(ff_mol_type=FfMolType.Peptide, atoms=protein.atoms, static_=True),
     ]
 
     return MdState(
@@ -53,7 +62,9 @@ def main():
     protein = MmCif.load("1c8k.cif")
 
     param_set = FfParamSet.new_amber()
-    lig_specific = ForceFieldParams.load_frcmod("CPB.frcmod")
+
+    # Optionally, but we infer lig-specific params
+    # lig_specific = ForceFieldParams.load_frcmod("CPB.frcmod")
 
     # Or, instead of loading atoms and mol-specific params separately:
     # mol, lig_specific = load_prmtop("my_mol.prmtop")
@@ -69,7 +80,7 @@ def main():
     # A variant of that function called `prepare_peptide` takes separate atom, residue, and chain
     # lists, for flexibility.
 
-    md = setup_dynamics(mol, protein, param_set, lig_specific)
+    md = setup_dynamics(mol, protein, param_set)
 
     n_steps = 100
     dt = 0.002  # picoseconds.

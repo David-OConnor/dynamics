@@ -223,13 +223,24 @@ struct MolDynamics {
 #[pymethods]
 impl MolDynamics {
     #[new]
+    #[pyo3(signature = (
+        ff_mol_type,
+        atoms,
+        bonds,
+        atom_posits=None,
+        atom_init_velocities=None,
+        adjacency_list=None,
+        static_=false,
+        mol_specific_params=None,
+        bonded_only=false,
+    ))]
     fn new(
         py: Python<'_>,
         ff_mol_type: FfMolType,
         atoms: Vec<Py<from_bio_files::AtomGeneric>>,
+        bonds: Vec<Py<from_bio_files::BondGeneric>>,
         atom_posits: Option<Vec<[f64; 3]>>,
         atom_init_velocities: Option<Vec<[f32; 3]>>,
-        bonds: Vec<Py<from_bio_files::BondGeneric>>,
         adjacency_list: Option<Vec<Vec<usize>>>,
         static_: bool,
         mol_specific_params: Option<Py<from_bio_files::ForceFieldParams>>,
@@ -277,6 +288,10 @@ impl MolDynamics {
     }
 
     #[classmethod]
+    #[pyo3(signature = (
+       mol,
+       mol_specific_params=None,
+    ))]
     fn from_mol2(
         _cls: &Bound<'_, PyType>,
         py: Python<'_>,
@@ -289,6 +304,10 @@ impl MolDynamics {
     }
 
     #[classmethod]
+    #[pyo3(signature = (
+       mol,
+       mol_specific_params=None,
+    ))]
     fn from_sdf(
         _cls: &Bound<'_, PyType>,
         py: Python<'_>,
