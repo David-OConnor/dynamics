@@ -749,9 +749,6 @@ pub fn find_ff_types(
 
     let mut result = assign_types(&defs.gff2.atomtypes, atoms, &env, bonds, &adj);
 
-    // Enforce cc/cd parity (cc–cc and cd–cd are conjugated single bonds, cc–cd is double).
-    // postprocess_cc_cd(atoms, bonds, &mut result);
-
     postprocess_carbonyl_c(atoms, bonds, &mut result);
 
     postprocess_ring_n_types(atoms, bonds, &adj, &env, &mut result);
@@ -769,16 +766,40 @@ pub fn find_ff_types(
     postprocess_c2_to_c_three_oxygens(atoms, &adj, &mut result);
     postprocess_na_to_n3(atoms, &adj, &env, &mut result);
     postprocess_sy_to_s6(atoms, bonds, &mut result);
+    postprocess_sy_to_s6_if_nonaryl_sulfonamide(atoms, bonds, &mut result);
     postprocess_py_to_p5_by_o_count(atoms, &adj, &mut result);
 
     postprocess_cz_demote_ring_nd(atoms, bonds, &mut result);
     postprocess_cc_to_cd_ring_hetero(atoms, &adj, &env, &mut result);
     postprocess_s6_to_sy(atoms, bonds, &mut result);
+    postprocess_s6_to_sy_if_attached_to_nh2_only(atoms, bonds, &adj, &mut result);
 
     postprocess_n8_to_nv_guanidinium(atoms, bonds, &mut result);
     postprocess_nv_to_n8_non_guanidinium(atoms, bonds, &mut result);
     postprocess_n3_to_na_bridge_nd(atoms, &adj, &env, &mut result);
+
     postprocess_cz_to_c2_guanidinium_mixed_n(atoms, &bonds, &mut result);
+    postprocess_tris_n_c_to_c2(atoms, &bonds, &mut result);
+    postprocess_nd_to_nc_ring_no_n_neighbor(atoms, &bonds, &mut result);
+    postprocess_cz_to_cd_if_has_explicit_multibond(atoms, &bonds, &mut result);
+    postprocess_nd_to_nc_if_double_to_cd(atoms, &bonds, &mut result);
+    postprocess_nd_to_nc_only_for_c_s_motifs(atoms, &bonds, &mut result);
+    postprocess_n7_to_nu_if_exocyclic(atoms, &bonds, &mut result);
+    postprocess_n3_to_n_if_attached_to_acyl_carbon(atoms, &bonds, &mut result);
+    postprocess_n3_to_nh_if_conjugated(atoms, &bonds, &adj, &mut result);
+    postprocess_cz_to_ca_if_ring_no_n_neighbors(atoms, &bonds, &mut result);
+    postprocess_cz_to_ca_if_has_aromatic_bond(atoms, &bonds, &mut result);
+
+    postprocess_c2_to_cf_if_conjugated_to_carbonyl(atoms, &bonds, &adj, &mut result);
+    postprocess_c2_to_ce_if_conjugated_to_carbonyl(atoms, &bonds, &adj, &mut result);
+
+    postprocess_cc_to_ca_if_has_aromatic_bond(atoms, &bonds, &mut result);
+    postprocess_cd_to_ca_if_has_aromatic_bond(atoms, &bonds, &mut result);
+    //
+    postprocess_h_to_hx_alpha_carbon(atoms, &adj, &mut result);
+    postprocess_n7_to_n6_if_small_ring(atoms, bonds, &adj, &mut result);
+    postprocess_sy_to_s6_if_nonaryl_sulfonyl(atoms, bonds, &mut result);
+    postprocess_s6_to_sy_if_primary_sulfonamide(atoms, &adj, &mut result);
 
     let elapsed = start.elapsed().as_micros();
     println!("Complete in {elapsed} μs");

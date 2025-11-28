@@ -4,6 +4,7 @@
 
 pub(crate) mod files;
 
+pub(crate) mod experimenting;
 pub(crate) mod train;
 // Pub so the training program can access it.
 
@@ -17,7 +18,7 @@ use std::{
 };
 
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, BondGeneric, mol2::Mol2};
+use bio_files::{AtomGeneric, BondGeneric, BondType, mol2::Mol2};
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn as nn;
 use candle_nn::{Embedding, Linear, VarBuilder, ops::sigmoid};
@@ -33,11 +34,15 @@ const PARAM_INFERENCE_MODEL: &[u8] =
 const PARAM_INFERENCE_VOCAB: &[u8] =
     include_bytes!("../../param_data/ml_models/geostd_model.vocab");
 
+const N_BOND_TYPES: usize = 5; // single, double, triple, aromatic, other
+
 /// We save this to file during training, and load it during inference.
 #[derive(Debug, Encode, Decode)]
 pub(crate) struct AtomVocab {
     pub el: HashMap<String, usize>,
     pub atom_type: HashMap<String, usize>,
+    pub charge_mean: f32,
+    pub charge_std: f32,
 }
 
 impl AtomVocab {
@@ -74,6 +79,8 @@ impl AtomVocab {
         Ok(Self {
             el: el_map,
             atom_type: atom_type_map,
+            charge_mean: 0.,
+            charge_std: 0.,
         })
     }
 }
@@ -136,7 +143,13 @@ impl MessagePassingLayer {
         Ok(Self { msg, gru })
     }
 
-    fn forward(&self, h: &Tensor, edge_index: &Tensor) -> candle_core::Result<Tensor> {
+    fn forward(
+        &self,
+        h: &Tensor,
+        edge_index: &Tensor,
+        edge_types: &Tensor,
+        bond_emb: &Embedding,
+    ) -> candle_core::Result<Tensor> {
         if edge_index.dims()[0] == 0 {
             return Ok(h.clone());
         }
@@ -147,7 +160,10 @@ impl MessagePassingLayer {
         let h_src = h.index_select(&src, 0)?;
         let h_dst = h.index_select(&dst, 0)?;
 
-        let m_in = Tensor::cat(&[h_src, h_dst], 1)?;
+        let b = bond_emb.forward(edge_types)?;
+        let h_src_b = (h_src + b)?;
+
+        let m_in = Tensor::cat(&[h_src_b, h_dst], 1)?;
         let m = self.msg.forward(&m_in)?.relu()?;
 
         let mut agg = Tensor::zeros_like(h)?.contiguous()?;
@@ -162,7 +178,7 @@ impl MessagePassingLayer {
 
 // -------- Model --------
 
-pub(crate) struct MolGNN {
+pub(in crate::partial_charge_inference) struct MolGNN {
     elem_emb: Embedding,
     type_emb: Embedding,
     coord_lin: Linear,
@@ -170,6 +186,7 @@ pub(crate) struct MolGNN {
     mp2: MessagePassingLayer,
     mp3: MessagePassingLayer,
     charge_head: Linear,
+    bond_emb: Embedding,
 }
 
 impl MolGNN {
@@ -181,6 +198,7 @@ impl MolGNN {
     ) -> candle_core::Result<Self> {
         let elem_emb = nn::embedding(n_elems + 1, hidden_dim, vb.pp("elem_emb"))?;
         let type_emb = nn::embedding(n_atom_types + 1, hidden_dim, vb.pp("type_emb"))?;
+        let bond_emb = nn::embedding(N_BOND_TYPES, hidden_dim, vb.pp("bond_emb"))?;
 
         let coord_lin = nn::linear(3, hidden_dim, vb.pp("coord_lin"))?;
         let mp1 = MessagePassingLayer::new(vb.pp("mp1"), hidden_dim)?;
@@ -196,6 +214,7 @@ impl MolGNN {
             mp2,
             mp3,
             charge_head,
+            bond_emb,
         })
     }
 
@@ -205,20 +224,30 @@ impl MolGNN {
         type_ids: &Tensor,
         coords: &Tensor,
         edge_index: &Tensor,
+        edge_types: &Tensor,
     ) -> candle_core::Result<Tensor> {
+        let coord_mean = coords.mean(0)?; // [3]
+        let coords_centered = coords.broadcast_sub(&coord_mean)?; // [N,3]
+
+        let h_coord = self.coord_lin.forward(&coords_centered)?;
+
         let h_elem = self.elem_emb.forward(elem_ids)?;
         let h_type = self.type_emb.forward(type_ids)?;
-        let h_coord = self.coord_lin.forward(coords)?;
 
         let mut h = (h_elem + h_type)?;
         h = (h + h_coord)?;
 
-        h = self.mp1.forward(&h, edge_index)?;
-        h = self.mp2.forward(&h, edge_index)?;
-        h = self.mp3.forward(&h, edge_index)?;
+        h = self
+            .mp1
+            .forward(&h, edge_index, edge_types, &self.bond_emb)?;
+        h = self
+            .mp2
+            .forward(&h, edge_index, edge_types, &self.bond_emb)?;
+        h = self
+            .mp3
+            .forward(&h, edge_index, edge_types, &self.bond_emb)?;
 
         let charges = self.charge_head.forward(&h)?.squeeze(1)?;
-
         Ok(charges)
     }
 }
@@ -264,28 +293,56 @@ fn run_inference(
     }
 
     let mut edge_index_vec: Vec<i64> = Vec::new();
+    let mut edge_types_vec: Vec<i64> = Vec::new();
+
     for bond in bonds.iter() {
         let i = (bond.atom_0_sn - 1) as i64;
         let j = (bond.atom_1_sn - 1) as i64;
+
+        let bt_id = match bond.bond_type {
+            BondType::Single => 0,
+            BondType::Double => 1,
+            BondType::Triple => 2,
+            BondType::Aromatic => 3,
+            _ => 4,
+        };
+
         edge_index_vec.push(i);
         edge_index_vec.push(j);
+        edge_types_vec.push(bt_id);
+
         edge_index_vec.push(j);
         edge_index_vec.push(i);
+        edge_types_vec.push(bt_id);
     }
 
     let elem_ids = Tensor::from_slice(&elem_ids, (atoms.len(),), device)?;
     let type_ids = Tensor::from_slice(&type_ids, (atoms.len(),), device)?;
     let coords = Tensor::from_slice(&coords, (atoms.len(), 3), device)?;
+
     let edge_index = if edge_index_vec.is_empty() {
         Tensor::zeros((0, 2), DType::I64, device)?
     } else {
         Tensor::from_slice(&edge_index_vec, (edge_index_vec.len() / 2, 2), device)?
     };
 
-    let charges_t = model.forward(&elem_ids, &type_ids, &coords, &edge_index)?;
+    let edge_types = if edge_types_vec.is_empty() {
+        Tensor::zeros((0,), DType::I64, device)?
+    } else {
+        Tensor::from_slice(&edge_types_vec, (edge_types_vec.len(),), device)?
+    };
+    let charges_t = model.forward(&elem_ids, &type_ids, &coords, &edge_index, &edge_types)?;
+
+    let mean = vocabs.charge_mean;
+    let std = vocabs.charge_std;
+
+    let mean_t = Tensor::from_slice(&[mean], (1,), device)?;
+    let std_t = Tensor::from_slice(&[std], (1,), device)?;
+
+    // charges = charges_t * std + mean
+    let charges_t = charges_t.broadcast_mul(&std_t)?.broadcast_add(&mean_t)?;
 
     let charges: Vec<f32> = charges_t.to_vec1()?;
-
     Ok(charges)
 }
 

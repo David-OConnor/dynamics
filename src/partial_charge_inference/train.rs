@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use bio_files::Mol2;
+use bio_files::{BondType, Mol2};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder};
 use rand::seq::SliceRandom;
@@ -34,6 +34,7 @@ pub struct Batch {
     pub has_type: Tensor,
     pub charges: Tensor,
     pub num_atoms: usize,
+    pub edge_types: Tensor,
 }
 
 struct GeoStdMol2Dataset {
@@ -97,15 +98,29 @@ impl GeoStdMol2Dataset {
                 charges.push(0.0);
             }
         }
-
         let mut edge_index_vec: Vec<i64> = Vec::new();
+        let mut edge_types_vec: Vec<i64> = Vec::new();
+
         for bond in bonds.iter() {
             let i = (bond.atom_0_sn - 1) as i64;
             let j = (bond.atom_1_sn - 1) as i64;
+
+            // Same mapping as in inference
+            let bt_id = match bond.bond_type {
+                BondType::Single => 0,
+                BondType::Double => 1,
+                BondType::Triple => 2,
+                BondType::Aromatic => 3,
+                _ => 4,
+            };
+
             edge_index_vec.push(i);
             edge_index_vec.push(j);
+            edge_types_vec.push(bt_id);
+
             edge_index_vec.push(j);
             edge_index_vec.push(i);
+            edge_types_vec.push(bt_id);
         }
 
         let elem_ids = Tensor::from_slice(&elem_ids, (n,), device)?;
@@ -121,6 +136,12 @@ impl GeoStdMol2Dataset {
             Tensor::from_slice(&edge_index_vec, (m, 2), device)?
         };
 
+        let edge_types = if edge_types_vec.is_empty() {
+            Tensor::zeros((0,), DType::I64, device)?
+        } else {
+            Tensor::from_slice(&edge_types_vec, (edge_types_vec.len(),), device)?
+        };
+
         Ok(Batch {
             elem_ids,
             coords,
@@ -129,6 +150,7 @@ impl GeoStdMol2Dataset {
             has_type,
             charges,
             num_atoms: n,
+            edge_types,
         })
     }
 }
@@ -146,7 +168,35 @@ pub(crate) fn run_training() -> candle_core::Result<()> {
 
     let paths_mol2 = find_mol2_paths(Path::new(GEOSTD_PATH))?;
 
-    let vocabs = AtomVocab::new(&paths_mol2)?;
+    // normalize charges in training, then map back in inference.
+
+    // Compute global mean and std of charges over GeoStd
+    let mut sum = 0f64;
+    let mut sum_sq = 0f64;
+    let mut count = 0usize;
+
+    for path in &paths_mol2 {
+        let mol = Mol2::load(path)?;
+        for atom in mol.atoms.iter() {
+            if let Some(pc) = atom.partial_charge {
+                let q = pc as f64;
+                sum += q;
+                sum_sq += q * q;
+                count += 1;
+            }
+        }
+    }
+
+    let mean = (sum / count as f64) as f32;
+    let var = (sum_sq / count as f64) - (sum / count as f64).powi(2);
+    let std = var.max(1e-8).sqrt() as f32;
+
+    println!("Charge normalization: mean={mean}, std={std}");
+
+    let mut vocabs = AtomVocab::new(&paths_mol2)?;
+    vocabs.charge_mean = mean;
+    vocabs.charge_std = std;
+
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();
 
@@ -194,12 +244,33 @@ pub(crate) fn run_training() -> candle_core::Result<()> {
                 &batch.type_ids,
                 &batch.coords,
                 &batch.edge_index,
+                &batch.edge_types,
             )?;
 
-            let diff = (charges_pred - &batch.charges)?;
+            let mean = dataset.vocabs.charge_mean;
+            let std = dataset.vocabs.charge_std;
+
+            let mean_t = Tensor::from_slice(&[mean], (1,), &device)?;
+            let std_t = Tensor::from_slice(&[std], (1,), &device)?;
+
+            // Normalize true charges
+            let charges_norm = batch
+                .charges
+                .broadcast_sub(&mean_t)?
+                .broadcast_div(&std_t)?;
+
+            // Per-atom MSE in normalized space
+            let diff = (charges_pred.clone() - &charges_norm)?;
             let charge_loss = diff.sqr()?.mean_all()?;
 
-            let loss = &charge_loss;
+            // Sum constraint in raw space
+            let charges_pred_raw = charges_pred.broadcast_mul(&std_t)?.broadcast_add(&mean_t)?;
+            let sum_pred = charges_pred_raw.sum_all()?;
+            let sum_true = batch.charges.sum_all()?;
+            let sum_loss = (sum_pred - sum_true)?.sqr()?;
+
+            // Total loss
+            let loss = (&charge_loss + sum_loss * 0.01)?;
 
             opt.backward_step(&loss)?;
 
@@ -218,9 +289,21 @@ pub(crate) fn run_training() -> candle_core::Result<()> {
                 &batch.type_ids,
                 &batch.coords,
                 &batch.edge_index,
+                &batch.edge_types,
             )?;
 
-            let diff = (charges_pred - &batch.charges)?;
+            let mean = dataset.vocabs.charge_mean;
+            let std = dataset.vocabs.charge_std;
+
+            let mean_t = Tensor::from_slice(&[mean], (1,), &device)?;
+            let std_t = Tensor::from_slice(&[std], (1,), &device)?;
+
+            let charges_norm = batch
+                .charges
+                .broadcast_sub(&mean_t)?
+                .broadcast_div(&std_t)?;
+
+            let diff = (charges_pred - &charges_norm)?;
             let charge_loss = diff.sqr()?.mean_all()?;
 
             let loss = charge_loss;

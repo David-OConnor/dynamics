@@ -52,8 +52,8 @@ impl ForcesPositsGpu {
         let forces_on_water_h0 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
         let forces_on_water_h1 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
 
-        let virial_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
-        let energy_gpu = stream.memcpy_stod(&[0.0f64]).unwrap();
+        let virial_gpu = stream.clone_htod(&[0.0f64]).unwrap();
+        let energy_gpu = stream.clone_htod(&[0.0f64]).unwrap();
 
         let pos_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
         let pos_w_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
@@ -228,25 +228,25 @@ impl PerNeighborGpu {
         let calc_coulombs: Vec<_> = calc_coulombs.iter().map(|v| *v as u8).collect();
         let symmetric: Vec<_> = symmetric.iter().map(|v| *v as u8).collect();
 
-        let tgt_is = stream.memcpy_stod(&tgt_is).unwrap();
-        let src_is = stream.memcpy_stod(&src_is).unwrap();
+        let tgt_is = stream.clone_htod(&tgt_is).unwrap();
+        let src_is = stream.clone_htod(&src_is).unwrap();
 
-        let sigmas = stream.memcpy_stod(&sigmas).unwrap();
-        let epss = stream.memcpy_stod(&epss).unwrap();
+        let sigmas = stream.clone_htod(&sigmas).unwrap();
+        let epss = stream.clone_htod(&epss).unwrap();
 
-        let qs_tgt = stream.memcpy_stod(&qs_tgt).unwrap();
-        let qs_src = stream.memcpy_stod(&qs_src).unwrap();
+        let qs_tgt = stream.clone_htod(&qs_tgt).unwrap();
+        let qs_src = stream.clone_htod(&qs_src).unwrap();
 
-        let atom_types_tgt = stream.memcpy_stod(&atom_types_tgt).unwrap();
-        let water_types_tgt = stream.memcpy_stod(&water_types_tgt).unwrap();
-        let atom_types_src = stream.memcpy_stod(&atom_types_src).unwrap();
-        let water_types_src = stream.memcpy_stod(&water_types_src).unwrap();
+        let atom_types_tgt = stream.clone_htod(&atom_types_tgt).unwrap();
+        let water_types_tgt = stream.clone_htod(&water_types_tgt).unwrap();
+        let atom_types_src = stream.clone_htod(&atom_types_src).unwrap();
+        let water_types_src = stream.clone_htod(&water_types_src).unwrap();
 
         // For Amber-style 1-4 covalent bond scaling; not general LJ.
-        let scale_14 = stream.memcpy_stod(&scale_14).unwrap();
-        let calc_ljs = stream.memcpy_stod(&calc_ljs).unwrap();
-        let calc_coulombs = stream.memcpy_stod(&calc_coulombs).unwrap();
-        let symmetric = stream.memcpy_stod(&symmetric).unwrap();
+        let scale_14 = stream.clone_htod(&scale_14).unwrap();
+        let calc_ljs = stream.clone_htod(&calc_ljs).unwrap();
+        let calc_coulombs = stream.clone_htod(&calc_coulombs).unwrap();
+        let symmetric = stream.clone_htod(&symmetric).unwrap();
 
         Self {
             tgt_is,
@@ -410,8 +410,8 @@ pub fn force_nonbonded_gpu(
         });
     }
 
-    let virial = stream.memcpy_dtov(&forces.virial_gpu).unwrap()[0];
-    let energy = stream.memcpy_dtov(&forces.energy_gpu).unwrap()[0];
+    let virial = stream.clone_dtoh(&forces.virial_gpu).unwrap()[0];
+    let energy = stream.clone_dtoh(&forces.energy_gpu).unwrap()[0];
 
     let forces_on_dyn = forces_on_dyn.into_iter().map(|f| f.into()).collect();
 
