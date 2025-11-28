@@ -182,13 +182,5 @@ fn main() {
         ..Default::default()
     };
 
-    let mut md = build_dynamics(
-        &dev,
-        vec![&mut mol],
-        &protein,
-        &param_set,
-        &cfg,
-        100,
-        0.001,
-    );
+    let mut md = build_dynamics(&dev, vec![&mut mol], &protein, &param_set, &cfg, 100, 0.001);
 }

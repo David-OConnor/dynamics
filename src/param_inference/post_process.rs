@@ -5,12 +5,13 @@
 //!
 //! todo: COmbine these, so you only loop through atoms once.
 
+use std::collections::VecDeque;
+
 use bio_files::{
     AtomGeneric, BondGeneric,
     BondType::{self, *},
 };
 use na_seq::Element::*;
-use std::collections::VecDeque;
 
 use crate::{
     param_inference::{AtomEnvData, chem_env::is_carbonyl_carbon},
@@ -1435,8 +1436,9 @@ pub(in crate::param_inference) fn postprocess_nd_to_nc_ring_no_n_neighbor(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Hydrogen, Nitrogen};
     use std::collections::VecDeque;
+
+    use na_seq::Element::{Hydrogen, Nitrogen};
 
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
@@ -2140,8 +2142,9 @@ pub(in crate::param_inference) fn postprocess_cz_to_ca_if_ring_no_n_neighbors(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
     use std::collections::VecDeque;
+
+    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
 
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
@@ -2380,7 +2383,7 @@ fn is_carbonyl_c(
     }
     adj[i]
         .iter()
-        .any(|&j| atoms[j].element == Oxygen && bond_ty(i, j, bonds, off) == Some(BondType::Double))
+        .any(|&j| atoms[j].element == Oxygen && bond_ty(i, j, bonds, off) == Some(Double))
 }
 
 fn has_oxygen_neighbor(i: usize, atoms: &[AtomGeneric], adj: &[Vec<usize>]) -> bool {
@@ -2727,6 +2730,139 @@ pub(in crate::param_inference) fn postprocess_cd_to_ca_if_has_aromatic_bond(
 
         if has_aromatic {
             types[i] = "ca".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_n3_to_na_if_attached_to_alkenyl_c(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    adj: &[Vec<usize>],
+    types: &mut [String],
+) {
+    let off = bond_offset(atoms.len(), bonds);
+
+    fn has_double_to_non_oxygen(
+        i: usize,
+        atoms: &[AtomGeneric],
+        adj: &[Vec<usize>],
+        bonds: &[BondGeneric],
+        off: usize,
+    ) -> bool {
+        adj[i].iter().any(|&j| {
+            atoms[j].element != Hydrogen
+                && atoms[j].element != Oxygen
+                && bond_ty(i, j, bonds, off) == Some(Double)
+        })
+    }
+
+    for n in 0..atoms.len() {
+        if atoms[n].element != Nitrogen || types[n].as_str() != "n3" {
+            continue;
+        }
+
+        for &c in &adj[n] {
+            if atoms[c].element != Carbon {
+                continue;
+            }
+
+            if bond_ty(n, c, bonds, off) != Some(BondType::Single) {
+                continue;
+            }
+
+            if is_carbonyl_c(c, atoms, adj, bonds, off) {
+                continue;
+            }
+
+            if has_double_to_non_oxygen(c, atoms, adj, bonds, off) {
+                types[n] = "na".to_owned();
+                break;
+            }
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_c2_to_ce_if_vinylic_attached_to_aromatic(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    adj: &[Vec<usize>],
+    types: &mut [String],
+) {
+    let off = bond_offset(atoms.len(), bonds);
+
+    fn is_aromatic_atom(i: usize, adj: &[Vec<usize>], bonds: &[BondGeneric], off: usize) -> bool {
+        adj[i]
+            .iter()
+            .any(|&j| bond_ty(i, j, bonds, off) == Some(BondType::Aromatic))
+    }
+
+    for c in 0..atoms.len() {
+        if atoms[c].element != Carbon || types[c].as_str() != "c2" {
+            continue;
+        }
+
+        if adj[c]
+            .iter()
+            .any(|&j| is_carbonyl_c(j, atoms, adj, bonds, off))
+        {
+            continue;
+        }
+
+        let mut has_c_double = false;
+        let mut has_aromatic_single = false;
+
+        for &j in &adj[c] {
+            if atoms[j].element == Hydrogen {
+                continue;
+            }
+            let Some(bt) = bond_ty(c, j, bonds, off) else {
+                continue;
+            };
+
+            if bt == Double && atoms[j].element == Carbon {
+                has_c_double = true;
+            }
+
+            if bt == Single && atoms[j].element == Carbon && is_aromatic_atom(j, adj, bonds, off) {
+                has_aromatic_single = true;
+            }
+        }
+
+        if has_c_double && has_aromatic_single {
+            types[c] = "ce".to_owned();
+        }
+    }
+}
+
+pub(in crate::param_inference) fn postprocess_n1_to_n2_unless_sp_like(
+    atoms: &[AtomGeneric],
+    bonds: &[BondGeneric],
+    adj: &[Vec<usize>],
+    types: &mut [String],
+) {
+    let off = bond_offset(atoms.len(), bonds);
+
+    for n in 0..atoms.len() {
+        if atoms[n].element != Nitrogen || types[n].as_str() != "n1" {
+            continue;
+        }
+
+        let mut triple_ct = 0u8;
+        let mut double_ct = 0u8;
+
+        for &j in &adj[n] {
+            if atoms[j].element == Hydrogen {
+                continue;
+            }
+            match bond_ty(n, j, bonds, off) {
+                Some(BondType::Triple) => triple_ct = triple_ct.saturating_add(1),
+                Some(BondType::Double) => double_ct = double_ct.saturating_add(1),
+                _ => {}
+            }
+        }
+
+        if triple_ct == 0 && double_ct < 2 {
+            types[n] = "n2".to_owned();
         }
     }
 }

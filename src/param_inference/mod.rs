@@ -801,6 +801,10 @@ pub fn find_ff_types(
     postprocess_sy_to_s6_if_nonaryl_sulfonyl(atoms, bonds, &mut result);
     postprocess_s6_to_sy_if_primary_sulfonamide(atoms, &adj, &mut result);
 
+    postprocess_n3_to_na_if_attached_to_alkenyl_c(atoms, &bonds, &adj, &mut result);
+    postprocess_c2_to_ce_if_vinylic_attached_to_aromatic(atoms, &bonds, &adj, &mut result);
+    postprocess_n1_to_n2_unless_sp_like(atoms, &bonds, &adj, &mut result);
+
     let elapsed = start.elapsed().as_micros();
     println!("Complete in {elapsed} μs");
 
