@@ -26,7 +26,7 @@ pub type LipidFfChargeMap = HashMap<LipidStandard, Vec<ChargeParamsLipid>>;
 // Proteins and amino acids:
 const PARM_19: &str = include_str!("../param_data/parm19.dat"); // Bonded, and LJ
 const FRCMOD_FF19SB: &str = include_str!("../param_data/frcmod.ff19SB"); // Bonded, and LJ: overrides and new types
-const AMINO_19: &str = include_str!("../param_data/amino19.lib"); // Charge; internal residues
+pub const AMINO_19: &str = include_str!("../param_data/amino19.lib"); // Charge; internal residues
 const AMINO_NT12: &str = include_str!("../param_data/aminont12.lib"); // Charge; protonated N-terminus residues
 const AMINO_CT12: &str = include_str!("../param_data/aminoct12.lib"); // Charge; protonated C-terminus residues
 
@@ -39,11 +39,11 @@ const LIPID_21: &str = include_str!("../param_data/lipid21.dat"); // Bonded and 
 pub const LIPID_21_LIB: &str = include_str!("../param_data/lipid21.lib"); // Charge and FF names
 
 // DNA (OL24) and RNA (OL3)
-const OL24_LIB: &str = include_str!("../param_data/ff-nucleic-OL24.lib");
+pub const OL24_LIB: &str = include_str!("../param_data/ff-nucleic-OL24.lib");
 const OL24_FRCMOD: &str = include_str!("../param_data/ff-nucleic-OL24.frcmod");
 // todo: frcmod.protonated_nucleic?
 // RNA (I believe this is the OL3 Amber's FF page recommends?)
-const RNA_LIB: &str = include_str!("../param_data/RNA.lib");
+pub const RNA_LIB: &str = include_str!("../param_data/RNA.lib");
 // todo: RNA.YIL.lib? RNA_CI.lib? RNA_Shaw.lib? These are, I believe, "alternative" libraries,
 // todo, and not required. YIL: Yildirim torsion refit. CI: Legacy Cornell-style. SHAW: incomplete,
 // todo from a person named Shaw.
