@@ -6,21 +6,25 @@ use std::{
     path::PathBuf,
 };
 
+use bio_files::md_params::{NucleotideTemplate, parse_lib_lipid, parse_lib_nucleic_acid};
 use bio_files::{
     AtomGeneric, BondGeneric, ChainGeneric, LipidStandard, MmCif, ResidueEnd, ResidueGeneric,
     ResidueType, create_bonds,
     md_params::{
-        AngleBendingParams, BondStretchingParams, ChargeParams, ChargeParamsLipid, DihedralParams,
-        ForceFieldParams, LjParams, MassParams, load_amino_charges, parse_amino_charges,
-        parse_lipid_charges,
+        AngleBendingParams, BondStretchingParams, ChargeParams, ChargeParamsProtein,
+        DihedralParams, ForceFieldParams, LjParams, MassParams, load_amino_charges, parse_lib,
+        parse_lib_peptide,
     },
 };
-use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element};
+use na_seq::{
+    AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element, Nucleotide,
+};
 
 use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};
 
-pub type ProtFfChargeMap = HashMap<AminoAcidGeneral, Vec<ChargeParams>>;
-pub type LipidFfChargeMap = HashMap<LipidStandard, Vec<ChargeParamsLipid>>;
+pub type ProtFfChargeMap = HashMap<AminoAcidGeneral, Vec<ChargeParamsProtein>>;
+pub type LipidFfChargeMap = HashMap<LipidStandard, Vec<ChargeParams>>;
+pub type NucleicAcidFfChargeMap = HashMap<NucleotideTemplate, Vec<ChargeParams>>;
 
 // We include Amber parameter files with this package.
 // Proteins and amino acids:
@@ -64,6 +68,9 @@ pub struct FfParamSet {
     /// other parameters to protein atoms. E.g. from `amino19.lib`, and its N and C-terminus variants.
     pub peptide_ff_q_map: Option<ProtFfChargeMapSet>,
     pub lipid_ff_q_map: Option<LipidFfChargeMap>,
+    // todo: QC these types; lipid as place holder. See how they parse.
+    pub dna_ff_q_map: Option<NucleicAcidFfChargeMap>,
+    pub rna_ff_q_map: Option<NucleicAcidFfChargeMap>,
 }
 
 /// Paths for to general parameter files. Used to create a FfParamSet.
@@ -162,9 +169,9 @@ impl FfParamSet {
         result.peptide = Some(merge_params(&peptide, &peptide_frcmod));
 
         {
-            let internal = parse_amino_charges(AMINO_19)?;
-            let n_terminus = parse_amino_charges(AMINO_NT12)?;
-            let c_terminus = parse_amino_charges(AMINO_CT12)?;
+            let internal = parse_lib_peptide(AMINO_19)?;
+            let n_terminus = parse_lib_peptide(AMINO_NT12)?;
+            let c_terminus = parse_lib_peptide(AMINO_CT12)?;
 
             result.peptide_ff_q_map = Some(ProtFfChargeMapSet {
                 internal,
@@ -176,7 +183,7 @@ impl FfParamSet {
         let lipid_dat = ForceFieldParams::from_dat(LIPID_21)?;
         result.lipids = Some(lipid_dat);
 
-        let lipid_charges = parse_lipid_charges(LIPID_21_LIB)?;
+        let lipid_charges = parse_lib_lipid(LIPID_21_LIB)?;
         result.lipid_ff_q_map = Some(lipid_charges);
 
         result.small_mol = Some(ForceFieldParams::from_dat(GAFF2)?);
@@ -185,8 +192,18 @@ impl FfParamSet {
         // todo: You must update your Lib parser in bio_files to handle this variant.
 
         // let dna = ForceFieldParams::from_dat(OL24_LIB)?;
-        // let dna_frcmod = ForceFieldParams::from_frcmod(OL24_FRCMOD)?;
-        // result.dna = Some(merge_params(&dna, Some(&dna_frcmod)));
+        let dna_frcmod = ForceFieldParams::from_frcmod(OL24_FRCMOD)?;
+        result.dna = Some(dna_frcmod);
+
+        // todo: Currently hardcoded peptide/lipid versions for this lib parsing. Generalize?
+        let dna_charges = parse_lib_nucleic_acid(OL24_LIB)?;
+        result.dna_ff_q_map = Some(dna_charges);
+
+        // todo: Currently hardcoded peptide/lipid versions for this lib parsing. Generalize?
+        let rna_charges = parse_lib_nucleic_acid(RNA_LIB)?;
+        result.rna_ff_q_map = Some(rna_charges);
+
+        // result.dna = Some(merge_params(&dna, &dna_frcmod));
         // result.rna = Some(ForceFieldParams::from_dat(RNA_LIB)?);
 
         Ok(result)
