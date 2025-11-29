@@ -164,9 +164,11 @@ impl FfParamSet {
     pub fn new_amber() -> io::Result<Self> {
         let mut result = FfParamSet::default();
 
-        let peptide = ForceFieldParams::from_dat(PARM_19)?;
+        // We use parm19 for both peptides, and nucleic acids.
+        let parm19 = ForceFieldParams::from_dat(PARM_19)?;
+
         let peptide_frcmod = ForceFieldParams::from_frcmod(FRCMOD_FF19SB)?;
-        result.peptide = Some(merge_params(&peptide, &peptide_frcmod));
+        result.peptide = Some(merge_params(&parm19, &peptide_frcmod));
 
         {
             let internal = parse_lib_peptide(AMINO_19)?;
@@ -191,9 +193,11 @@ impl FfParamSet {
         // todo: Load these, and get them working. They currently trigger a mass-parsing error.
         // todo: You must update your Lib parser in bio_files to handle this variant.
 
-        // let dna = ForceFieldParams::from_dat(OL24_LIB)?;
         let dna_frcmod = ForceFieldParams::from_frcmod(OL24_FRCMOD)?;
-        result.dna = Some(dna_frcmod);
+        result.dna = Some(merge_params(&parm19, &dna_frcmod));
+
+        // todo: A/R
+        result.rna = Some(parm19.clone());
 
         // todo: Currently hardcoded peptide/lipid versions for this lib parsing. Generalize?
         let dna_charges = parse_lib_nucleic_acid(OL24_LIB)?;
@@ -202,9 +206,6 @@ impl FfParamSet {
         // todo: Currently hardcoded peptide/lipid versions for this lib parsing. Generalize?
         let rna_charges = parse_lib_nucleic_acid(RNA_LIB)?;
         result.rna_ff_q_map = Some(rna_charges);
-
-        // result.dna = Some(merge_params(&dna, &dna_frcmod));
-        // result.rna = Some(ForceFieldParams::from_dat(RNA_LIB)?);
 
         Ok(result)
     }
