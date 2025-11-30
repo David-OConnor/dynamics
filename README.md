@@ -1,4 +1,5 @@
 # Molecular Dynamics
+
 [![Crate](https://img.shields.io/crates/v/dynamics.svg)](https://crates.io/crates/dynamics)
 [![Docs](https://docs.rs/dynamics/badge.svg)](https://docs.rs/dynamics)
 [![PyPI](https://img.shields.io/pypi/v/mol_dynamics.svg)](https://pypi.org/project/mol_dynamics)
@@ -9,7 +10,7 @@ Uses CPU with threadpools and SIMD, or an Nvidia GPU.
 It uses traditional forcefield-based molecular dynamics, and is inspired by Amber.
 It does not use quantum-mechanics, nor ab-initio methods.
 
-It uses the [Bio-Files](https://github.com/david-oconnor/bio-files) dependency to load molecule 
+It uses the [Bio-Files](https://github.com/david-oconnor/bio-files) dependency to load molecule
 and force-field files.
 
 Please reference the [API documentation](https://docs.rs/dynamics) for details on the functionality
@@ -21,145 +22,129 @@ as well.
 We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer,
 with nvidia drivers 580 or newer.
 
-**Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having trouble
+**Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having
+trouble
 linking the cuFFT dependency.
 
-
 ## Use of this library
-This is intended for integration into a Rust or Python program, another Rust or Python library, or in small scripts that 
-describe a workflow. When scripting, you will likely load molecule files directly, use integrated force fields or load them
+
+This is intended for integration into a Rust or Python program, another Rust or Python library, or in small scripts that
+describe a workflow. When scripting, you will likely load molecule files directly, use integrated force fields or load
+them
 from file, and save results to a reporter format like DCD. If incorporating into an application, you might do more in
 memory using the [data structures](https://docs.rs/dynamics/latest/dynamics/) we provide.
 
-Our API goal is to both provide a default terse syntax with safe defaults, and allow customization and 
+Our API goal is to both provide a default terse syntax with safe defaults, and allow customization and
 flexibility that facilitates integration into bigger systems.
 
-
 ## Goals
+
 - Runs Newtonian MD algorithms accurately
 - Easy to install, learn, and use
 - Fast
 - Easy integration into workflows, scripting, and applications
 
-
 ## Installation
+
 Python: `pip install mol-dynamics`
 
 Rust: Add `dynamics` to `Cargo.toml`. Likely `bio_files` as well.
 
-For a GUI application that uses this library, download the [Daedalus molecule viewer](https://github.com/david-oconnor/daedalus) This
+For a GUI application that uses this library, download
+the [Daedalus molecule viewer](https://github.com/david-oconnor/daedalus) This
 provides an easy-to-use way to set up the simulation, and play back trajectories.
 
-
 ## Input topology
-The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/bio_files/struct.AtomGeneric.html) and 
-[BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading molecular
-file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library 
-([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them 
-directly. See examples below and in the [examples folder](https://github.com/David-OConnor/dynamics/tree/main/examples), and the 
+
+The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/bio_files/struct.AtomGeneric.html) and
+[BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading
+molecular
+file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library
+([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them
+directly. See examples below and in the [examples folder](https://github.com/David-OConnor/dynamics/tree/main/examples),
+and the
 docs links above; those are structs of plain data that can be built from from arbitrary input sources. For example, if
-you're building an application, you might use a more complicated Atom format; you can create a function that converts 
+you're building an application, you might use a more complicated Atom format; you can create a function that converts
 between yours, and `AtomGeneric`.
 
-### Small organic molecule note
-There is some trouble with small organic molecule file formats. Some tools like openff-toolkit discourage or disallow
-use of Mol2 due to its lack of well-defined specification. They recommend SDF files instead. This is surprising,
-as SDF files also don't have a standard way to define partial charge or force field type. For example, OpenMM, and
-PubChem use different formats for partial charges. We view this with context: the alternatives also have problems or equal
-or greater severity to this. For example, PDBQT isn't intended for general use; XYZ is minimal; CML uses XML which is not convenient.
-
-We suggest using whichever files are convenient, and converting
-them to in-memory data structure using tools you like, or ones we include. Mol2's ability to store force field type and partial
-charge in column data, having a [published spec](https://zhanggroup.org/DockRMSD/mol2.pdf) variant of Mol, and being
-adopted by Amber's Geostd library makes it a good choice.
-
-
-### Requirements by molecule type:
-- **Proteins**/amino acids chains: No special requirements. Uses `mmCif`. (also known as PdbX). Force field type and
-partial charges are inferred automatically.
-- **Small organic molecules**: Must have Force Field name, and partial charge populated on all atoms. `Mol2` files from 
-- Amber's GeoStd library have these. SDF files from Drugbank are generally missing these fields.  SDF files from 
-PubChem usually includes partial charges, but not forcefield names. Molecule-specific
-parameters (e.g. from .frcmod files) may be required; these can also be [automatically] loaded from Amber Geostd.
-- **Lipids**: TBD
-- **Nucleic acids**: TBD
-- **Carbohydrates**: TBD
-- **Lipids**: TBD
-
-
 ## Parameters
-Integrates the following [Amber parameters](https://ambermd.org/AmberModels.php):
-- Small organic molecules, e.g. ligands: [General Amber Force Fields: GAFF2](https://ambermd.org/antechamber/gaff.html)
-- Protein and amino acids: [FF19SB](https://pubs.acs.org/doi/10.1021/acs.jctc.9b00591)
-- Nucleic acids: Amber OL3 and RNA libraries
-- Lipids: lipids21
-- Carbohydrates: GLYCAM_06j
-- Water: Explicit, with [OPC](https://arxiv.org/abs/1408.1679)
 
+It integrates the following [Amber parameter sets](https://ambermd.org/AmberModels.php):
+
+- Small organic molecules, e.g. ligands: [General Amber Force Fields: GAFF2](https://ambermd.org/antechamber/gaff.html)
+- Protein/AA: [FF19SB](https://pubs.acs.org/doi/10.1021/acs.jctc.9b00591)
+- Nucleic acids: [OL24](https://fch.upol.cz/ff_ol/refinements.php)
+  and [RNA/OL3](https://pubs.acs.org/doi/10.1021/ct200162x) libraries
+- Lipids: Lipid21
+- Carbohydrates: GLYCAM_06j
+- Water: [OPC](https://arxiv.org/abs/1408.1679)
 
 ## The algorithm
+
 This library uses a traditional MD workflow. We use the following components:
 
-
 ### Integrators, thermostats, barostats
-We provide a Velocity-Verlet integrator. It can be used with a Berendsen barostat, and either a 
+
+We provide a Velocity-Verlet integrator. It can be used with a Berendsen barostat, and either a
 CSVR/Bussi, or Langevin thermostat (Middle or traditional). These continuously update atom velocities (for molecules and
 solvents) to match target pressure and temperatures. The Langevin Middle thermostat is a good starting point.
 
-
 ### Solvation
-We use an explicit water solvation model: A 4-point rigid OPC model, with a point partial charge on each Hydrogen, and a M (or EP) point offset from the Oxygen.
+
+We use an explicit water solvation model: A 4-point rigid OPC model, with a point partial charge on each Hydrogen, and a
+M (or EP) point offset from the Oxygen.
 We use the [SETTLE]() algorithm to maintain rigidity, while applying forces to each atom. Only the Oxygen atom
 carries a Lennard Jones(LJ) force.
 
-
 ### Bonded forces
+
 We use Amber-style spring-based forces to maintain covalent bonds. We maintain the following parameters:
 
 - Bond length between each covalently-bonded atom pair
 - Angle (sometimes called valence angle) between each 3-atom line of covalently-bonded atoms. (4atoms, 2 bonds)
 - Dihedral (aka torsion) angles between each 4-atom line of covalently-bonded atoms. (4 atoms, 3 bonds).
-These usually have rotational symmetry of 2 or 3 values which are stable.
+  These usually have rotational symmetry of 2 or 3 values which are stable.
 - Improper Dihedral angles between 4-atoms in a hub-and-spoke configuration. These, for example, maintain stability
 - where rings meet other parts of the molecule, or other rings.
 
-
 ### Non-bonded forces
+
 These are Coulomb and Lennard Jones (LJ) interactions. These make up the large majority of computational effort. Coulomb
 forces represent electric forces occurring from dipoles and similar effects, or ions. We use atom-centered pre-computed
 partial charges for these. They occur within a molecule, between molecules, and between molecules and solvents.
 
 We use a neighbors list (Sometimes called Verlet neighbors; not directly related to the Verlet integrator) to reduce
-computational effort. We use the [SPME Ewald](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html) approximation to reduce computation time. This algorithm
+computational effort. We use
+the [SPME Ewald](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html)
+approximation to reduce computation time. This algorithm
 is suited for periodic boundary conditions, which we use for the solvent.
 
 We use Amber's scaling and exclusion rules: LJ and Coulomb force is reduced between atoms separated by 1 and 2
 covalent bonds, and skipped between atoms separated by 3 covalent bonds.
 
-
 We have two modes of handling Hydrogen in bonded forces: The same as other atoms, and rigid, with position maintained
 using SHAKE and RATTLE algorithms. The latter allows for stability under higher timesteps. (e.g. 2ps)
 
-
 ### Initial relaxation
+
 We run a relaxation / energy-minimization function prior to starting each simulation. This adjusts atom
 positions to reduce the amount of energy that comes from initial conditions deviating from bonded parameters.
 
-
 ### Floating point precision
-Mixed precision: 32-bit floating points for most operations. We use 64-bit accumulators, and in thermostat 
+
+Mixed precision: 32-bit floating points for most operations. We use 64-bit accumulators, and in thermostat
 and barostat computations. This is especially relevant, as consumer GPUs have poor f64 performance.
 
-
 ### How pH adjustment works
+
 pH in proteins is represented by the protenation state of certain amino acids. In particular, His,
 Asp, Cys, Glu, and Lys are affected. These changes are affected in utility functions we provide that
 add Hydrogen atoms.
 
-
 ### Saving results
-Snapshots of results can be returned in memory, or saved to disk in [DCD](https://docs.openmm.org/7.1.0/api-python/generated/simtk.openmm.app.dcdfile.DCDFile.html) format.
 
+Snapshots of results can be returned in memory, or saved to disk
+in [DCD](https://docs.openmm.org/7.1.0/api-python/generated/simtk.openmm.app.dcdfile.DCDFile.html) format.
 
 ## More info
 
@@ -172,16 +157,16 @@ This program can automatically load ligands with Amber parameters, for the
 *Amber Geostd* set. This includes many common small organic molecules with force field parameters,
 and partial charges included. It can infer these from the protein loaded, or be queried by identifier.
 
-You can load these molecules with parameters directly from the GUI by typing the identifier. 
+You can load these molecules with parameters directly from the GUI by typing the identifier.
 If you load an SDF molecule, the program may be able to automatically update it using Amber parameters and
 partial charges.
 
-For details on how dynamics using this parameterized approach works, see the 
+For details on how dynamics using this parameterized approach works, see the
 [Amber Reference Manual](https://ambermd.org/doc12/Amber25.pdf). Section 3 and 15 are of particular
 interest, regarding force field parameters.
 
 We load partial charges for ligands from *mol2*, *PDBQT* etc files. Protein dynamics and water can be simulated
-using parameters built-in to the program (The Amber one above). For small organic  molecules, we infer force field
+using parameters built-in to the program (The Amber one above). For small organic molecules, we infer force field
 params, and partial charges for each atom, as well as molecule-specific *frcmod* overrides from GAFF2: Generally, this
 is proper and improper dihedral angles. It is, occasionally, bond and angle parameters.
 
@@ -192,15 +177,17 @@ Use the code below, the [Examples folder on Github](https://github.com/David-OCo
 and the [API documentation](https://docs.rs/dynamics) to learn how to use it. General workflow:
 
 -Create a [MdState struct](https://docs.rs/dynamics/latest/dynamics/struct.MdState.html) with `MdState::new()`.
-This accepts a [configuration](https://docs.rs/dynamics/latest/dynamics/struct.MdConfig.html), the molecules to simulate, 
+This accepts a [configuration](https://docs.rs/dynamics/latest/dynamics/struct.MdConfig.html), the molecules to
+simulate,
 and force field parameters.
 
-Run a simulation step by calling `MdState::step()`. This accepts [an enum which defines the computation devices](https://docs.rs/dynamics/latest/dynamics/enum.ComputationDevice.html)
+Run a simulation step by calling `MdState::step()`. This
+accepts [an enum which defines the computation devices](https://docs.rs/dynamics/latest/dynamics/enum.ComputationDevice.html)
 (CPU/GPU), and the time step in picoseconds. This step can be called as required for your application. For example
 you can call it repeatedly in a loop, or as required, e.g. to not block a GUI, or for interactive MD.
 
-
 Example use (Python):
+
 ```python
 from mol_dynamics import *
 
@@ -296,8 +283,8 @@ def main():
 main()
 ```
 
-
 Example use (Rust):
+
 ```rust
 use std::path::Path;
 
@@ -316,12 +303,12 @@ fn setup_dynamics(
     protein: &MmCif,
     param_set: &FfParamSet,
 ) -> MdState {
-    
+
     // Or, consider using these terse helpers instead for small organic molecules.
     // MolDynamics::from_amber_geostd("CPB").unwrap();  // Can use with a PubChem CID as well.
     // MolDynamics::from_mol2(&mol, Some(lig_specific)).unwrap();
     // MolDynamics::from_sdf(&mol, Some(lig_specific)).unwrap();
-    
+
     let mols = vec![
         MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
@@ -364,7 +351,7 @@ fn main() {
 
     // Or, instead of loading atoms and mol-specific params separately:
     // let (mol, lig_specific) = load_prmtop("my_mol.prmtop");
-        
+
     // Add Hydrogens, force field type, and partial charge to atoms in the protein; these usually aren't
     // included from RSCB PDB. You can also call `populate_hydrogens_dihedrals()`, and
     // `populate_peptide_ff_and_q() separately. Add bonds.
@@ -404,6 +391,7 @@ fn main() {
 ```
 
 Example of loading your own parameter files:
+
 ```python
     param_paths = ParamGeneralPaths(
         peptide="parm19.dat",
@@ -420,51 +408,53 @@ Example of loading your own parameter files:
 
 ```rust
     let param_paths = ParamGeneralPaths {
-        peptide: Some(&Path::new("parm19.dat")),
-        peptide_mod: Some(&Path::new("frcmod.ff19SB")),
-        peptide_ff_q: Some(&Path::new("amino19.lib")),
-        peptide_ff_q_c: Some(&Path::new("aminoct12.lib")),
-        peptide_ff_q_n: Some(&Path::new("aminont12.lib")),
-        small_organic: Some(&Path::new("gaff2.dat")),
-        lipids: Some(&Path::new("lipid21.dat")),
-        ..default()
-    };
-    
-    let param_set = FfParamSet::new(&param_paths);
+peptide: Some( & Path::new("parm19.dat")),
+peptide_mod: Some( & Path::new("frcmod.ff19SB")),
+peptide_ff_q: Some( & Path::new("amino19.lib")),
+peptide_ff_q_c: Some( & Path::new("aminoct12.lib")),
+peptide_ff_q_n: Some( & Path::new("aminont12.lib")),
+small_organic: Some( & Path::new("gaff2.dat")),
+lipids: Some( & Path::new("lipid21.dat")),
+..default ()
+};
+
+let param_set = FfParamSet::new( & param_paths);
 ```
 
 An overview of configuration parameters. You may wish to (Rust) use a baseline of the `Default` implementation,
 then override specific fields you wish to change.
+
 ```rust
 let cfg = MdConfig {
-    // Defaults to Langevin middle.
-    integrator: dynamics::Integrator::VelocityVerlet,
-    // If enabled, zero the drift in center of mass of the system.
-    zero_com_drift: true,
-    // Kelvin. Defaults to 310 K.
-    temp_target: 310.,
-    // Bar (Pa/100). Defaults to 1 bar.
-    pressure_target: 1.,
-    // Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
-    // algorithms. This allows for higher time steps.
-    hydrogen_constraint: dynamics::HydrogenConstraint::Fixed,
-    // Deafults to in-memory, every step
-    snapshot_handlers: vec![
-        SnapshotHandler {
-            save_type: SaveType::Memory,
-            ratio: 1,
-        },
-        SnapshotHandler {
-            save_type: SaveType::Dcd(PathBuf::from("output.dcd")),
-            ratio: 10,
-        },
-    ],
-    sim_box: SimBoxInit::Pad(10.),
-    // Or sim_box: SimBoxInit::Fixed((Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.)),
+// Defaults to Langevin middle.
+integrator: dynamics::Integrator::VelocityVerlet,
+// If enabled, zero the drift in center of mass of the system.
+zero_com_drift: true,
+// Kelvin. Defaults to 310 K.
+temp_target: 310.,
+// Bar (Pa/100). Defaults to 1 bar.
+pressure_target: 1.,
+// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
+// algorithms. This allows for higher time steps.
+hydrogen_constraint: dynamics::HydrogenConstraint::Fixed,
+// Deafults to in-memory, every step
+snapshot_handlers: vec![
+    SnapshotHandler {
+        save_type: SaveType::Memory,
+        ratio: 1,
+    },
+    SnapshotHandler {
+        save_type: SaveType::Dcd(PathBuf::from("output.dcd")),
+        ratio: 10,
+    },
+],
+sim_box: SimBoxInit::Pad(10.),
+// Or sim_box: SimBoxInit::Fixed((Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.)),
 };
 ```
 
 Python config syntax:
+
 ```python
 cfg = MdConfig() // Initializes with defaults.
 
@@ -478,11 +468,13 @@ to run, averaged per step.
 
 ## Using with GPU
 
-We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA) integration. In the python binding, it should be transparent.
+We use the [Cudarc](https://github.com/coreylowman/cudarc) library for GPU (CUDA) integration. In the python binding, it
+should be transparent.
 We've exposed a slightly lower level API in rust, where you use setup a Stream and modules with Cudarc in your
 application, and pass them to the library.
 
 Rust setup example with Cudarc. Pass `dev`, defined below, to the `step` function.
+
 ```rust
 let ctx = CudaContext::new(0).unwrap();
 let stream = ctx.default_stream();
@@ -494,30 +486,34 @@ To use with an Nvidia GPU, enable the `cuda` feature in `Cargo.toml`. The librar
 as a publicly exposed string. Set up your application to use it from `dynamics::PTX`. It requires
 CUDA 13 support, which requires Nvidia driver version 580 or higher.
 
-
 ## On unflattening trajactory data
-If you passed multiple molecules, these will be flattened during runtime, and in snapshots. You 
-need to unflatten them if placing back into their original data structures. 
 
+If you passed multiple molecules, these will be flattened during runtime, and in snapshots. You
+need to unflatten them if placing back into their original data structures.
 
 ## Why this when OpenMM exists?
+
 This library exists as part of a larger Rust biology infrastructure effort. It's not possible to use
-[OpenMM](https://openmm.org/) there due to the language barrier. This library currently only has a limited subset of the 
-functionality of OpenMM. It's unfortunate that, as a society, we've embraced a model of computing replete with obstacles. In this case, the major
+[OpenMM](https://openmm.org/) there due to the language barrier. This library currently only has a limited subset of the
+functionality of OpenMM. It's unfortunate that, as a society, we've embraced a model of computing replete with
+obstacles. In this case, the major
 one is the one placed between programming languages.
 
 While going around this obstacle, we attempt to jump over others, to make molecular dynamics more accessible.
-This includes operating systems, software distribution, and user experience. We hope that this is easier to install and use
+This includes operating systems, software distribution, and user experience. We hope that this is easier to install and
+use
 than OpenMM; it can be used on any
 Operating system, and any Python version >= 3.10, installable using `pip` or `cargo`.
 
-This library is intended to *just work*. OpenMM does not natively work with molecules from online databases like RCSB PDB,
-PubChem, and Drugbank. It doesn't work with Amber GeoStd Mol2 files. OpenMM itself is easy to install with Pip, but the additional libraries
+This library is intended to *just work*. OpenMM does not natively work with molecules from online databases like RCSB
+PDB,
+PubChem, and Drugbank. It doesn't work with Amber GeoStd Mol2 files. OpenMM itself is easy to install with Pip, but the
+additional libraries
 it requires to load molecules and force fields are higher-friction. Getting a functional OpenMM configuration
 for a given system involves work which we hope to eschew.
 
-
 ## Compiling from source
+
 It requires these Amber parameter files to be present under the project's `resources` folder at compile time.
 These are available in [Amber tools](https://ambermd.org/GetAmber.php). Download, unpack, then copy these files from
 `dat/leap/parm` and `dat/leap/lib`:
@@ -532,20 +528,23 @@ These are available in [Amber tools](https://ambermd.org/GetAmber.php). Download
 - `ff-nucleic-OL24.frcmod`
 - `RNA.lib`
 
-We provide a [copy of these files](https://github.com/David-OConnor/daedalus/releases/download/0.1.3/amber_params_sept_2025.zip)
-for convenience; this is a much smaller download than the entire Amber package, and prevents needing to locate the specific files.
+We provide
+a [copy of these files](https://github.com/David-OConnor/daedalus/releases/download/0.1.3/amber_params_sept_2025.zip)
+for convenience; this is a much smaller download than the entire Amber package, and prevents needing to locate the
+specific files.
 Unpack, and place these under `resources` prior to compiling.
 
 To build the Python library wheel, from the `python` subdirectory, run `maturin build`. You can load the library
 locally for testing, once built, by running `pip install .`
 
 ## Eratta
+
 - GPU operations are slower than they should, as we're passing all data between CPU and GPU each
-time step.
+  time step.
 - CPU SIMD unsupported
 
-
 ## References
+
 - [Amber forcefields](https://ambermd.org/antechamber/gaff.html)
 - [Amber reference manual](https://ambermd.org/doc12/Amber25.pdf)
 - [Ewald Summation/SPME](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html)

@@ -12,7 +12,7 @@ use bincode::{Decode, Encode};
 use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
     HydrogenConstraint, MdState,
-    ambient::measure_instantaneous_pressure,
+    ambient::{TAU_TEMP_DEFAULT, measure_instantaneous_pressure},
     water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
     water_settle,
     water_settle::{RESET_ANGLE_RATIO, settle_drift},
@@ -30,34 +30,31 @@ const MAX_ACCEL_SQ: f32 = MAX_ACCEL * MAX_ACCEL;
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Integrator {
-    VerletVelocity,
-    /// Deprecated
-    Langevin {
-        gamma: f32,
-    },
+    /// The inner value is the temperature-coupling time constant, if the thermostat is enabled.
+    /// Lower means more sensitive. 1 is a good default.
+    VerletVelocity { thermostat: Option<f64> },
     /// Velocity-verlet with a Langevin thermometer. Good temperature control
     /// and ergodicity, but the friction parameter damps real dynamics as it grows.
     /// γ is friction in 1/ps. Typical values are 1–5. for proteins in implicit/weak solvent.
     /// With explicit solvents, we can often go lower to 0.1 – 1.
     /// A higher value has strong damping and is rougher. A lower value is gentler.
-    LangevinMiddle {
-        gamma: f32,
-    },
+    LangevinMiddle { gamma: f32 },
 }
 
 impl Default for Integrator {
     fn default() -> Self {
         // todo: Langevin middle is not working well.
         // Self::LangevinMiddle { gamma: 1. }
-        Self::VerletVelocity
+        Self::VerletVelocity {
+            thermostat: Some(TAU_TEMP_DEFAULT),
+        }
     }
 }
 
 impl Display for Integrator {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Integrator::VerletVelocity => write!(f, "Verlet Vel"),
-            Integrator::Langevin { gamma: _ } => write!(f, "Langevin"),
+            Integrator::VerletVelocity { thermostat: _ } => write!(f, "Verlet Vel"),
             Integrator::LangevinMiddle { gamma: _ } => write!(f, "Langevin Mid"),
         }
     }
@@ -174,45 +171,16 @@ impl MdState {
                 if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
                     self.zero_linear_momentum_atoms();
                 }
-                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
-                    self.zero_angular_momentum_atoms();
-                }
+                // if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
+                //     self.zero_angular_momentum_atoms();
+                // }
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
                 }
             }
-            _ => {
-                // O(dt/2)
-                if let Integrator::Langevin { gamma } = self.cfg.integrator {
-                    if log_time {
-                        start = Instant::now();
-                    }
-                    if !self.cfg.overrides.thermo_disabled {
-                        self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
-                    }
-
-                    if log_time {
-                        let elapsed = start.elapsed().as_micros() as u64;
-                        self.computation_time.ambient_sum += elapsed;
-                    }
-
-                    if log_time {
-                        start = Instant::now();
-                    }
-
-                    // Rattle after application of thermostat.
-                    if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained {
-                        self.rattle_hydrogens(dt_half);
-                    }
-
-                    if log_time {
-                        let elapsed = start.elapsed().as_micros() as u64;
-                        self.computation_time.integration_sum += elapsed;
-                    }
-                }
-
+            Integrator::VerletVelocity { thermostat } => {
                 if log_time {
                     start = Instant::now();
                 }
@@ -282,13 +250,6 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                // O(dt/2)
-                if let Integrator::Langevin { gamma } = self.cfg.integrator
-                    && !self.cfg.overrides.thermo_disabled
-                {
-                    self.apply_langevin_thermostat(dt_half, gamma, self.cfg.temp_target);
-                }
-
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.ambient_sum += elapsed;
@@ -311,27 +272,28 @@ impl MdState {
                 if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
                     self.zero_linear_momentum_atoms();
                 }
-                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
-                    self.zero_angular_momentum_atoms();
+                // if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
+                //     self.zero_angular_momentum_atoms();
+                // }
+
+                if log_time {
+                    start = Instant::now();
                 }
-            }
-        }
 
-        if let Integrator::VerletVelocity = self.cfg.integrator {
-            if log_time {
-                start = Instant::now();
-            }
+                if let Some(tau_temp) = thermostat
+                    && !self.cfg.overrides.thermo_disabled
+                {
+                    self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
+                }
 
-            if !self.cfg.overrides.thermo_disabled {
-                self.apply_thermostat_csvr(dt as f64, self.cfg.temp_target as f64);
-            }
-            if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                self.rattle_hydrogens(dt);
-            }
+                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+                    self.rattle_hydrogens(dt);
+                }
 
-            if log_time {
-                let elapsed = start.elapsed().as_micros() as u64;
-                self.computation_time.ambient_sum += elapsed;
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.ambient_sum += elapsed;
+                }
             }
         }
 

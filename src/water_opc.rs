@@ -42,6 +42,7 @@ use crate::{AtomDynamicsx8, AtomDynamicsx16};
 // other than bond distances and the valence angle)
 pub(crate) const O_MASS: f32 = 16.;
 pub(crate) const H_MASS: f32 = 1.008;
+pub(crate) const MASS_WATER_MOL: f32 = O_MASS + 2.0 * H_MASS;
 
 // We have commented out flexible-bond parameters that are provided by Amber, but not
 // used in this rigid model.

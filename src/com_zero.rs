@@ -2,10 +2,13 @@
 
 use lin_alg::f32::Vec3;
 
-use crate::MdState;
+use crate::{
+    MdState,
+    water_opc::{H_MASS, MASS_WATER_MOL, O_MASS},
+};
 
 impl MdState {
-    /// Remove center-of-mass drift for "atoms" only (exclude water).
+    /// Remove center-of-mass drift. This can help stabilize system energy.
     pub fn zero_linear_momentum_atoms(&mut self) {
         let mut m_sum = 0.0;
         let mut p_sum = Vec3::new_zero(); // Σ m v
@@ -15,33 +18,58 @@ impl MdState {
             m_sum += m;
             p_sum += a.vel * m;
         }
+
+        for w in &self.water {
+            m_sum += MASS_WATER_MOL;
+            // All 3 (massive) atoms have the same velocity.
+            p_sum += w.o.vel * 3. * MASS_WATER_MOL;
+        }
+
         if m_sum <= 0.0 {
             return;
         }
 
         let v_cm = p_sum / m_sum; // COM velocity
+
         // Subtract uniformly so Σ m v' = 0
         for a in &mut self.atoms {
             a.vel -= v_cm;
         }
+
+        // I don't think we need to use SHAKE/RATTLE here, as the velocity
+        // change is uniform for the water atoms in a given mol.
+        for w in &mut self.water {
+            w.o.vel -= v_cm;
+            w.h0.vel -= v_cm;
+            w.h1.vel -= v_cm;
+        }
     }
 
     // todo: Assess if you want this for multi-molecule systems.
-    /// Remove rigid-body rotation for "atoms" only (exclude water).
+    /// Remove rigid-body rotation.
     /// Computes ω from I ω = L about the atoms' COM, then sets v' = v - ω × (r - r_cm).
     pub fn zero_angular_momentum_atoms(&mut self) {
         // COM position for atoms (wrapped is fine; all r use the same frame)
         let mut m_sum = 0.0;
         let mut m_r_sum = Vec3::new_zero();
+
         for a in &self.atoms {
             let m = a.mass;
             m_sum += m;
             m_r_sum += a.posit * m;
         }
+
+        for w in &self.water {
+            m_sum += MASS_WATER_MOL;
+            m_r_sum += w.o.posit * O_MASS + w.h0.posit * H_MASS + w.h1.posit * H_MASS;
+        }
+
         if m_sum <= 0.0 {
             return;
         }
         let r_cm = m_r_sum / m_sum;
+
+        // todo: QC how to h andle water here.
 
         // Build inertia tensor I and angular momentum L about r_cm
         let mut i_xx = 0.0f32;

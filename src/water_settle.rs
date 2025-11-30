@@ -5,7 +5,7 @@ use lin_alg::f32::Vec3;
 use crate::{
     ACCEL_CONVERSION_INV,
     ambient::SimBox,
-    water_opc::{H_MASS, H_O_H_θ, O_EP_R_0, O_H_R, O_MASS, WaterMol},
+    water_opc::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R_0, O_H_R, O_MASS, WaterMol},
 };
 
 // Reset the water angle to the defined parameter every this many steps,
@@ -27,15 +27,14 @@ pub(crate) fn settle_drift(
     cell: &SimBox,
     virial_constr_kcal: &mut f64,
 ) {
-    const MASS_MOL: f32 = O_MASS + 2.0 * H_MASS;
-
     let o_pos = mol.o.posit;
     let h0_pos_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
     let h1_pos_local = o_pos + cell.min_image(mol.h1.posit - o_pos);
 
     // COM position & velocity at start of the drift/rotation substep
-    let r_com = (mol.o.posit * O_MASS + h0_pos_local * H_MASS + h1_pos_local * H_MASS) / MASS_MOL;
-    let v_com = (mol.o.vel * O_MASS + mol.h0.vel * H_MASS + mol.h1.vel * H_MASS) / MASS_MOL;
+    let r_com =
+        (mol.o.posit * O_MASS + h0_pos_local * H_MASS + h1_pos_local * H_MASS) / MASS_WATER_MOL;
+    let v_com = (mol.o.vel * O_MASS + mol.h0.vel * H_MASS + mol.h1.vel * H_MASS) / MASS_WATER_MOL;
 
     // Shift to COM frame
     let (rO, rH0, rH1) = (o_pos - r_com, h0_pos_local - r_com, h1_pos_local - r_com);
