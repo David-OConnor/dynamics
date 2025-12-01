@@ -1,7 +1,6 @@
 //! Zero center of mass linear drift and rotation for all atoms in the system.
 
-use lin_alg::f32::Vec3;
-use lin_alg::f64::Vec3 as Vec3F64;
+use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 
 use crate::{
     MdState,

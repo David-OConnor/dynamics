@@ -31,7 +31,10 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER};
+use crate::{
+    ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER,
+    water_settle::RA,
+};
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
@@ -48,7 +51,7 @@ pub(crate) const MASS_WATER_MOL: f32 = O_MASS + 2.0 * H_MASS;
 // used in this rigid model.
 
 // Å; bond distance. (frcmod.opc, or Table 2.)
-pub(crate) const O_EP_R_0: f32 = 0.159_398_33;
+pub(crate) const O_EP_R: f32 = 0.159_398_33;
 pub(crate) const O_H_R: f32 = 0.872_433_13;
 
 // Angle bending angle, radians.
@@ -63,9 +66,16 @@ const O_RSTAR: f32 = 1.777_167_268;
 pub const O_SIGMA: f32 = O_RSTAR * SIGMA_FACTOR;
 pub const O_EPS: f32 = 0.212_800_813_0;
 
-// Partial charges in elementary charge.. See the OPC paper, Table 2. None on O.
+// Partial charges in elementary charge. See the OPC paper, Table 2. None on O.
 const Q_H: f32 = 0.6791 * CHARGE_UNIT_SCALER;
 const Q_EP: f32 = -2. * Q_H;
+
+// Consts for force projection from the virtual site.
+// For a bisector site at distance d_OM, with bond length d_OH and angle theta:
+// c_H = (d_OM / (d_OH * cos(theta/2))) / 2.0;
+// We pre-calculate the cos part.
+const C_H: f32 = (O_EP_R / RA) / 2.;
+const C_O: f32 = 1.0 - 2.0 * C_H;
 
 // We use this to convert from force to acceleration, in the appropriate units.
 pub(crate) const ACCEL_CONV_WATER_O: f32 = ACCEL_CONVERSION / O_MASS;
@@ -166,7 +176,7 @@ impl WaterMol {
         let h1_pos = o_pos + h1_dir * O_H_R;
 
         // EP on the HOH bisector at fixed O–EP distance
-        let ep_pos = o_pos + (h0_pos - o_pos + h1_pos - o_pos).to_normalized() * O_EP_R_0;
+        let ep_pos = o_pos + (h0_pos - o_pos + h1_pos - o_pos).to_normalized() * O_EP_R;
 
         let h0 = AtomDynamics {
             force_field_type: String::from("HW"),
@@ -208,8 +218,8 @@ impl WaterMol {
         }
     }
 
-    /// Part of the OPC algorithm; EP/M doesn't move directly and is massless. We take into account
-    /// the Coulomb force on it by applying it instead to O and H atoms.
+    /// Run this after updating force on the EP site; converts its force to the O and H sites,
+    /// and leaves it at 0.
     pub(crate) fn project_ep_force_to_real_sites(&mut self, cell: &SimBox) {
         // Geometry in O-centered frame
         let r_O_H0 = self.o.posit + cell.min_image(self.h0.posit - self.o.posit) - self.o.posit;
@@ -231,7 +241,7 @@ impl WaterMol {
         let u = s / s_norm;
         let fm_parallel = u * f_m.dot(u);
         let fm_perp = f_m - fm_parallel; // (I - uu^T) f_m
-        let scale = O_EP_R_0 / s_norm; // d / |s|
+        let scale = O_EP_R / s_norm; // d / |s|
 
         // Chain rule: ∂rM/∂rO = I - 2 d P ;  ∂rM/∂rHk = d P
         // Because P is symmetric, (∂rM/∂ri)^T Fm == same expression with P acting on Fm.
@@ -244,16 +254,53 @@ impl WaterMol {
         self.h0.force += fh;
         self.h1.force += fh;
     }
-}
 
-/// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
-/// side of the cell.
-pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
-    let new_o = cell.wrap(mol.o.posit);
-    let shift = new_o - mol.o.posit;
+    // todo: Experimenting
+    /// Run this after updating force on the EP site; converts its force to the O and H sites,
+    /// and leaves it at 0.
+    pub(crate) fn project_ep_force_optimized(&mut self) {
+        let f_m = self.m.force;
 
-    mol.o.posit = new_o;
-    mol.h0.posit += shift;
-    mol.h1.posit += shift;
-    mol.m.posit += shift;
+        // Exact force conservation, exact torque conservation (for this geometry)
+        self.o.force += f_m * C_O;
+        self.h0.force += f_m * C_H;
+        self.h1.force += f_m * C_H;
+
+        self.m.force = Vec3F32::new_zero();
+    }
+
+    // todo: Experimenting
+    /// Places the M (EP) site based on current O and H positions.
+    /// Call this after Initialization, Settle, or Barostat scaling.
+    pub(crate) fn update_virtual_site(&mut self) {
+        // Fast approximate bisector reconstruction
+        let v_h0 = self.h0.posit - self.o.posit;
+        let v_h1 = self.h1.posit - self.o.posit;
+
+        // Unnormalized bisector
+        let bis = v_h0 + v_h1;
+
+        // This squareroot is unavoidable for exact distance,
+        // but cheaper than the full geometry logic in your snippet.
+        // O_EP_R_0 is the parameter distance (e.g. 0.15 A).
+        self.m.posit = self.o.posit + bis.to_normalized() * O_EP_R;
+
+        // Interpolate velocity for M (important for thermostats)
+        // M is approx midway between H's angularly, but closer to O.
+        // A simple average of H's is often 'good enough' for temperature,
+        // but strictly it depends on geometry. Your code used avg of H:
+        self.m.vel = (self.h0.vel + self.h1.vel) * 0.5;
+    }
 }
+//
+// /// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
+// /// side of the cell.
+// pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
+//     let new_o = cell.wrap(mol.o.posit);
+//     let shift = new_o - mol.o.posit;
+//
+//     mol.o.posit = new_o;
+//     mol.h0.posit += shift;
+//     mol.h1.posit += shift;
+//     mol.m.posit += shift;
+// }

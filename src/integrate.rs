@@ -9,14 +9,13 @@ use std::{
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 
-use crate::ambient::TAU_TEMP_WATER_INIT;
 use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
     HydrogenConstraint, MdState,
-    ambient::{TAU_TEMP_DEFAULT, measure_instantaneous_pressure},
+    ambient::{TAU_TEMP_DEFAULT, TAU_TEMP_WATER_INIT, measure_instantaneous_pressure},
     water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
     water_settle,
-    water_settle::{RESET_ANGLE_RATIO, settle_drift},
+    water_settle::{RESET_ANGLE_RATIO, integrate_rigid_water, settle_drift_analytic},
 };
 
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
@@ -269,15 +268,11 @@ impl MdState {
             }
         }
 
-        // Don't run angular and linear separately in the same step; angular calls linear after.
-        if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
-            self.zero_linear_momentum_atoms();
-        }
-        // See note about: Angular calls lienear.
-        if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR)
-            && !self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR)
-        {
+        // Linear calls angular, which is why we don't run both at the same time.
+        if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
             self.zero_angular_momentum_atoms();
+        } else if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
+            self.zero_linear_momentum_atoms();
         }
 
         self.time += dt as f64;
@@ -350,7 +345,8 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt_kick;
             w.h1.vel += w.h1.accel * dt_kick;
 
-            settle_drift(
+            // integrate_rigid_water(
+            settle_drift_analytic(
                 w,
                 dt_drift,
                 &self.cell,
@@ -391,7 +387,8 @@ impl MdState {
 
         for w in &mut self.water {
             // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
-            w.project_ep_force_to_real_sites(&self.cell);
+            // w.project_ep_force_to_real_sites(&self.cell);
+            w.project_ep_force_optimized();
 
             w.o.accel = w.o.force * ACCEL_CONV_WATER_O;
             w.h0.accel = w.h0.force * ACCEL_CONV_WATER_H;
@@ -420,7 +417,8 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            settle_drift(
+            // integrate_rigid_water(
+            settle_drift_analytic(
                 w,
                 dt,
                 &self.cell,

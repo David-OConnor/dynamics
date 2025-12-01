@@ -268,6 +268,9 @@ impl BerendsenBarostat {
             w.o.vel *= lv;
             w.h0.vel *= lv;
             w.h1.vel *= lv;
+
+            // We moved O and Hs above; update EP.
+            w.update_virtual_site();
         }
     }
 

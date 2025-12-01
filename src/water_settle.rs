@@ -5,12 +5,214 @@ use lin_alg::f32::Vec3;
 use crate::{
     ACCEL_CONVERSION_INV,
     ambient::SimBox,
-    water_opc::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R_0, O_H_R, O_MASS, WaterMol},
+    water_opc::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMol},
 };
 
 // Reset the water angle to the defined parameter every this many steps,
 // to counter numerical drift
 pub(crate) const RESET_ANGLE_RATIO: usize = 1_000;
+
+// ---------- SETTLE constants
+
+// Pre-calculate these constants for OPC geometry!
+// RA: Distance from O to the midpoint of the H-H line.
+// RB: Distance from the H-H midpoint to an H atom (half the H-H distance).
+// RC: Distance from O to the Center of Mass.
+// geometry:
+//       O
+//       | (ra)
+//   H --+-- H
+//     (rb)
+
+// Example for standard OPC (verify your specific constants):
+// theta_rad = 103.6 * pi / 180
+// bond_len = 0.872433
+// ra = bond_len * cos(theta_rad / 2.0)
+// rb = bond_len * sin(theta_rad / 2.0)
+// rc = ra * (2.0 * H_MASS) / (O_MASS + 2.0 * H_MASS)
+
+// todo: Replace these with calculated values.
+
+// Pre-calcualted, as consts don't support COS, SIN.
+pub(crate) const RA: f32 = 0.5395199719801114; // O_H_R * (H_O_H_θ / 2.).cos()
+const RB: f32 = 0.6856075890450577; // O_H_R * (H_O_H_θ / 2.).sin()
+const RC: f32 = RA * (2.0 * H_MASS) / (O_MASS + 2.0 * H_MASS);
+
+// ---------- end SETTLE constants
+
+/// Analytic SETTLE for OPC water.
+/// 1. Drifts atoms forward by dt.
+/// 2. Applies constraints analytically.
+/// 3. Updates velocities based on the constraint correction.
+/// 4. Updates the M-site (Virtual Site).
+pub(crate) fn settle_drift_analytic(
+    mol: &mut WaterMol,
+    dt: f32,
+    cell: &SimBox,
+    virial_constr: &mut f64,
+) {
+    let dt_inv = 1.0 / dt;
+
+    // 1. Unconstrained Drift (Predictor)
+    // ---------------------------------------------------------
+    let mut o_pos = mol.o.posit + mol.o.vel * dt;
+    // We work in the O-centered frame for H's to handle PBC safely immediately
+    let mut h0_pos = o_pos + cell.min_image((mol.h0.posit + mol.h0.vel * dt) - o_pos);
+    let mut h1_pos = o_pos + cell.min_image((mol.h1.posit + mol.h1.vel * dt) - o_pos);
+
+    // 2. Center of Mass & Coordinate System Construction
+    // ---------------------------------------------------------
+    // Current (unconstrained) COM
+    let com = (o_pos * O_MASS + h0_pos * H_MASS + h1_pos * H_MASS) / MASS_WATER_MOL;
+
+    // Shift positions relative to COM
+    let mut r_o = o_pos - com;
+    let mut r_h0 = h0_pos - com;
+    let mut r_h1 = h1_pos - com;
+
+    // Construct local orthonormal coordinate system (a, b, c)
+    // 'a' points along the bisector (roughly O -> H-H line)
+    // 'b' points along the H-H vector
+    // 'c' is perpendicular to the plane
+
+    // a_vec = r_o (vector from COM to O).
+    // Note: In unconstrained step, O might drift slightly off bisector,
+    // but usually we define the axis based on the triangle orientation.
+    // Canonical SETTLE defines axes based on the positions *relative to COM*.
+
+    // Vector from O to midpoint of H0-H1
+    // let midpoint = (r_h0 + r_h1) * 0.5;
+    let mut a_vec = r_o; // Initial guess for bisector axis (pointing to O)
+
+    // Gram-Schmidt / Cross-product method to ensure orthogonality
+    let d_hh = r_h1 - r_h0; // Vector between H's
+    let c_vec = d_hh.cross(a_vec); // Normal to plane
+
+    // Recalculate 'b' and 'a' to be perfectly orthogonal
+    let b_vec = d_hh;
+    // a_vec = b x c (points from H-H line towards O)
+    a_vec = b_vec.cross(c_vec);
+
+    // Normalize
+    let ax = a_vec.to_normalized();
+    let bx = b_vec.to_normalized();
+    // let cx = c_vec.to_normalized();
+
+    // 3. Analytic Constraint Solution
+    // ---------------------------------------------------------
+    // We project the unconstrained positions onto these axes.
+    // Due to symmetry, we only need the Z-coordinate (along 'a') and Y-coordinate (along 'b').
+    // (Using standard SETTLE notation where Z is bisector, Y is HH vector)
+
+    // Distances of atoms from COM along axis 'a' (bisector)
+    let o_z = r_o.dot(ax);
+    // let h0_z = r_h0.dot(ax);
+    // let h1_z = r_h1.dot(ax);
+
+    // Distances along axis 'b' (H-H vector)
+    // O is at 0 in 'b' by definition of the bisector construction
+    let h0_y = r_h0.dot(bx);
+    let h1_y = r_h1.dot(bx);
+
+    // -- Solve for H-H separation (linear) --
+    // We need to move H0 and H1 along 'b' so their distance becomes 2*RB.
+    // The separation in unconstrained is (h1_y - h0_y).
+    // Weighting factor: mH / (mH + mH) = 0.5 for relative motion, but we use reduced mass concept.
+    // Actually, SETTLE simplifies this:
+    // We simply reset y-coords to perfect symmetry +/- RB.
+    // The shift required:
+    let d_hh_unconstr = h1_y - h0_y;
+    let target_d_hh = 2.0 * RB;
+    // let gamma = (target_d_hh - d_hh_unconstr) * 0.5;
+
+    // Only H's move along 'b', equal and opposite.
+
+    // -- Solve for O-(HH midpoint) separation (quadratic) --
+    // We need to move O and H's along 'a' (bisector) to restore geometry.
+    // Target: O is at +RC (relative to COM), H's are at -(RA-RC).
+    // Let phi be the shift factor.
+    // This is the classic SETTLE quadratic: A*phi^2 + B*phi + C = 0
+    // But since we built the frame *on* the atoms, we can often just snap them
+    // to the known geometry relative to the COM if we trust the COM velocity is constant.
+
+    // Simplified SETTLE reconstruction (Standard "SHAKE-like" SETTLE):
+    // 1. Calculate 'sin phi' needed to restore OH bond length given the fixed HH width.
+    // This is actually much simpler:
+    // The COM is invariant. The axes (ax, bx, cx) represent the rigid body orientation.
+    // We just place the atoms at their defined coordinates in this frame!
+
+    // Reconstruct positions in global frame:
+    // O is at distance RC from COM along -ax (or +ax depending on direction)
+    // H's are at distance (RA-RC) from COM along +ax, and +/- RB along bx.
+
+    // Verify direction of ax: defined as b x c.
+    // b = H0->H1. c = plane normal. a points roughly O -> Midpoint?
+    // Let's check: r_o dot ax. If positive, O is in +ax direction.
+
+    // Re-assign rigid body positions relative to COM
+    let sign = if o_z > 0.0 { 1.0 } else { -1.0 };
+
+    // New local positions
+    let new_ro = ax * (sign * RC);
+    let center_h = ax * (sign * (RC - RA)); // Midpoint of H-H
+    let new_rh0 = center_h - bx * RB;
+    let new_rh1 = center_h + bx * RB;
+
+    // 4. Update Global State
+    // ---------------------------------------------------------
+    let final_o = com + new_ro;
+    let final_h0 = com + new_rh0;
+    let final_h1 = com + new_rh1;
+
+    // Wrap and commit positions
+    mol.o.posit = cell.wrap(final_o);
+    // Use min image to keep molecule together visually/topologically
+    mol.h0.posit = mol.o.posit + cell.min_image(final_h0 - final_o);
+    mol.h1.posit = mol.o.posit + cell.min_image(final_h1 - final_o);
+
+    // 5. Update Velocities (Constraint Force application)
+    // ---------------------------------------------------------
+    // v_new = (r_new - r_old_at_start_of_step) / dt
+    // BUT we drifted r_old at step 1.
+    // We need the position *before* the drift.
+    // r_old = (r_drifted - v_old * dt).
+    // Actually, simplest is: v_new = (final_pos - initial_pos) / dt.
+
+    // We need the original positions passed in? Or we can back-calculate:
+    // r_initial = o_pos_drifted - mol.o.vel * dt;
+    // v_new = (final_o - r_initial) / dt;
+    // Simplifies to: v_new = mol.o.vel + (final_o - o_pos_drifted) / dt;
+
+    let correction_o = (final_o - o_pos) * dt_inv;
+    let correction_h0 = (final_h0 - h0_pos) * dt_inv;
+    let correction_h1 = (final_h1 - h1_pos) * dt_inv;
+
+    mol.o.vel += correction_o;
+    mol.h0.vel += correction_h0;
+    mol.h1.vel += correction_h1;
+
+    // 6. Calculate Constraint Virial
+    // ---------------------------------------------------------
+    // W = Sum( r_ref . F_constraint )
+    // F_constraint = m * correction / dt  (units: Mass * Length / Time^2)
+    // We assume Virial is in Energy units.
+    // Note: Use the midpoint or the new position for r_ref?
+    // Standard is usually r_new.
+
+    let fc_o = correction_o * (O_MASS * dt_inv);
+    let fc_h0 = correction_h0 * (H_MASS * dt_inv);
+    let fc_h1 = correction_h1 * (H_MASS * dt_inv);
+
+    // accumulate virial (dot product)
+    *virial_constr += (final_o.dot(fc_o) + final_h0.dot(fc_h0) + final_h1.dot(fc_h1)) as f64;
+
+    // 7. Update Virtual Site (M-Site)
+    // ---------------------------------------------------------
+    // ALWAYS update this after moving O and H.
+    let bisector = (mol.h0.posit - mol.o.posit) + (mol.h1.posit - mol.o.posit);
+    mol.m.posit = mol.o.posit + bisector.to_normalized() * O_EP_R;
+    mol.m.vel = (mol.h0.vel + mol.h1.vel) * 0.5;
+}
 
 /// Analytic SETTLE implementation for 3‑site rigid water (Miyamoto & Kollman, JCC 1992).
 /// Works for any bond length / HOH angle. This handles the drift (position updates) for water
@@ -21,7 +223,7 @@ pub(crate) const RESET_ANGLE_RATIO: usize = 1_000;
 /// This is handles the Verlet "drift" for a rigid molecule. It is the equivalent
 /// of updating position by adding velocity x dt, but also maintains the rigid
 /// geometry of 3-atom molecules.
-pub(crate) fn settle_drift(
+pub(crate) fn integrate_rigid_water(
     mol: &mut WaterMol,
     dt: f32,
     cell: &SimBox,
@@ -126,7 +328,7 @@ pub(crate) fn settle_drift(
     // Place EP on the HOH bisector
     {
         let bisector = (mol.h0.posit - mol.o.posit) + (mol.h1.posit - mol.o.posit);
-        mol.m.posit = mol.o.posit + bisector.to_normalized() * O_EP_R_0;
+        mol.m.posit = mol.o.posit + bisector.to_normalized() * O_EP_R;
         mol.m.vel = (mol.h0.vel + mol.h1.vel) * 0.5;
     }
 }
@@ -190,7 +392,7 @@ pub(crate) fn settle_no_dt(mol: &mut WaterMol, cell: &SimBox) {
 
     // 5) Update M on the bisector; zero or keep velocities as you prefer
     let bis = (mol.h0.posit - mol.o.posit) + (mol.h1.posit - mol.o.posit);
-    mol.m.posit = mol.o.posit + bis.to_normalized() * crate::water_opc::O_EP_R_0;
+    mol.m.posit = mol.o.posit + bis.to_normalized() * crate::water_opc::O_EP_R;
 }
 
 /// Solve I · x = b for a 3×3 *symmetric* matrix I.
