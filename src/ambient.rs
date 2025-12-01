@@ -32,7 +32,7 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 // todo: SPME seems to be injecting energy into the system. Ideally this value should be close to 1.
 // todo: Lowered until we sort this out.
 pub(crate) const TAU_TEMP_DEFAULT: f64 = 1.0;
-const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
+pub(crate) const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
 
 // Gamma is for the Langevin thermostat.
 const GAMMA_WATER_INIT: f32 = 1.; // todo: Experiment
@@ -354,13 +354,7 @@ impl MdState {
         // Cached during the kick-and-drift step.
         let ke = self.kinetic_energy; // In kcal/mol
 
-        let tau_temp = if self.water_only_sim_at_init {
-            TAU_TEMP_WATER_INIT
-        } else {
-            tau
-        };
-
-        let c = (-dt / tau_temp).exp();
+        let c = (-dt / tau).exp();
 
         // Draw the two random variates used in the exact CSVR update:
         let r: f64 = StandardNormal.sample(&mut self.barostat.rng); // N(0,1)
@@ -372,11 +366,11 @@ impl MdState {
 
         // Discrete-time exact solution for the OU process in K (from Bussi 2007):
         // K' = K*c + ke_bar*(1.0 - c) * [ (chi + r*r)/dof ] + 2.0*r*sqrt(c*(1.0-c)*K*ke_bar/dof)
-        let kprime = ke * c
+        let k_prime = ke * c
             + ke_target * (1.0 - c) * ((chi + r * r) / dof)
             + 2.0 * r * ((c * (1.0 - c) * ke * ke_target / dof).sqrt());
 
-        let lam = (kprime / ke).sqrt() as f32;
+        let lam = (k_prime / ke).sqrt() as f32;
 
         for a in &mut self.atoms {
             if a.static_ {

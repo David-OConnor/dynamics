@@ -9,6 +9,7 @@ use std::{
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 
+use crate::ambient::TAU_TEMP_WATER_INIT;
 use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
     HydrogenConstraint, MdState,
@@ -88,7 +89,7 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                self.kick_and_drift(dt_half);
+                self.kick_and_drift(dt_half, dt_half);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -101,8 +102,10 @@ impl MdState {
 
                 if !self.cfg.overrides.thermo_disabled {
                     self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
+                    // Update KE after vel updates from the thermostat, prior to barostat.
+                    self.kinetic_energy = self.kinetic_energy();
                 }
-                // Rattle after the thermostat run.
+                // Rattle after the thermostat run, as it updates velocities in a non-uniform manner.
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens(dt);
                 }
@@ -124,12 +127,11 @@ impl MdState {
                 }
 
                 // ------- Below: Compute new forces and accelerations.
-                self.reset_accel_e();
-
                 if log_time {
                     start = Instant::now();
                 }
 
+                self.reset_accel_pe_virial();
                 self.apply_all_forces(dev);
 
                 // todo: QC
@@ -168,13 +170,6 @@ impl MdState {
 
                 self.kick_and_calc_accel(dt_half);
 
-                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
-                    self.zero_linear_momentum_atoms();
-                }
-                // if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
-                //     self.zero_angular_momentum_atoms();
-                // }
-
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
@@ -185,17 +180,16 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                self.kick_and_drift(dt_half);
+                self.kick_and_drift(dt_half, dt);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
                 }
 
-                self.reset_accel_e();
+                self.reset_accel_pe_virial();
                 self.apply_all_forces(dev);
 
-                // todo: QC
                 self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
                 self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
                 self.barostat.virial_nonbonded_long_range *= ACCEL_CONVERSION_INV as f64;
@@ -250,44 +244,22 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                if log_time {
-                    let elapsed = start.elapsed().as_micros() as u64;
-                    self.computation_time.ambient_sum += elapsed;
-                }
-
-                if log_time {
-                    start = Instant::now();
-                }
-
-                // Rattle after applying the thermostat.
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens(dt_half);
-                }
-
-                if log_time {
-                    let elapsed = start.elapsed().as_micros() as u64;
-                    self.computation_time.integration_sum += elapsed;
-                }
-
-                if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
-                    self.zero_linear_momentum_atoms();
-                }
-                // if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
-                //     self.zero_angular_momentum_atoms();
-                // }
-
-                if log_time {
-                    start = Instant::now();
-                }
-
+                // Note: We don't need to RATTLE hydrogens after applying the CSVR thermostat, because
+                // it updates all velocites uniformly.
                 if let Some(tau_temp) = thermostat
                     && !self.cfg.overrides.thermo_disabled
+                    && !self.water_only_sim_at_init
                 {
                     self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
-                }
-
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-                    self.rattle_hydrogens(dt);
+                    // Update KE after the thermostat updated velocities.
+                    // self.kinetic_energy = self.kinetic_energy();
+                } else if self.water_only_sim_at_init {
+                    self.apply_thermostat_csvr(
+                        dt as f64,
+                        TAU_TEMP_WATER_INIT,
+                        self.cfg.temp_target as f64,
+                    );
+                    // self.kinetic_energy = self.kinetic_energy();
                 }
 
                 if log_time {
@@ -295,6 +267,17 @@ impl MdState {
                     self.computation_time.ambient_sum += elapsed;
                 }
             }
+        }
+
+        // Don't run angular and linear separately in the same step; angular calls linear after.
+        if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
+            self.zero_linear_momentum_atoms();
+        }
+        // See note about: Angular calls lienear.
+        if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR)
+            && !self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR)
+        {
+            self.zero_angular_momentum_atoms();
         }
 
         self.time += dt as f64;
@@ -350,27 +333,26 @@ impl MdState {
     /// Half kick and drift for non-water and water. We call this one or more time
     /// in the various integration approaches. Includes the SETTLE application for water,
     /// and SHAKE + RATTLE for hydrogens, if applicable. Updates kinetic energy.
-    fn kick_and_drift(&mut self, dt: f32) {
+    fn kick_and_drift(&mut self, dt_kick: f32, dt_drift: f32) {
         // Half-kick
-        // for (i, a) in self.atoms.iter_mut().enumerate() {
         for a in &mut self.atoms {
             if a.static_ {
                 continue;
             }
 
-            a.vel += a.accel * dt; // kick
-            a.posit += a.vel * dt; // drift
+            a.vel += a.accel * dt_kick; // kick
+            a.posit += a.vel * dt_drift; // drift
         }
 
         for w in &mut self.water {
             // Kick
-            w.o.vel += w.o.accel * dt;
-            w.h0.vel += w.h0.accel * dt;
-            w.h1.vel += w.h1.accel * dt;
+            w.o.vel += w.o.accel * dt_kick;
+            w.h0.vel += w.h0.accel * dt_kick;
+            w.h1.vel += w.h1.accel * dt_kick;
 
             settle_drift(
                 w,
-                dt,
+                dt_drift,
                 &self.cell,
                 &mut self.barostat.virial_nonbonded_short_range,
             );
@@ -378,7 +360,7 @@ impl MdState {
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
             self.shake_hydrogens();
-            self.rattle_hydrogens(dt);
+            self.rattle_hydrogens(dt_kick);
         }
 
         self.kinetic_energy = self.kinetic_energy();

@@ -6,7 +6,7 @@ use crate::{ComputationDevice, MdState};
 
 /// Force/E at current geometry
 fn compute_forces_and_energy(state: &mut MdState, dev: &ComputationDevice) {
-    state.reset_accel_e();
+    state.reset_accel_pe_virial();
     state.potential_energy = 0.0;
 
     state.apply_all_forces(dev);
@@ -163,7 +163,7 @@ impl MdState {
             a.vel = Vec3::new_zero();
         }
 
-        self.reset_accel_e();
+        self.reset_accel_pe_virial();
 
         // Keep consistent with the normal cadence.
         self.cell.recenter(&self.atoms);

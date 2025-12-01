@@ -972,11 +972,11 @@ impl MdState {
         self.computation_time.time_per_step(self.step_count)
     }
 
-    /// Reset acceleration and virial pair. Do this each step after the first half-step and drift, and
+    /// Reset acceleration, potential energy, and virial pair. Do this each step after the first half-step and drift, and
     /// shaking the fixed hydrogens.
     /// We must reset the virial pair prior to accumulating it, which we do when calculating non-bonded
     /// forces. Also reset forces on water.
-    fn reset_accel_e(&mut self) {
+    fn reset_accel_pe_virial(&mut self) {
         for a in &mut self.atoms {
             a.accel = Vec3::new_zero();
             a.force = Vec3::new_zero();

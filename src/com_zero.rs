@@ -1,6 +1,7 @@
-//! Relates to zeroing center-of-mass drift adn possibly rotation.
+//! Zero center of mass linear drift and rotation for all atoms in the system.
 
 use lin_alg::f32::Vec3;
+use lin_alg::f64::Vec3 as Vec3F64;
 
 use crate::{
     MdState,
@@ -9,39 +10,44 @@ use crate::{
 
 impl MdState {
     /// Remove center-of-mass drift. This can help stabilize system energy.
+    /// We perform the sums here as f64.
     pub fn zero_linear_momentum_atoms(&mut self) {
-        let mut m_sum = 0.0;
-        let mut p_sum = Vec3::new_zero(); // Σ m v
+        let mut mass_sum = 0.0;
+        let mut p_sum = Vec3F64::new_zero(); // Σ m v
 
         for a in &self.atoms {
-            let m = a.mass;
-            m_sum += m;
-            p_sum += a.vel * m;
+            mass_sum += a.mass as f64;
+            let p: Vec3F64 = (a.vel * a.mass).into();
+            p_sum += p;
         }
 
         for w in &self.water {
-            m_sum += MASS_WATER_MOL;
-            // All 3 (massive) atoms have the same velocity.
-            p_sum += w.o.vel * 3. * MASS_WATER_MOL;
+            mass_sum += MASS_WATER_MOL as f64;
+
+            let p_o: Vec3F64 = (w.o.vel * O_MASS).into();
+            let p_h0: Vec3F64 = (w.h0.vel * H_MASS).into();
+            let p_h1: Vec3F64 = (w.h1.vel * H_MASS).into();
+
+            p_sum += p_o + p_h0 + p_h1;
         }
 
-        if m_sum <= 0.0 {
+        if mass_sum <= 0. {
             return;
         }
 
-        let v_cm = p_sum / m_sum; // COM velocity
+        let vel_com: Vec3 = (p_sum / mass_sum).into();
 
         // Subtract uniformly so Σ m v' = 0
         for a in &mut self.atoms {
-            a.vel -= v_cm;
+            a.vel -= vel_com;
         }
 
         // I don't think we need to use SHAKE/RATTLE here, as the velocity
         // change is uniform for the water atoms in a given mol.
         for w in &mut self.water {
-            w.o.vel -= v_cm;
-            w.h0.vel -= v_cm;
-            w.h1.vel -= v_cm;
+            w.o.vel -= vel_com;
+            w.h0.vel -= vel_com;
+            w.h1.vel -= vel_com;
         }
     }
 
@@ -49,41 +55,45 @@ impl MdState {
     /// Remove rigid-body rotation.
     /// Computes ω from I ω = L about the atoms' COM, then sets v' = v - ω × (r - r_cm).
     pub fn zero_angular_momentum_atoms(&mut self) {
-        // COM position for atoms (wrapped is fine; all r use the same frame)
-        let mut m_sum = 0.0;
-        let mut m_r_sum = Vec3::new_zero();
+        let mut mass_sum = 0.0;
+        let mut m_r_sum = Vec3F64::new_zero();
 
         for a in &self.atoms {
-            let m = a.mass;
-            m_sum += m;
-            m_r_sum += a.posit * m;
+            mass_sum += a.mass as f64;
+
+            let m_r: Vec3F64 = (a.posit * a.mass).into();
+            m_r_sum += m_r;
         }
 
         for w in &self.water {
-            m_sum += MASS_WATER_MOL;
-            m_r_sum += w.o.posit * O_MASS + w.h0.posit * H_MASS + w.h1.posit * H_MASS;
+            mass_sum += MASS_WATER_MOL as f64;
+
+            let mr_o: Vec3F64 = (w.o.posit * O_MASS).into();
+            let mr_h0: Vec3F64 = (w.h0.posit * H_MASS).into();
+            let mr_h1: Vec3F64 = (w.h1.posit * H_MASS).into();
+
+            m_r_sum += mr_o + mr_h0 + mr_h1;
         }
 
-        if m_sum <= 0.0 {
+        if mass_sum <= 0.0 {
             return;
         }
-        let r_cm = m_r_sum / m_sum;
-
-        // todo: QC how to h andle water here.
+        let rot_com: Vec3 = (m_r_sum / mass_sum).into();
 
         // Build inertia tensor I and angular momentum L about r_cm
-        let mut i_xx = 0.0f32;
-        let mut i_xy = 0.0f32;
-        let mut i_xz = 0.0f32;
-        let mut i_yy = 0.0f32;
-        let mut i_yz = 0.0f32;
-        let mut i_zz = 0.0f32;
+        let mut i_xx = 0.0;
+        let mut i_xy = 0.0;
+        let mut i_xz = 0.0;
+        let mut i_yy = 0.0;
+        let mut i_yz = 0.0;
+        let mut i_zz = 0.0;
+
         let mut L = Vec3::new_zero();
 
         for a in &self.atoms {
             let m = a.mass;
-            // r relative to COM (use minimum-image if you prefer: self.cell.min_image(a.posit - r_cm))
-            let r = a.posit - r_cm;
+
+            let r = a.posit - rot_com;
             let vxr = r.cross(a.vel);
             L += vxr * m;
 
@@ -91,12 +101,35 @@ impl MdState {
             let ry = r.y;
             let rz = r.z;
             let r2 = rx * rx + ry * ry + rz * rz;
+
             i_xx += m * (r2 - rx * rx);
             i_yy += m * (r2 - ry * ry);
             i_zz += m * (r2 - rz * rz);
             i_xy -= m * (rx * ry);
             i_xz -= m * (rx * rz);
             i_yz -= m * (ry * rz);
+        }
+
+        for w in &self.water {
+            for a in [&w.o, &w.h0, &w.h1] {
+                let m = a.mass;
+
+                let r = a.posit - rot_com;
+                let vxr = r.cross(a.vel);
+                L += vxr * m;
+
+                let rx = r.x;
+                let ry = r.y;
+                let rz = r.z;
+                let r2 = rx * rx + ry * ry + rz * rz;
+
+                i_xx += m * (r2 - rx * rx);
+                i_yy += m * (r2 - ry * ry);
+                i_zz += m * (r2 - rz * rz);
+                i_xy -= m * (rx * ry);
+                i_xz -= m * (rx * rz);
+                i_yz -= m * (ry * rz);
+            }
         }
 
         // Inertia tensor (symmetric)
@@ -154,8 +187,19 @@ impl MdState {
 
         // v' = v - ω × (r - r_cm)
         for a in &mut self.atoms {
-            let r = a.posit - r_cm;
+            let r = a.posit - rot_com;
             a.vel -= omega.cross(r);
+        }
+
+        // todo: Do we need to shake/rattle here? likely.
+        for w in &mut self.water {
+            let r_o = w.o.posit - rot_com;
+            let r_h0 = w.h0.posit - rot_com;
+            let r_h1 = w.h1.posit - rot_com;
+
+            w.o.vel -= omega.cross(r_o);
+            w.h0.vel -= omega.cross(r_h0);
+            w.h1.vel -= omega.cross(r_h1);
         }
 
         // Clean up any translation introduced by roundoff
