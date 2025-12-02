@@ -267,10 +267,6 @@ pub(in crate::param_inference) fn postprocess_ring_n_types(
             None => continue,
         };
 
-        // Count *other* hetero neighbors (excluding ourselves) on the double-bond partner.
-        // Only O/N count here; do NOT let thio-substitution (S) force nd.
-        let mut partner_on_hetero = 0u8;
-
         // If this N is attached to an aromatic 6-member ring atom (fused aromatic),
         // keep it as nc even if the C=N partner is hetero-substituted.
         let mut fused_aryl_neighbor = false;
@@ -2250,9 +2246,6 @@ pub(in crate::param_inference) fn postprocess_c2_to_cf_if_conjugated_to_carbonyl
     adj: &[Vec<usize>],
     types: &mut [String],
 ) {
-    use BondType::{Aromatic, Double, Single};
-    use na_seq::Element::{Carbon, Oxygen};
-
     let off = bond_offset(atoms.len(), bonds);
 
     fn is_aromatic_atom(i: usize, adj: &[Vec<usize>], bonds: &[BondGeneric], off: usize) -> bool {

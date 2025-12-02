@@ -21,7 +21,7 @@
 //!
 //! This module, in particular, contains structs, constants, and the integrator.
 //!
-//! todo: H bond avg time: 1-20ps: Use this to validate your water model
+//! Note: H bond average maintenance time: 1-20ps: Use this to validate your water model
 
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16};
@@ -33,10 +33,15 @@ use na_seq::Element;
 
 use crate::{
     ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER,
-    water_settle::RA,
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
+
+pub(crate) mod init;
+pub(crate) mod settle;
+
+
+use settle::RA;
 
 // Constant parameters below are for the OPC water (JPCL, 2014, 5 (21), pp 3863-3871)
 // (Amber 2025, frcmod.opc) EP/M is the massless, 4th charge.

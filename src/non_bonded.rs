@@ -14,7 +14,7 @@ use crate::{
     AtomDynamics, ComputationDevice, MdOverrides, MdState,
     ambient::SimBox,
     forces::force_e_lj,
-    water_opc::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
+    water::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};

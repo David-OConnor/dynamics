@@ -9,7 +9,7 @@ use lin_alg::{
 use crate::{
     AtomDynamics, ForcesOnWaterMol, MdOverrides,
     non_bonded::{BodyRef, LjTables, NonBondedPair},
-    water_opc::{WaterMol, WaterSite},
+    water::{WaterMol, WaterSite},
 };
 
 /// Device buffers that persist across all steps. Mutated on the GPU.

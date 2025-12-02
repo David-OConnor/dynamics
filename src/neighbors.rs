@@ -98,7 +98,7 @@ impl MdState {
     }
 
     /// This rebuilds all neighbor lists.
-    pub(crate) fn build_all_neighbors(&mut self, dev: &ComputationDevice) {
+    pub(crate) fn build_all_neighbors(&mut self, _dev: &ComputationDevice) {
         let atom_posits: Vec<_> = self.atoms.iter().map(|a| a.posit).collect();
         let water_posits: Vec<_> = self
             .water

@@ -90,9 +90,7 @@ mod prep;
 mod simd;
 pub mod snapshot;
 mod util;
-mod water_init;
-mod water_opc;
-mod water_settle;
+mod water;
 
 mod com_zero;
 #[cfg(feature = "cuda")]
@@ -103,13 +101,11 @@ pub mod param_inference;
 mod sa_surface;
 #[cfg(test)]
 mod tests;
-// mod h_bond_inference;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 use std::{
     collections::HashSet,
-    error::Error,
     fmt,
     fmt::{Display, Formatter},
     io,
@@ -139,7 +135,7 @@ use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use util::{load_snapshots, save_snapshots};
-pub use water_opc::ForcesOnWaterMol;
+pub use water::ForcesOnWaterMol;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
@@ -150,8 +146,8 @@ use crate::{
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
-    water_init::make_water_mols,
-    water_opc::{WaterMol, WaterMolx8, WaterMolx16},
+    water::init::make_water_mols,
+    water::{WaterMol, WaterMolx8, WaterMolx16},
 };
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
@@ -798,15 +794,13 @@ impl MdState {
                 }
             }
 
-            let mut p: Vec<Vec3> = Vec::new(); // to store the ref.
-            let atom_posits = match &mol.atom_posits {
+            // let mut p: Vec<Vec3> = Vec::new(); // to store the ref.
+            let p: Vec<_> = let atom_posits = match &mol.atom_posits {
                 Some(a) => {
-                    p = a.iter().map(|p| (*p).into()).collect();
-                    &p
+                    a.iter().map(|p| (*p).into()).collect()
                 }
                 None => {
-                    p = mol.atoms.iter().map(|a| a.posit.into()).collect();
-                    &p
+                    mol.atoms.iter().map(|a| a.posit.into()).collect()
                 }
             };
 

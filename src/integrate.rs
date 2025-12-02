@@ -13,9 +13,8 @@ use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
     HydrogenConstraint, MdState,
     ambient::{TAU_TEMP_DEFAULT, TAU_TEMP_WATER_INIT, measure_instantaneous_pressure},
-    water_opc::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
-    water_settle,
-    water_settle::{RESET_ANGLE_RATIO, integrate_rigid_water, settle_drift_analytic},
+    water::{ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O},
+    water::settle::{RESET_ANGLE_RATIO, settle_drift_analytic, reset_angle},
 };
 
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
@@ -296,7 +295,7 @@ impl MdState {
 
         if self.step_count.is_multiple_of(RESET_ANGLE_RATIO) && self.step_count != 0 {
             for mol in &mut self.water {
-                water_settle::reset_angle(mol, &self.cell);
+                reset_angle(mol, &self.cell);
             }
         }
 

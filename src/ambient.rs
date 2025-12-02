@@ -14,7 +14,8 @@ use rand_distr::{ChiSquared, Distribution, StandardNormal};
 
 use crate::{
     ACCEL_CONVERSION, ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
-    water_opc::{H_MASS, MASS_WATER_MOL, O_MASS, WaterMol},
+
+    water::{H_MASS, O_MASS, WaterMol},
 };
 
 // Per-molecule Boltzmann, in kcal/mol/K.

@@ -14,7 +14,7 @@ use crate::{
     ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, MdState,
     ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
     sa_surface,
-    water_opc::WaterMol,
+    water::WaterMol,
 };
 
 // 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing

@@ -6,7 +6,7 @@ use lin_alg::f32::Vec3;
 use na_seq::Element::{Fluorine, Hydrogen, Nitrogen, Oxygen, Sulfur};
 use crate::AtomDynamics;
 use crate::snapshot::HydrogenBond;
-use crate::water_opc::WaterMol;
+use crate::water::WaterMol;
 
 // Note: Chimera shows H bonds as ranging generally from 2.8 to 3.3.
 // Note: These values all depend on which is the donor. Your code doesn't take this into account.

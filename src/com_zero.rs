@@ -4,7 +4,7 @@ use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 
 use crate::{
     MdState,
-    water_opc::{H_MASS, MASS_WATER_MOL, O_MASS},
+    water::{H_MASS, MASS_WATER_MOL, O_MASS},
 };
 
 impl MdState {
