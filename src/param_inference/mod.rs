@@ -40,7 +40,7 @@ const DEF_ABCG2: &str = include_str!("../../param_data/antechamber_defs/ATOMTYPE
 const DEF_GFF2: &str = include_str!("../../param_data/antechamber_defs/ATOMTYPE_GFF2.DEF");
 // const DEF_SYBYL: &str = include_str!("../param_data/antechamber_defs/ATOMTYPE_SYBYL.DEF");
 
-const BCCPARM: &str = include_str!("../../param_data/antechamber_defs/BCCPARM.DAT");
+// const BCCPARM: &str = include_str!("../../param_data/antechamber_defs/BCCPARM.DAT");
 
 /// Note: We've commented out all but the ones we need for small organic molecules.
 pub struct AmberDefSet {
@@ -58,8 +58,8 @@ pub struct AmberDefSet {
     pub gff2: AmberDef,
     // /// Used in TRIPOS/DOCK and old QSAR tools?
     // pub sybyl: AmberDef,
-    /// For partial charges, e.g. BCCPARM.DAT
-    bcc_parm: i8, // todo
+    // /// For partial charges, e.g. BCCPARM.DAT
+    // bcc_parm: i8, // todo
 }
 
 impl AmberDefSet {
@@ -82,7 +82,7 @@ impl AmberDefSet {
             // gff,
             gff2,
             // sybyl,
-            bcc_parm: 0,
+            // bcc_parm: 0,
         })
     }
 }

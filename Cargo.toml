@@ -61,6 +61,8 @@ mcubes = "0.1.7"
 candle-core = { version = "0.9.1" }
 candle-nn = { version = "0.9.1" }
 
+lazy_static = "1.5.0"
+
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 cudarc = { version = "0.18.1", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-linking", "cuda-13000"], optional = true }
 
