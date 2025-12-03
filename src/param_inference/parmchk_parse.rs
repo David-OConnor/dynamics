@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::{collections::HashMap, io, io::ErrorKind};
 
 const PARMCHK: &str = include_str!("../../param_data/antechamber_defs/PARMCHK.DAT");

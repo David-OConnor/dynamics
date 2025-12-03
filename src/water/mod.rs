@@ -31,15 +31,12 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{
-    ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER,
-};
+use crate::{ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER};
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 pub(crate) mod init;
 pub(crate) mod settle;
-
 
 use settle::RA;
 

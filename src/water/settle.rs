@@ -3,7 +3,7 @@
 //!
 //! See these reference implementations:
 //! -[OpenFF](https://github.com/openmm/openmm/blob/master/platforms/cpu/src/CpuSETTLE.cpp)
-//! -[GROMACS](https://github.com/gromacs/gromacs/blob/main/src/gromacs/mdlib/settle.cpp)
+//! -[GROMACS](https://github.com/openmm/openmm/blob/b0c2c4d84ef1ac82984a577c7506912f5f91bafa/platforms/reference/include/ReferenceSETTLEAlgorithm.h#L4)
 //! Note that these also have CPU implementation files; QC them A/R
 //!
 //! todo: Compute SETTLE using the GPU.
@@ -37,43 +37,24 @@ pub(crate) const RESET_ANGLE_RATIO: usize = 1_000;
 // rb = bond_len * sin(theta_rad / 2.0)
 // rc = ra * (2.0 * H_MASS) / (O_MASS + 2.0 * H_MASS)
 
-
 // Pre-calcualted for OPC, as consts don't support cost and sin. Could also do this with
 // lazy_static
 pub(crate) const RA: f32 = 0.5395199719801114; // O_H_R * (H_O_H_θ / 2.).cos()
 const RB: f32 = 0.6856075890450577; // O_H_R * (H_O_H_θ / 2.).sin()
 const RC: f32 = RA * (2.0 * H_MASS) / (O_MASS + 2.0 * H_MASS);
 
-pub(crate) fn settle_gromacs(
-    mol: &mut WaterMol,
-    dt: f32,
-    cell: &SimBox,
-    virial_constr: &mut f64,
-) {
+/// https://github.com/gromacs/gromacs/blob/main/src/gromacs/mdlib/settle.cpp
+pub(crate) fn settle_gromacs(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial_constr: &mut f64) {}
 
-}
-
-/// https://github.com/openmm/openmm/blob/master/platforms/cpu/src/CpuSETTLE.cpp
-pub(crate) fn settle_openmm(
-    mol: &mut WaterMol,
-    dt: f32,
-    cell: &SimBox,
-    virial_constr: &mut f64,
-) {
-
-}
+/// https://github.com/openmm/openmm/blob/b0c2c4d84ef1ac82984a577c7506912f5f91bafa/platforms/reference/include/ReferenceSETTLEAlgorithm.h#L4
+pub(crate) fn settle_openmm(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial_constr: &mut f64) {}
 
 /// The canonical Miyamoto & Kollman (1992) SETTLE algorithm.
 ///
 /// Instead of forcing a shape, this calculates the analytic position
 /// adjustments required to satisfy OH and HH distance constraints
 /// based on the unconstrained trajectories.
-pub(crate) fn settle_analytic(
-    mol: &mut WaterMol,
-    dt: f32,
-    cell: &SimBox,
-    virial_constr: &mut f64,
-) {
+pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial_constr: &mut f64) {
     let dt_inv = 1.0 / dt;
 
     // 1. Initial State
@@ -93,7 +74,7 @@ pub(crate) fn settle_analytic(
     // This is the core of SETTLE: We solve constraints in the frame of the distorted molecule.
 
     // Center of Mass (COM)
-    let com = (r_o * M_O + r_h0 * M_H + r_h1 * M_H) / M_TOT;
+    let com = (r_o * O_MASS + r_h0 * H_MASS + r_h1 * H_MASS) / MASS_WATER_MOL;
 
     // Vectors relative to COM
     let d_o = r_o - com;
@@ -187,9 +168,9 @@ pub(crate) fn settle_analytic(
     // Standard formula: Sum( r_com_relative * F_constraint )
     // F_constr_O = M_O * (final_o - r_o) / dt^2
 
-    let fc_o = (final_o - r_o) * (M_O * dt_inv * dt_inv);
-    let fc_h0 = (final_h0 - r_h0) * (M_H * dt_inv * dt_inv);
-    let fc_h1 = (final_h1 - r_h1) * (M_H * dt_inv * dt_inv);
+    let fc_o = (final_o - r_o) * (O_MASS * dt_inv * dt_inv);
+    let fc_h0 = (final_h0 - r_h0) * (H_MASS * dt_inv * dt_inv);
+    let fc_h1 = (final_h1 - r_h1) * (H_MASS * dt_inv * dt_inv);
 
     // Be sure your virial_constr expects energy units consistent with this.
     // This calculation is in (Mass * Length^2 / Time^2) -> Energy.

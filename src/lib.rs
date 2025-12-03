@@ -141,13 +141,12 @@ pub use water::ForcesOnWaterMol;
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 use crate::{
     ambient::BerendsenBarostat,
-    non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
+    non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
-    water::init::make_water_mols,
-    water::{WaterMol, WaterMolx8, WaterMolx16},
+    water::{WaterMol, WaterMolx8, WaterMolx16, init::make_water_mols},
 };
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
@@ -795,18 +794,14 @@ impl MdState {
             }
 
             // let mut p: Vec<Vec3> = Vec::new(); // to store the ref.
-            let p: Vec<_> = let atom_posits = match &mol.atom_posits {
-                Some(a) => {
-                    a.iter().map(|p| (*p).into()).collect()
-                }
-                None => {
-                    mol.atoms.iter().map(|a| a.posit.into()).collect()
-                }
+            let atom_posits: Vec<Vec3> = match &mol.atom_posits {
+                Some(a) => a.iter().map(|p| (*p).into()).collect(),
+                None => mol.atoms.iter().map(|a| a.posit.into()).collect(),
             };
 
             for (i, atom) in atoms.iter().enumerate() {
                 let mut atom =
-                    AtomDynamics::new(atom, atom_posits, i, mol.static_, mol.bonded_only)?;
+                    AtomDynamics::new(atom, &atom_posits, i, mol.static_, mol.bonded_only)?;
                 if let Some(vel) = &mol.atom_init_velocities {
                     if i >= vel.len() {
                         return Err(ParamError::new(

@@ -93,8 +93,6 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
         Err(_) => return,
     };
 
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
-
     for n_idx in 0..atoms.len() {
         if atoms[n_idx].element != Nitrogen {
             continue;
@@ -524,8 +522,6 @@ pub(in crate::param_inference) fn postprocess_n7_to_nu(
     adj_list: &[Vec<usize>],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
-
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -603,8 +599,6 @@ pub(in crate::param_inference) fn postprocess_na_to_n3(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
-
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -761,8 +755,6 @@ pub(in crate::param_inference) fn postprocess_cc_to_cd_ring_hetero(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen};
-
     for i in 0..atoms.len() {
         if atoms[i].element != Carbon {
             continue;
@@ -842,8 +834,6 @@ pub(in crate::param_inference) fn postprocess_sy_to_s6_if_nonaryl_sulfonamide(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen, Oxygen, Sulfur};
-
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
         Err(_) => return,
@@ -878,9 +868,9 @@ pub(in crate::param_inference) fn postprocess_sy_to_s6_if_nonaryl_sulfonamide(
             continue;
         }
 
-        let (n_idx, c_idx) = match (atoms[non_o[0]].element, atoms[non_o[1]].element) {
-            (Nitrogen, Carbon) => (non_o[0], non_o[1]),
-            (Carbon, Nitrogen) => (non_o[1], non_o[0]),
+        let c_idx = match (atoms[non_o[0]].element, atoms[non_o[1]].element) {
+            (Nitrogen, Carbon) => non_o[1],
+            (Carbon, Nitrogen) => non_o[0],
             _ => continue,
         };
 
@@ -910,9 +900,6 @@ pub(in crate::param_inference) fn postprocess_sy_to_s6_if_nonaryl_sulfonyl(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use BondType::Double;
-    use na_seq::Element::{Carbon, Nitrogen, Oxygen, Sulfur};
-
     let off = bond_offset(atoms.len(), bonds);
 
     let mut adj = vec![Vec::new(); atoms.len()];
@@ -1069,9 +1056,6 @@ pub(in crate::param_inference) fn postprocess_s6_to_sy_if_attached_to_nh2_only(
     adj: &[Vec<usize>],
     types: &mut [String],
 ) {
-    use BondType::{Double, Single};
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen, Oxygen, Sulfur};
-
     let off = bond_offset(atoms.len(), bonds);
 
     for s in 0..atoms.len() {
@@ -1196,8 +1180,6 @@ pub(in crate::param_inference) fn postprocess_n3_to_na_bridge_nd(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen};
-
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -1246,8 +1228,6 @@ pub(in crate::param_inference) fn postprocess_nv_to_n8_non_guanidinium(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen};
-
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
         Err(_) => return,
@@ -1304,8 +1284,6 @@ pub(in crate::param_inference) fn postprocess_cz_to_c2_guanidinium_mixed_n(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
-
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
         Err(_) => return,
@@ -1359,8 +1337,6 @@ fn is_terminal_guanidinium_nh2(
     adj: &[Vec<usize>],
     types: &[String],
 ) -> bool {
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
-
     // Centre must be carbon
     if atoms[c_idx].element != Carbon {
         return false;
@@ -1432,10 +1408,6 @@ pub(in crate::param_inference) fn postprocess_nd_to_nc_ring_no_n_neighbor(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use std::collections::VecDeque;
-
-    use na_seq::Element::{Hydrogen, Nitrogen};
-
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
         Err(_) => return,
@@ -1545,8 +1517,6 @@ pub(in crate::param_inference) fn postprocess_cz_to_cd_if_has_explicit_multibond
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::Carbon;
-
     for i in 0..atoms.len() {
         if atoms[i].element != Carbon {
             continue;
@@ -1584,8 +1554,6 @@ pub(in crate::param_inference) fn postprocess_n7_to_nu_if_exocyclic(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Hydrogen, Nitrogen};
-
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -1650,8 +1618,6 @@ pub(in crate::param_inference) fn postprocess_n3_to_n_if_attached_to_acyl_carbon
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen, Oxygen};
-
     fn is_carbonyl_like_carbon(j: usize, atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> bool {
         if atoms[j].element != Carbon {
             return false;
@@ -1730,8 +1696,6 @@ pub(in crate::param_inference) fn postprocess_nd_to_nc_only_for_c_s_motifs(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen, Sulfur};
-
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen || types[i].as_str() != "nd" {
             continue;
@@ -1801,8 +1765,6 @@ pub(in crate::param_inference) fn postprocess_n3_to_nh_if_conjugated(
             return false;
         }
 
-        use std::collections::VecDeque;
-
         for &nei in &adj[idx] {
             let mut visited = vec![false; adj.len()];
             visited[idx] = true;
@@ -1840,8 +1802,6 @@ pub(in crate::param_inference) fn postprocess_n3_to_nh_if_conjugated(
         if start == goal {
             return true;
         }
-
-        use std::collections::VecDeque;
 
         let mut visited = vec![false; adj.len()];
         visited[blocked] = true;
@@ -2053,16 +2013,12 @@ pub(in crate::param_inference) fn postprocess_tris_n_c_to_c2(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::{Carbon, Nitrogen};
-
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
         Err(_) => return,
     };
 
     fn is_in_ring(idx: usize, adj: &[Vec<usize>]) -> bool {
-        use std::collections::VecDeque;
-
         if adj[idx].len() < 2 {
             return false;
         }
@@ -2138,10 +2094,6 @@ pub(in crate::param_inference) fn postprocess_cz_to_ca_if_ring_no_n_neighbors(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use std::collections::VecDeque;
-
-    use na_seq::Element::{Carbon, Hydrogen, Nitrogen};
-
     let adj = match build_adjacency_list(atoms, bonds) {
         Ok(a) => a,
         Err(_) => return,
@@ -2208,8 +2160,6 @@ pub(in crate::param_inference) fn postprocess_cz_to_ca_if_has_aromatic_bond(
     bonds: &[BondGeneric],
     types: &mut [String],
 ) {
-    use na_seq::Element::Carbon;
-
     for i in 0..atoms.len() {
         if atoms[i].element != Carbon {
             continue;
@@ -2537,109 +2487,6 @@ pub(in crate::param_inference) fn postprocess_n7_to_n6_if_small_ring(
         }
 
         types[n] = "n6".to_owned();
-    }
-}
-
-pub(in crate::param_inference) fn postprocess_ce_to_cf_if_amidine_like(
-    atoms: &[AtomGeneric],
-    bonds: &[BondGeneric],
-    adj: &[Vec<usize>],
-    types: &mut [String],
-) {
-    fn bond_offset(atoms_len: usize, bonds: &[BondGeneric]) -> usize {
-        let mut max_sn = 0usize;
-        for b in bonds {
-            max_sn = max_sn.max(b.atom_0_sn as usize);
-            max_sn = max_sn.max(b.atom_1_sn as usize);
-        }
-        if max_sn == atoms_len { 1 } else { 0 }
-    }
-
-    let off = bond_offset(atoms.len(), bonds);
-
-    fn bond_ty(a: usize, b: usize, bonds: &[BondGeneric], off: usize) -> Option<BondType> {
-        for bo in bonds {
-            let i0 = (bo.atom_0_sn as usize).saturating_sub(off);
-            let i1 = (bo.atom_1_sn as usize).saturating_sub(off);
-            if (i0 == a && i1 == b) || (i0 == b && i1 == a) {
-                return Some(bo.bond_type);
-            }
-        }
-        None
-    }
-
-    fn is_aromatic_atom(i: usize, adj: &[Vec<usize>], bonds: &[BondGeneric], off: usize) -> bool {
-        adj[i]
-            .iter()
-            .any(|&j| bond_ty(i, j, bonds, off) == Some(BondType::Aromatic))
-    }
-
-    for c in 0..atoms.len() {
-        if types[c].as_str() != "ce" {
-            continue;
-        }
-        if atoms[c].element != Carbon {
-            continue;
-        }
-
-        // Guard 1: never rewrite an actually-aromatic atom (prevents 010-style regressions)
-        if is_aromatic_atom(c, adj, bonds, off) {
-            continue;
-        }
-
-        let heavy: Vec<usize> = adj[c]
-            .iter()
-            .copied()
-            .filter(|&j| atoms[j].element != Hydrogen)
-            .collect();
-        if heavy.len() != 3 {
-            continue;
-        }
-
-        // Guard 2: amidine-like center must have exactly two N heavy neighbors
-        let n_count = heavy
-            .iter()
-            .filter(|&&j| atoms[j].element == Nitrogen)
-            .count();
-        if n_count != 2 {
-            continue;
-        }
-
-        let mut has_double_to_n = false;
-        let mut has_single_to_n = false;
-        let mut bonded_to_aromatic_carbon = false;
-
-        let mut ok = true;
-
-        for &j in &heavy {
-            let bt = match bond_ty(c, j, bonds, off) {
-                Some(bt) => bt,
-                None => {
-                    ok = false;
-                    break;
-                }
-            };
-
-            match (atoms[j].element, bt) {
-                (Nitrogen, Double) => has_double_to_n = true,
-                (Nitrogen, Single) => has_single_to_n = true,
-                (Carbon, Single) => {
-                    // Topology-based aromatic check (NOT type-based)
-                    if is_aromatic_atom(j, adj, bonds, off) {
-                        bonded_to_aromatic_carbon = true;
-                    }
-                }
-                (_, Single) => {}
-                _ => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-
-        if ok && has_double_to_n && has_single_to_n && !bonded_to_aromatic_carbon {
-            types[c] = "cf".to_owned();
-        }
     }
 }
 

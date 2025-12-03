@@ -14,7 +14,6 @@ use rand_distr::{ChiSquared, Distribution, StandardNormal};
 
 use crate::{
     ACCEL_CONVERSION, ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
-
     water::{H_MASS, O_MASS, WaterMol},
 };
 

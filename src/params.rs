@@ -12,7 +12,7 @@ use bio_files::{
     md_params::{
         AngleBendingParams, BondStretchingParams, ChargeParams, ChargeParamsProtein,
         DihedralParams, ForceFieldParams, LjParams, MassParams, NucleotideTemplate,
-        load_amino_charges, parse_lib, parse_lib_lipid, parse_lib_nucleic_acid, parse_lib_peptide,
+        load_amino_charges, parse_lib_lipid, parse_lib_nucleic_acid, parse_lib_peptide,
     },
 };
 use na_seq::{
