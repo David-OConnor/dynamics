@@ -516,8 +516,8 @@ fn is_carbonyl_improper_candidate(key: (&str, &str, &str, &str)) -> bool {
     let ts = [a, b, c, d];
 
     // Require at least one carbonyl carbon "c" and one carbonyl oxygen "o"
-    let has_c = ts.iter().any(|t| *t == "c");
-    let has_o = ts.iter().any(|t| *t == "o");
+    let has_c = ts.contains(&"c");
+    let has_o = ts.contains(&"o");
 
     if !(has_c && has_o) {
         return false;

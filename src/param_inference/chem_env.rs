@@ -113,10 +113,10 @@ impl NeighborPattern {
             }
         }
 
-        if let Some(rs) = self.ring_size {
-            if !env_all[nb].ring_sizes.contains(&rs) {
-                return false;
-            }
+        if let Some(rs) = self.ring_size
+            && !env_all[nb].ring_sizes.contains(&rs)
+        {
+            return false;
         }
 
         if self.requires_db || self.requires_tb {
@@ -143,10 +143,10 @@ impl NeighborPattern {
             }
         }
 
-        if let Some(ref hop) = self.second_hop {
-            if !hop.matches_second_hop(center, nb, atoms, env_all, bonds, adj) {
-                return false;
-            }
+        if let Some(ref hop) = self.second_hop
+            && !hop.matches_second_hop(center, nb, atoms, env_all, bonds, adj)
+        {
+            return false;
         }
 
         true
@@ -299,7 +299,7 @@ impl From<&str> for ChemEnvPattern {
             let mut other_flags = Vec::new();
 
             if let Some(flags) = flags_str {
-                for tok in flags.split(|c| c == '.' || c == ',') {
+                for tok in flags.split(['.', ',']) {
                     let tok = tok.trim();
                     if tok.is_empty() {
                         continue;

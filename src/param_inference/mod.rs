@@ -416,10 +416,10 @@ fn atomic_property_matches(
     let env = &env_all[idx];
 
     // RGn ring size (e.g. [RG3], [RG4])
-    if let Some(ring_size) = parse_ring_size(prop) {
-        if !env.ring_sizes.contains(&ring_size) {
-            return false;
-        }
+    if let Some(ring_size) = parse_ring_size(prop)
+        && !env.ring_sizes.contains(&ring_size)
+    {
+        return false;
     }
 
     // Any AR* tag → must be aromatic
@@ -428,29 +428,29 @@ fn atomic_property_matches(
     }
 
     // Gently handle [DB] / [TB] when they appear as plain tokens inside [...]
-    if let (Some(l), Some(r)) = (prop.find('['), prop.rfind(']')) {
-        if r > l + 1 {
-            let inside = &prop[l + 1..r];
-            let tokens: Vec<&str> = inside.split(',').map(str::trim).collect();
+    if let (Some(l), Some(r)) = (prop.find('['), prop.rfind(']'))
+        && r > l + 1
+    {
+        let inside = &prop[l + 1..r];
+        let tokens: Vec<&str> = inside.split(',').map(str::trim).collect();
 
-            let mut needs_db = false;
-            let mut needs_tb = false;
+        let mut needs_db = false;
+        let mut needs_tb = false;
 
-            for t in tokens {
-                match t {
-                    "DB" => needs_db = true,
-                    "TB" => needs_tb = true,
-                    _ => {}
-                }
+        for t in tokens {
+            match t {
+                "DB" => needs_db = true,
+                "TB" => needs_tb = true,
+                _ => {}
             }
+        }
 
-            if needs_db && env.num_double_bonds == 0 {
-                return false;
-            }
+        if needs_db && env.num_double_bonds == 0 {
+            return false;
+        }
 
-            if needs_tb && env.num_triple_bonds == 0 {
-                return false;
-            }
+        if needs_tb && env.num_triple_bonds == 0 {
+            return false;
         }
     }
 
@@ -477,22 +477,22 @@ fn matches_def(
         return false;
     }
 
-    if let Some(e) = def.element {
-        if atom.element != e {
-            return false;
-        }
+    if let Some(e) = def.element
+        && atom.element != e
+    {
+        return false;
     }
 
-    if let Some(n) = def.attached_atoms {
-        if env.degree != n {
-            return false;
-        }
+    if let Some(n) = def.attached_atoms
+        && env.degree != n
+    {
+        return false;
     }
 
-    if let Some(nh) = def.attached_h {
-        if env.num_attached_h != nh {
-            return false;
-        }
+    if let Some(nh) = def.attached_h
+        && env.num_attached_h != nh
+    {
+        return false;
     }
 
     // --- SPECIAL: ce should not grab plain non-conjugated alkenes ---
@@ -542,10 +542,8 @@ fn matches_def(
     }
 
     // --- SPECIAL: keep nb exocyclic ---
-    if def.name == "nb" {
-        if !env.ring_sizes.is_empty() {
-            return false;
-        }
+    if def.name == "nb" && !env.ring_sizes.is_empty() {
+        return false;
     }
 
     // --- SPECIAL: ring sp2 N in conjugated system ---
@@ -561,12 +559,10 @@ fn matches_def(
         for b in bonds {
             let i = b.atom_0_sn as usize - 1;
             let j = b.atom_1_sn as usize - 1;
-            if i == idx || j == idx {
-                if matches!(b.bond_type, BondType::Double) {
-                    let other = if i == idx { j } else { i };
-                    if atoms[other].element != Element::Hydrogen {
-                        has_db = true;
-                    }
+            if i == idx || j == idx && matches!(b.bond_type, BondType::Double) {
+                let other = if i == idx { j } else { i };
+                if atoms[other].element != Element::Hydrogen {
+                    has_db = true;
                 }
             }
         }
@@ -585,10 +581,10 @@ fn matches_def(
     if let Some(ref prop) = def.atomic_property {
         // don't re-interpret properties for c / cd; we already handle them
         if def.name != "c" && def.name != "cd" {
-            if let Some(ring_size) = parse_ring_size(prop) {
-                if !env.ring_sizes.contains(&ring_size) {
-                    return false;
-                }
+            if let Some(ring_size) = parse_ring_size(prop)
+                && !env.ring_sizes.contains(&ring_size)
+            {
+                return false;
             }
 
             if prop.contains("AR") {
@@ -641,17 +637,17 @@ fn matches_def(
         }
     }
 
-    if let Some(ref env_str) = def.chem_env {
-        if env_str != "&" {
-            if atom.element == Element::Hydrogen {
-                if !hydrogen_env_matches(env_str, idx, atoms, env_all, adj) {
-                    return false;
-                }
-            } else {
-                let pattern: ChemEnvPattern = env_str.as_str().into();
-                if !pattern.matches(idx, atoms, env_all, bonds, adj) {
-                    return false;
-                }
+    if let Some(ref env_str) = def.chem_env
+        && env_str != "&"
+    {
+        if atom.element == Element::Hydrogen {
+            if !hydrogen_env_matches(env_str, idx, atoms, env_all, adj) {
+                return false;
+            }
+        } else {
+            let pattern: ChemEnvPattern = env_str.as_str().into();
+            if !pattern.matches(idx, atoms, env_all, bonds, adj) {
+                return false;
             }
         }
     }
@@ -778,32 +774,32 @@ pub fn find_ff_types(
     postprocess_nv_to_n8_non_guanidinium(atoms, bonds, &mut result);
     postprocess_n3_to_na_bridge_nd(atoms, &adj, &env, &mut result);
 
-    postprocess_cz_to_c2_guanidinium_mixed_n(atoms, &bonds, &mut result);
-    postprocess_tris_n_c_to_c2(atoms, &bonds, &mut result);
-    postprocess_nd_to_nc_ring_no_n_neighbor(atoms, &bonds, &mut result);
-    postprocess_cz_to_cd_if_has_explicit_multibond(atoms, &bonds, &mut result);
-    postprocess_nd_to_nc_if_double_to_cd(atoms, &bonds, &mut result);
-    postprocess_nd_to_nc_only_for_c_s_motifs(atoms, &bonds, &mut result);
-    postprocess_n7_to_nu_if_exocyclic(atoms, &bonds, &mut result);
-    postprocess_n3_to_n_if_attached_to_acyl_carbon(atoms, &bonds, &mut result);
-    postprocess_n3_to_nh_if_conjugated(atoms, &bonds, &adj, &mut result);
-    postprocess_cz_to_ca_if_ring_no_n_neighbors(atoms, &bonds, &mut result);
-    postprocess_cz_to_ca_if_has_aromatic_bond(atoms, &bonds, &mut result);
+    postprocess_cz_to_c2_guanidinium_mixed_n(atoms, bonds, &mut result);
+    postprocess_tris_n_c_to_c2(atoms, bonds, &mut result);
+    postprocess_nd_to_nc_ring_no_n_neighbor(atoms, bonds, &mut result);
+    postprocess_cz_to_cd_if_has_explicit_multibond(atoms, bonds, &mut result);
+    postprocess_nd_to_nc_if_double_to_cd(atoms, bonds, &mut result);
+    postprocess_nd_to_nc_only_for_c_s_motifs(atoms, bonds, &mut result);
+    postprocess_n7_to_nu_if_exocyclic(atoms, bonds, &mut result);
+    postprocess_n3_to_n_if_attached_to_acyl_carbon(atoms, bonds, &mut result);
+    postprocess_n3_to_nh_if_conjugated(atoms, bonds, &adj, &mut result);
+    postprocess_cz_to_ca_if_ring_no_n_neighbors(atoms, bonds, &mut result);
+    postprocess_cz_to_ca_if_has_aromatic_bond(atoms, bonds, &mut result);
 
-    postprocess_c2_to_cf_if_conjugated_to_carbonyl(atoms, &bonds, &adj, &mut result);
-    postprocess_c2_to_ce_if_conjugated_to_carbonyl(atoms, &bonds, &adj, &mut result);
+    postprocess_c2_to_cf_if_conjugated_to_carbonyl(atoms, bonds, &adj, &mut result);
+    postprocess_c2_to_ce_if_conjugated_to_carbonyl(atoms, bonds, &adj, &mut result);
 
-    postprocess_cc_to_ca_if_has_aromatic_bond(atoms, &bonds, &mut result);
-    postprocess_cd_to_ca_if_has_aromatic_bond(atoms, &bonds, &mut result);
+    postprocess_cc_to_ca_if_has_aromatic_bond(atoms, bonds, &mut result);
+    postprocess_cd_to_ca_if_has_aromatic_bond(atoms, bonds, &mut result);
     //
     postprocess_h_to_hx_alpha_carbon(atoms, &adj, &mut result);
     postprocess_n7_to_n6_if_small_ring(atoms, bonds, &adj, &mut result);
     postprocess_sy_to_s6_if_nonaryl_sulfonyl(atoms, bonds, &mut result);
     postprocess_s6_to_sy_if_primary_sulfonamide(atoms, &adj, &mut result);
 
-    postprocess_n3_to_na_if_attached_to_alkenyl_c(atoms, &bonds, &adj, &mut result);
-    postprocess_c2_to_ce_if_vinylic_attached_to_aromatic(atoms, &bonds, &adj, &mut result);
-    postprocess_n1_to_n2_unless_sp_like(atoms, &bonds, &adj, &mut result);
+    postprocess_n3_to_na_if_attached_to_alkenyl_c(atoms, bonds, &adj, &mut result);
+    postprocess_c2_to_ce_if_vinylic_attached_to_aromatic(atoms, bonds, &adj, &mut result);
+    postprocess_n1_to_n2_unless_sp_like(atoms, bonds, &adj, &mut result);
 
     let elapsed = start.elapsed().as_micros();
     println!("Complete in {elapsed} μs");
@@ -859,8 +855,7 @@ pub fn update_small_mol_params(
         atom.force_field_type = Some(ff_types[i].clone());
     }
 
-    let charge =
-        infer_charge(&atoms, &bonds).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let charge = infer_charge(atoms, bonds).map_err(|e| io::Error::other(e))?;
 
     for (i, atom) in atoms.iter_mut().enumerate() {
         atom.partial_charge = Some(charge[i]);
@@ -869,7 +864,7 @@ pub fn update_small_mol_params(
     let adj_list = match adjacency_list {
         Some(a) => a,
         None => &build_adjacency_list(atoms, bonds)
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Problem building adjacency list"))?,
+            .map_err(|_| io::Error::other("Problem building adjacency list"))?,
     };
 
     let params = assign_missing_params(atoms, adj_list, gaff2)?;

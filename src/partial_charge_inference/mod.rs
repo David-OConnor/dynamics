@@ -46,6 +46,7 @@ pub(crate) struct AtomVocab {
 }
 
 impl AtomVocab {
+    #[allow(unused)] // Unused in the lib, but not training.
     pub fn new(mol2_paths: &[PathBuf]) -> candle_core::Result<Self> {
         let mut elems: BTreeSet<String> = BTreeSet::new();
         let mut ff_types: BTreeSet<String> = BTreeSet::new();
@@ -356,7 +357,7 @@ pub fn infer_charge(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> candle_core
     let model_bytes = PARAM_INFERENCE_MODEL;
     let vocab_bytes = PARAM_INFERENCE_VOCAB;
 
-    let vocabs: AtomVocab = load_from_bytes(&vocab_bytes)?;
+    let vocabs: AtomVocab = load_from_bytes(vocab_bytes)?;
 
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();

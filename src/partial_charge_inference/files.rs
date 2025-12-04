@@ -57,7 +57,7 @@ pub(crate) fn load<T: Decode<()>>(path: &Path) -> io::Result<T> {
         Ok(v) => v,
         Err(_) => {
             eprintln!("Error loading from file. Did the format change?");
-            return Err(io::Error::new(ErrorKind::Other, "error loading"));
+            return Err(io::Error::other("error loading"));
         }
     };
     Ok(decoded)
@@ -67,11 +67,11 @@ pub(crate) fn load<T: Decode<()>>(path: &Path) -> io::Result<T> {
 pub(crate) fn load_from_bytes<T: Decode<()>>(buffer: &[u8]) -> io::Result<T> {
     let config = bincode::config::standard();
 
-    let (decoded, _len) = match bincode::decode_from_slice(&buffer, config) {
+    let (decoded, _len) = match bincode::decode_from_slice(buffer, config) {
         Ok(v) => v,
         Err(_) => {
             eprintln!("Error loading from file. Did the format change?");
-            return Err(io::Error::new(ErrorKind::Other, "error loading"));
+            return Err(io::Error::other("error loading"));
         }
     };
     Ok(decoded)

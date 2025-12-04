@@ -125,11 +125,9 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
             let a0 = b.atom_0_sn as usize - 1;
             let a1 = b.atom_1_sn as usize - 1;
 
-            if a0 == n_idx || a1 == n_idx {
-                if !matches!(b.bond_type, Single | Aromatic) {
-                    has_multiple_bond = true;
-                    break;
-                }
+            if a0 == n_idx || a1 == n_idx && !matches!(b.bond_type, Single | Aromatic) {
+                has_multiple_bond = true;
+                break;
             }
         }
 
@@ -164,13 +162,11 @@ pub(in crate::param_inference) fn postprocess_nu_to_n7(
                 let a0 = b.atom_0_sn as usize - 1;
                 let a1 = b.atom_1_sn as usize - 1;
 
-                if a0 == c_idx || a1 == c_idx {
-                    if matches!(b.bond_type, Double) {
-                        let other = if a0 == c_idx { a1 } else { a0 };
-                        if atoms[other].element == Nitrogen {
-                            has_double_to_n = true;
-                            break;
-                        }
+                if a0 == c_idx || a1 == c_idx && matches!(b.bond_type, Double) {
+                    let other = if a0 == c_idx { a1 } else { a0 };
+                    if atoms[other].element == Nitrogen {
+                        has_double_to_n = true;
+                        break;
                     }
                 }
             }
@@ -273,7 +269,7 @@ pub(in crate::param_inference) fn postprocess_ring_n_types(
                 continue;
             }
             let nb_env = &env_all[nb];
-            if nb_env.is_aromatic && nb_env.ring_sizes.iter().any(|&s| s == 6) {
+            if nb_env.is_aromatic && nb_env.ring_sizes.contains(&6) {
                 fused_aryl_neighbor = true;
                 break;
             }

@@ -100,8 +100,7 @@ impl ForceFieldParamsIndexed {
             // Mass
             if let Some(mass) = params.mass.get(ff_type) {
                 result.mass.insert(i, mass.clone());
-            } else {
-                if ff_type.starts_with("C") {
+            } else if ff_type.starts_with("C") {
                     match params.mass.get("C") {
                         Some(m) => {
                             result.mass.insert(i, m.clone());
@@ -388,26 +387,24 @@ impl ForceFieldParamsIndexed {
                                 d.divider = 1;
                             }
                             result.dihedral.insert(idx_key, dihes);
+                        } else if allow_missing_dihedral_params {
+                            // Default of no constraint
+                            result.dihedral.insert(
+                                idx_key,
+                                vec![DihedralParams {
+                                    atom_types: key,
+                                    divider: 1,
+                                    barrier_height: 0.,
+                                    phase: 0.,
+                                    periodicity: 1,
+                                    comment: None,
+                                }],
+                            );
                         } else {
-                            if allow_missing_dihedral_params {
-                                // Default of no constraint
-                                result.dihedral.insert(
-                                    idx_key,
-                                    vec![DihedralParams {
-                                        atom_types: key,
-                                        divider: 1,
-                                        barrier_height: 0.,
-                                        phase: 0.,
-                                        periodicity: 1,
-                                        comment: None,
-                                    }],
-                                );
-                            } else {
-                                return Err(ParamError::new(&format!(
-                                    "\nMD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}. (atom0 sn: {})",
-                                    atoms[i0].serial_number
-                                )));
-                            }
+                            return Err(ParamError::new(&format!(
+                                "\nMD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}. (atom0 sn: {})",
+                                atoms[i0].serial_number
+                            )));
                         }
                     }
                 }

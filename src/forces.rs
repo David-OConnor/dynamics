@@ -2,8 +2,6 @@ use lin_alg::f32::Vec3;
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 
-#[cfg(target_arch = "x86_64")]
-
 /// CPU LJ force. See notes on `V_lj()`. We set up the inv_dist param to share computation
 /// with short-range Coulomb.
 /// This assumes diff (and dir) is in order tgt - src.

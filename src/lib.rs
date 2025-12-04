@@ -39,7 +39,7 @@
 //! - A thermostat and barostat
 //! - An energy-measuring system.
 //! - An integrated tool for inferring atom types, bonded-parameter overrides, and partial charges for arbitrary
-//! small organic molecules. (Similar to Amber's Antechamber)
+//!   small organic molecules. (Similar to Amber's Antechamber)
 //!
 //! --------
 //! A timing test, using bond-stretching forces between two atoms only. Measure the period
@@ -745,7 +745,7 @@ impl MdState {
                             &mut atoms,
                             &mol.bonds,
                             Some(&adjacency_list),
-                            &param_set.small_mol.as_ref().unwrap(),
+                            param_set.small_mol.as_ref().unwrap(),
                         )
                         .map_err(|_| ParamError {
                             descrip: "Problem inferring params".to_string(),

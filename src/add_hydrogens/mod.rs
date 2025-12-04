@@ -103,10 +103,7 @@ fn make_h_digit_map(ff_map: &ProtFfChargeMap, ph: f32) -> DigitMap {
                         | AminoAcidProtenationVariant::Hie
                         | AminoAcidProtenationVariant::Hip
                 ) {
-                    match his_selected {
-                        Some(sel) if sel == v => true,
-                        _ => false,
-                    }
+                    matches!(his_selected, Some(sel) if sel == v)
                 } else {
                     variant_allowed_at_ph(v, ph)
                 }
@@ -168,10 +165,9 @@ fn make_h_digit_map(ff_map: &ProtFfChargeMap, ph: f32) -> DigitMap {
         // variants, like HIE and HID for HIS.
         if let Some(existing) = result.get_mut(&aa) {
             for (designator, mut digits) in per_heavy {
-                existing
-                    .entry(designator)
-                    .or_default()
-                    .extend(digits.drain(..));
+                                existing
+                                     .entry(designator)
+                                     .or_default().append(&mut digits);
             }
             for v in existing.values_mut() {
                 v.sort_unstable();
@@ -236,9 +232,9 @@ pub(crate) fn h_type_in_res_sidechain(
                 }
             }
             _ => {
-                return Err(ParamError::new(&format!(
-                    "Error assigning H type: Non-hetero parent, but missing AA."
-                )));
+                return Err(ParamError::new(
+                    "Error assigning H type: Non-hetero parent, but missing AA.",
+                ));
             }
         };
 
@@ -384,7 +380,7 @@ pub(crate) fn h_type_in_res_sidechain(
 /// todo: This needs to add bonds too!
 pub fn populate_hydrogens_dihedrals(
     atoms: &mut Vec<AtomGeneric>,
-    residues: &mut Vec<ResidueGeneric>,
+    residues: &mut[ResidueGeneric],
     chains: &mut [ChainGeneric],
     ff_map: &ProtFfChargeMapSet,
     ph: f32,
@@ -406,7 +402,7 @@ pub fn populate_hydrogens_dihedrals(
     let res_len = residues.len();
 
     // todo: The Clone avoids a double-borrow error below. Come back to /avoid if possible.
-    let res_clone = residues.clone();
+    let res_clone = residues.to_owned();
 
     // todo: Handle the N and C term A/R.
     let digit_map = make_h_digit_map(&ff_map.internal, ph);

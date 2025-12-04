@@ -219,11 +219,11 @@ fn add_h_sc_het(
 
         let mut aa = None;
         for res in residues {
-            if res.atom_sns.contains(&atom.serial_number) {
-                if let ResidueType::AminoAcid(a) = &res.res_type {
-                    aa = Some(*a);
-                    break;
-                }
+            if res.atom_sns.contains(&atom.serial_number)
+                && let ResidueType::AminoAcid(a) = &res.res_type
+            {
+                aa = Some(*a);
+                break;
             }
         }
 
@@ -363,12 +363,11 @@ fn add_h_sc_het(
                         }
 
                         // Trp planar ring junctions; don't add an H.
-                        if let Some(aa) = aa {
-                            if aa == AminoAcid::Trp
-                                && matches!(parent_tir, AtomTypeInRes::CD2 | AtomTypeInRes::CE2)
-                            {
-                                continue;
-                            }
+                        if let Some(aa) = aa
+                            && aa == AminoAcid::Trp
+                            && matches!(parent_tir, AtomTypeInRes::CD2 | AtomTypeInRes::CE2)
+                        {
+                            continue;
                         }
 
                         // Planar C arrangement.
@@ -406,10 +405,11 @@ fn add_h_sc_het(
             Nitrogen => {
                 // No H on this His ring N. (There is on NE2 though)
                 // todo: this might depend on the protonation state.
-                if let Some(aa) = aa {
-                    if aa == AminoAcid::His && *parent_tir == AtomTypeInRes::ND1 {
-                        continue;
-                    }
+                if let Some(aa) = aa
+                    && aa == AminoAcid::His
+                    && *parent_tir == AtomTypeInRes::ND1
+                {
+                    continue;
                 }
                 match atoms_bonded.len() {
                     1 => unsafe {

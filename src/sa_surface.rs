@@ -63,7 +63,7 @@ pub fn vol_take_up_by_atoms(atoms: &[AtomDynamics]) -> f32 {
 
     // Fill signed-squared-distance field
     for a in atoms {
-        let center: Vec3 = a.posit.into();
+        let center = a.posit;
         let rad = a.element.vdw_radius() + SOLVENT_RAD;
         let rad2 = rad * rad;
 

@@ -9,8 +9,8 @@ pub(in crate::param_inference) type AtCor = HashMap<String, (u8, Vec<String>)>;
 
 /// From `PARM` and `EQUA` lines in `PARMCHK.DAT`.
 /// Example:
-/// PARM 	C	1		0	12.01	0	6
-/// EQUA 	c
+/// PARM     C    1        0    12.01    0    6
+/// EQUA     c
 #[derive(Debug)]
 pub(in crate::param_inference) struct Parm {
     /// PARM type, e.g. "C"

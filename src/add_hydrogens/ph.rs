@@ -9,7 +9,7 @@
 //!
 //! At neutral pH (~7):
 //! - His becomes neutral (we pick HIE by default here). Only HE* hydrogens will be “valid”; HD* are not,
-//! unless we later swap to HID by an environment rule.
+//!   unless we later swap to HID by an environment rule.
 //! - ASP/GLU are deprotonated; ASH/GLH excluded.
 //! - CYS is protonated; CYM excluded.
 //! - LYS remains protonated; LYN excluded.

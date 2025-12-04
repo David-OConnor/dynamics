@@ -42,13 +42,10 @@ impl MissingParams {
                         "Error finding missing bond params for param inference: Missing FF type {} - {}",
                         atoms[i0].serial_number, atoms[i1].serial_number
                     );
-                    return Err(io::Error::new(
-                        ErrorKind::Other,
-                        format!(
-                            "Missing FF type: {} - {}",
-                            atoms[i0].serial_number, atoms[i1].serial_number
-                        ),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "Missing FF type: {} - {}",
+                        atoms[i0].serial_number, atoms[i1].serial_number
+                    )));
                 }
 
                 let type_0 = atoms[i0].force_field_type.as_ref().unwrap();
@@ -75,7 +72,7 @@ impl MissingParams {
                     eprintln!(
                         "Error finding missing valence angles for param inference: Missing FF type."
                     );
-                    return Err(io::Error::new(ErrorKind::Other, "Missing FF type"));
+                    return Err(io::Error::other("Missing FF type"));
                 }
 
                 let type_n0 = atoms[n0].force_field_type.as_ref().unwrap();
@@ -124,7 +121,7 @@ impl MissingParams {
                             eprintln!(
                                 "Error finding missing dihedrals for param inference: Missing FF type."
                             );
-                            return Err(io::Error::new(ErrorKind::Other, "Missing FF type"));
+                            return Err(io::Error::other("Missing FF type"));
                         }
 
                         let type_0 = atoms[i0].force_field_type.as_ref().unwrap();
@@ -178,7 +175,7 @@ impl MissingParams {
                             eprintln!(
                                 "Error finding missing improper dihedrals for param inference: Missing FF type."
                             );
-                            return Err(io::Error::new(ErrorKind::Other, "Missing FF type"));
+                            return Err(io::Error::other("Missing FF type"));
                         }
 
                         let type_0 = atoms[sat0].force_field_type.as_ref().unwrap();

@@ -63,12 +63,12 @@ const SIM_DT: f32 = 0.001;
 /// - Compute the solvent-free volume using an isosurface
 /// - Compute the number of molecules to add
 /// - Add them on a regular grid with random orientations, and velocities in a random distribution
-/// that matches the target temperature. Move molecules to the edge that are too close to
-/// solute atoms.
+///   that matches the target temperature. Move molecules to the edge that are too close to
+///   solute atoms.
 /// - Run a brief simulation with the solute
-/// atoms as static, to intially position water molecules realistically. This
-/// takes advantage of our simulations' acceleration limits to set up realistic geometry using
-/// hydrogen bond networks, and breaks the crystal lattice.
+///   atoms as static, to intially position water molecules realistically. This
+///   takes advantage of our simulations' acceleration limits to set up realistic geometry using
+///   hydrogen bond networks, and breaks the crystal lattice.
 ///
 /// Note: If we're able to place most, but not all waters, the barostat should adjust the sim box size
 /// to account for the lower-than-specific pressure.
@@ -113,7 +113,7 @@ pub fn make_water_mols(
     let base = (n_mols as f32).cbrt().round().max(1.0) as usize;
     let n_x = base;
     let n_y = base;
-    let n_z = ((n_mols + (n_x * n_y) - 1) / (n_x * n_y)).max(1);
+    let n_z = n_mols.div_ceil(n_x * n_y);
 
     let spacing_x = lx / n_x as f32;
     let spacing_y = ly / n_y as f32;

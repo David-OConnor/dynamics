@@ -16,7 +16,7 @@ use bio_files::{
     },
 };
 use na_seq::{
-    AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element, Nucleotide,
+    AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element,
 };
 
 use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};

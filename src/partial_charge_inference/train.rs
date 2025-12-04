@@ -1,3 +1,5 @@
+!#[allow(unused)] // Unused in the lib, but not training.
+
 use std::path::{Path, PathBuf};
 
 use bio_files::{BondType, Mol2};
@@ -206,7 +208,7 @@ pub(crate) fn run_training() -> candle_core::Result<()> {
     let dataset = GeoStdMol2Dataset::new(&paths_mol2, vocabs);
 
     let mut varmap = candle_nn::VarMap::new();
-    let vb = VarBuilder::from_varmap(&mut varmap, DType::F32, &device);
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
 
     let model = MolGNN::new(vb, n_elems, n_atom_types, HIDDEN_DIM)?;
 
@@ -274,7 +276,7 @@ pub(crate) fn run_training() -> candle_core::Result<()> {
 
             opt.backward_step(&loss)?;
 
-            running_loss += f32::from(loss.to_scalar::<f32>()?);
+            running_loss += loss.to_scalar::<f32>()?;
         }
 
         let train_avg = running_loss / train_idxs.len() as f32;
@@ -307,7 +309,7 @@ pub(crate) fn run_training() -> candle_core::Result<()> {
             let charge_loss = diff.sqr()?.mean_all()?;
 
             let loss = charge_loss;
-            val_loss_sum += f32::from(loss.to_scalar::<f32>()?);
+            val_loss_sum += loss.to_scalar::<f32>()?;
         }
 
         let val_avg = val_loss_sum / val_idxs.len() as f32;
