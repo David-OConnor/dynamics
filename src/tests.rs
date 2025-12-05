@@ -53,7 +53,7 @@ fn test_forces_on_pair() {
         // Uncomment as required for validating individual processes.
         let cfg = MdConfig {
             overrides: MdOverrides {
-                allow_missing_dihedral_params: true,
+                // allow_missing_dihedral_params: true,
                 skip_water: true,
                 thermo_disabled: true,
                 baro_disabled: true,

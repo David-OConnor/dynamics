@@ -418,9 +418,6 @@ pub fn init_local_bond_vecs() {
         // Using generic tetrahedron geometry for now, since we don't have average measured angles.
         CALPHA_H_BOND = tetra.bond_d;
 
-        // todo temp
-        // CALPHA_H_BOND = Vec3::new(0.7, -1., 1.).to_normalized();
-
         CP_O_BOND = find_third_bond_vec(
             CP_N_BOND,
             CP_CALPHA_BOND,

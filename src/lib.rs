@@ -139,6 +139,8 @@ pub use water::ForcesOnWaterMol;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
+#[cfg(feature = "cuda")]
+use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
 use crate::{
     ambient::BerendsenBarostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
@@ -513,7 +515,6 @@ impl Default for SimBoxInit {
 /// for specific scenarios as well, e.g. if wishing to speed up computations for real-time use
 /// by removing long range forces.
 pub struct MdOverrides {
-    pub allow_missing_dihedral_params: bool,
     pub skip_water: bool,
     pub bonded_disabled: bool,
     pub coulomb_disabled: bool,
@@ -844,7 +845,7 @@ impl MdState {
             &atoms_md,
             &adjacency_list,
             cfg.hydrogen_constraint,
-            cfg.overrides.allow_missing_dihedral_params,
+            // cfg.overrides.allow_missing_dihedral_params,
         )?;
 
         let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());

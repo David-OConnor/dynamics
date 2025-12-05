@@ -90,7 +90,7 @@ impl ForceFieldParamsIndexed {
         // in case of fixed hydrogen.
         // h_constraints: &mut HydrogenConstraintInner,
         h_constraint: HydrogenConstraint,
-        allow_missing_dihedral_params: bool,
+        // allow_missing_dihedral_params: bool,
     ) -> Result<Self, ParamError> {
         let mut result = Self::default();
 
@@ -101,57 +101,56 @@ impl ForceFieldParamsIndexed {
             if let Some(mass) = params.mass.get(ff_type) {
                 result.mass.insert(i, mass.clone());
             } else if ff_type.starts_with("C") {
-                    match params.mass.get("C") {
-                        Some(m) => {
-                            result.mass.insert(i, m.clone());
-                            println!("Using C fallback mass for {ff_type}");
-                        }
-                        None => {
-                            return Err(ParamError::new(&format!(
-                                "\nMD failure: Missing mass params for {ff_type}"
-                            )));
-                        }
+                match params.mass.get("C") {
+                    Some(m) => {
+                        result.mass.insert(i, m.clone());
+                        println!("Using C fallback mass for {ff_type}");
                     }
-                } else if ff_type.starts_with("N") {
-                    match params.mass.get("N") {
-                        Some(m) => {
-                            result.mass.insert(i, m.clone());
-                            println!("Using N fallback mass for {ff_type}");
-                        }
-                        None => {
-                            return Err(ParamError::new(&format!(
-                                "\nMD failure: Missing mass params for {ff_type}"
-                            )));
-                        }
+                    None => {
+                        return Err(ParamError::new(&format!(
+                            "\nMD failure: Missing mass params for {ff_type}"
+                        )));
                     }
-                } else if ff_type.starts_with("O") {
-                    match params.mass.get("O") {
-                        Some(m) => {
-                            result.mass.insert(i, m.clone());
-                            println!("Using O fallback mass for {ff_type}");
-                        }
-                        None => {
-                            return Err(ParamError::new(&format!(
-                                "\nMD failure: Missing mass params for {ff_type}"
-                            )));
-                        }
-                    }
-                } else {
-                    result.mass.insert(
-                        i,
-                        MassParams {
-                            atom_type: "".to_string(),
-                            mass: atom.element.atomic_weight(),
-                            comment: None,
-                        },
-                    );
-
-                    println!("\nMissing mass params on {atom}; using element default.");
-
-                    // return Err(ParamError::new(&format!(
-                    //     "MD failure: Missing mass params for {ff_type}"
-                    // )));
                 }
+            } else if ff_type.starts_with("N") {
+                match params.mass.get("N") {
+                    Some(m) => {
+                        result.mass.insert(i, m.clone());
+                        println!("Using N fallback mass for {ff_type}");
+                    }
+                    None => {
+                        return Err(ParamError::new(&format!(
+                            "\nMD failure: Missing mass params for {ff_type}"
+                        )));
+                    }
+                }
+            } else if ff_type.starts_with("O") {
+                match params.mass.get("O") {
+                    Some(m) => {
+                        result.mass.insert(i, m.clone());
+                        println!("Using O fallback mass for {ff_type}");
+                    }
+                    None => {
+                        return Err(ParamError::new(&format!(
+                            "\nMD failure: Missing mass params for {ff_type}"
+                        )));
+                    }
+                }
+            } else {
+                result.mass.insert(
+                    i,
+                    MassParams {
+                        atom_type: "".to_string(),
+                        mass: atom.element.atomic_weight(),
+                        comment: None,
+                    },
+                );
+
+                println!("\nMissing mass params on {atom}; using element default.");
+
+                // return Err(ParamError::new(&format!(
+                //     "MD failure: Missing mass params for {ff_type}"
+                // )));
             }
 
             // Lennard-Jones / van der Waals
@@ -387,19 +386,20 @@ impl ForceFieldParamsIndexed {
                                 d.divider = 1;
                             }
                             result.dihedral.insert(idx_key, dihes);
-                        } else if allow_missing_dihedral_params {
-                            // Default of no constraint
-                            result.dihedral.insert(
-                                idx_key,
-                                vec![DihedralParams {
-                                    atom_types: key,
-                                    divider: 1,
-                                    barrier_height: 0.,
-                                    phase: 0.,
-                                    periodicity: 1,
-                                    comment: None,
-                                }],
-                            );
+                        // }
+                        // else if allow_missing_dihedral_params {
+                        //     // Default of no constraint
+                        //     result.dihedral.insert(
+                        //         idx_key,
+                        //         vec![DihedralParams {
+                        //             atom_types: key,
+                        //             divider: 1,
+                        //             barrier_height: 0.,
+                        //             phase: 0.,
+                        //             periodicity: 1,
+                        //             comment: None,
+                        //         }],
+                        //     );
                         } else {
                             return Err(ParamError::new(&format!(
                                 "\nMD failure: Missing dihedral params for {type_0}-{type_1}-{type_2}-{type_3}. (atom0 sn: {})",

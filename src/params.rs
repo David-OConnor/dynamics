@@ -15,9 +15,7 @@ use bio_files::{
         load_amino_charges, parse_lib_lipid, parse_lib_nucleic_acid, parse_lib_peptide,
     },
 };
-use na_seq::{
-    AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element,
-};
+use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element};
 
 use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};
 

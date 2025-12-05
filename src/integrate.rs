@@ -15,7 +15,9 @@ use crate::{
     ambient::{TAU_TEMP_DEFAULT, TAU_TEMP_WATER_INIT, measure_instantaneous_pressure},
     water::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
-        settle::{RESET_ANGLE_RATIO, reset_angle, settle_drift},
+        settle::{
+            RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle, settle_analytic, settle_drift,
+        },
     },
 };
 
@@ -347,7 +349,9 @@ impl MdState {
             w.h1.vel += w.h1.accel * dt_kick;
 
             // integrate_rigid_water(
-            settle_drift(
+            // settle_drift(
+            // settle_analytic(
+            integrate_rigid_water(
                 w,
                 dt_drift,
                 &self.cell,
@@ -419,7 +423,9 @@ impl MdState {
 
         for w in &mut self.water {
             // integrate_rigid_water(
-            settle_drift(
+            // settle_drift(
+            // settle_analytic(
+            integrate_rigid_water(
                 w,
                 dt,
                 &self.cell,

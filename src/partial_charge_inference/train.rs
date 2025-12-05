@@ -1,4 +1,4 @@
-!#[allow(unused)] // Unused in the lib, but not training.
+#![allow(unused)] // Unused in the lib, but not training.
 
 use std::path::{Path, PathBuf};
 

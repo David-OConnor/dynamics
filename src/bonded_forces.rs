@@ -5,6 +5,7 @@ const EPS: f32 = 1e-8;
 
 /// Returns the force on the atom at position 0. Negate this for the force on posit 1.
 /// Also returns potential energy.
+/// For a reference, see the `Bond stretching` section of [this guide](https://manual.gromacs.org/2024.4/reference-manual/functions/bonded-interactions.html)
 pub fn f_bond_stretching(
     posit_0: Vec3,
     posit_1: Vec3,
@@ -58,15 +59,16 @@ pub fn f_angle_bending(
     let Δθ = params.theta_0 - θ;
     let dV_dθ = 2. * params.k * Δθ;
 
+    // c is the vector normal to the plane defined by the 3 atoms
     let c = bond_vec_01.cross(bond_vec_21);
-    let c_len2 = c.magnitude_squared().max(EPS); // was: c_len2 without guard + early return
+    let c_len_sq = c.magnitude_squared().max(EPS);
 
-    let geom_i = (c.cross(bond_vec_01) * b_vec_21_len) / c_len2;
-    let geom_k = (bond_vec_21.cross(c) * b_vec_01_len) / c_len2;
+    let grad_atom0 = (c.cross(bond_vec_01) * b_vec_21_len) / (c_len_sq * b_vec_01_len);
+    let grad_atom1 = (bond_vec_21.cross(c) * b_vec_01_len) / (c_len_sq * b_vec_21_len);
 
-    let f_0 = -geom_i * dV_dθ;
-    let f_2 = -geom_k * dV_dθ;
-    let f_1 = -(f_0 + f_2);
+    let f_0 = -grad_atom0 * dV_dθ;
+    let f_2 = -grad_atom1 * dV_dθ;
+    let f_1 = -(f_0 + f_2); // Newton's 3rd law
 
     let f = (f_0, f_1, f_2);
     let energy = dV_dθ * Δθ;
@@ -82,9 +84,7 @@ pub fn f_dihedral(
     posit_3: Vec3,
     // There can be multiple terms.
     params: &[DihedralParams],
-    // improper: bool,
 ) -> ((Vec3, Vec3, Vec3, Vec3), f32) {
-    // Bond vectors (see Allen & Tildesley, chap. 4)
     let b1 = posit_1 - posit_0; // r_ij
     let b2 = posit_2 - posit_1; // r_kj
     let b3 = posit_3 - posit_2; // r_lk
@@ -95,7 +95,8 @@ pub fn f_dihedral(
 
     let n1_sq = n1.magnitude_squared();
     let n2_sq = n2.magnitude_squared();
-    let b2_len = b2.magnitude();
+    let b2_sq = b2.magnitude_squared();
+    let b2_len = b2_sq.sqrt();
 
     // Bail out if dihedral is ill-defined (prevents singular impulses)
     const DIH_TOL: f32 = 1.0e-6;
@@ -114,7 +115,7 @@ pub fn f_dihedral(
     let dihe_measured = calc_dihedral_angle_v2(&(posit_0, posit_1, posit_2, posit_3));
 
     let mut energy = 0.;
-    let mut dV_dφ = 0.;
+    let mut dV_dφ = 0.; // Scalar torque magnitude
 
     for param in params {
         // Note: We have already divided barrier height by the integer divisor when setting up
@@ -127,17 +128,35 @@ pub fn f_dihedral(
         energy += k * (1.0 + dφ.cos());
     }
 
-    // ∂φ/∂r   (see e.g. DOI 10.1016/S0021-9991(97)00040-8)
-    let dφ_dr1 = -n1 * (b2_len / n1_sq);
-    let dφ_dr4 = n2 * (b2_len / n2_sq);
-    let dφ_dr2 = n1 * (b1.dot(b2) / (b2_len * n1_sq)) - n2 * (b3.dot(b2) / (b2_len * n2_sq));
-    let dφ_dr3 = -dφ_dr1 - dφ_dr2 - dφ_dr4; // Newton’s third law
+    // Force Vector Calculation (Blondel-Karplus Method)
+    // This formulation automatically handles the "lever arm" effect on atoms 1 and 2.
 
-    // F_i = dV/dφ · ∂φ/∂r_i
-    let f_0 = dφ_dr1 * dV_dφ;
-    let f_1 = dφ_dr2 * dV_dφ;
-    let f_2 = dφ_dr3 * dV_dφ;
-    let f_3 = dφ_dr4 * dV_dφ;
+    // Gradient terms for the outer atoms
+    // F0 acts along n1 (perpendicular to bond b1 and b2)
+    // F3 acts along n2 (perpendicular to bond b2 and b3)
+    let f0_factor = -dV_dφ * b2_len / n1_sq;
+    let f3_factor = dV_dφ * b2_len / n2_sq; // Note the sign flip relative to f0
+
+    let f_0 = n1 * f0_factor;
+    let f_3 = n2 * f3_factor;
+
+    // Gradient terms for the inner atoms (1 and 2)
+    // We project the dot products of bonds to distribute torque
+    let dot_b1_b2 = b1.dot(b2);
+    let dot_b3_b2 = b3.dot(b2);
+
+    let term_a = dot_b1_b2 / b2_sq;
+    let term_b = dot_b3_b2 / b2_sq;
+
+    // F_1 = -F_0  -  term_a * F_0  +  term_b * F_3
+    // Explanation:
+    // -F_0: Newton's 3rd law reaction to Atom 0
+    // -term_a * F_0: Additional torque because Atom 1 is the hinge for Plane 1
+    // +term_b * F_3: Reaction to the torque from Plane 2
+    let f_1 = -f_0 - (f_0 * term_a) + (f_3 * term_b);
+
+    // F_2 = -F_3  -  term_b * F_3  +  term_a * F_0
+    let f_2 = -f_3 - (f_3 * term_b) + (f_0 * term_a);
 
     ((f_0, f_1, f_2, f_3), energy)
 }

@@ -165,9 +165,7 @@ fn make_h_digit_map(ff_map: &ProtFfChargeMap, ph: f32) -> DigitMap {
         // variants, like HIE and HID for HIS.
         if let Some(existing) = result.get_mut(&aa) {
             for (designator, mut digits) in per_heavy {
-                                existing
-                                     .entry(designator)
-                                     .or_default().append(&mut digits);
+                existing.entry(designator).or_default().append(&mut digits);
             }
             for v in existing.values_mut() {
                 v.sort_unstable();
@@ -380,7 +378,7 @@ pub(crate) fn h_type_in_res_sidechain(
 /// todo: This needs to add bonds too!
 pub fn populate_hydrogens_dihedrals(
     atoms: &mut Vec<AtomGeneric>,
-    residues: &mut[ResidueGeneric],
+    residues: &mut [ResidueGeneric],
     chains: &mut [ChainGeneric],
     ff_map: &ProtFfChargeMapSet,
     ph: f32,
