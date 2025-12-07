@@ -29,8 +29,6 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 // TAU is for the CSVR thermostat only. Lower means more sensitive.
 // We set an aggressive thermostat during water initialization, then a more relaxed one at runtime.
 // This is for the VV/CVSR themostat only.
-// todo: SPME seems to be injecting energy into the system. Ideally this value should be close to 1.
-// todo: Lowered until we sort this out.
 pub(crate) const TAU_TEMP_DEFAULT: f64 = 1.0;
 pub(crate) const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
 

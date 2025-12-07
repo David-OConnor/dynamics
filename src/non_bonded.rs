@@ -33,7 +33,9 @@ pub const CUTOFF_VDW: f32 = 12.0;
 // This is not used for the reciprical part.
 // We don't use a taper, for now.
 // const LONG_RANGE_SWITCH_START: f64 = 8.0; // start switching (Å)
-pub const LONG_RANGE_CUTOFF: f32 = 10.0; // Å
+
+// todo: Temporarily set this higher than 10., while we work through some long range problems.
+pub const LONG_RANGE_CUTOFF: f32 = 12.0; // Å
 
 // A bigger α means more damping, and a smaller real-space contribution. (Cheaper real), but larger
 // reciprocal load.
@@ -605,6 +607,8 @@ impl MdState {
                     #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
                     let v = pme_recip.forces(&pos_all, &q_all);
                     #[cfg(any(feature = "cufft", feature = "vkfft"))]
+                    // todo temp!!!
+                    // let v = pme_recip.forces(&pos_all, &q_all);
                     let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
 
                     v

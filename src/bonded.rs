@@ -16,11 +16,10 @@ const SHAKE_MAX_IT: usize = 100;
 
 impl MdState {
     pub(crate) fn apply_bonded_forces(&mut self) {
-        // todo: TEmp RMed some of these!!
         self.apply_bond_stretching_forces();
         self.apply_angle_bending_forces();
-        // self.apply_dihedral_forces(false);
-        // self.apply_dihedral_forces(true);
+        self.apply_dihedral_forces(false);
+        self.apply_dihedral_forces(true);
     }
 
     pub(crate) fn apply_bond_stretching_forces(&mut self) {
@@ -103,7 +102,7 @@ impl MdState {
         }
     }
 
-    // todo: Energy from constrained H?
+    // todo: Energy from constrained H!?
 
     /// This makes the position constraint difference 0; run after drifting positions.
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
@@ -142,60 +141,25 @@ impl MdState {
     /// This makes the velocity constraint difference 0; run after updating velocities.
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
     pub(crate) fn rattle_hydrogens(&mut self, dt: f32) {
-        // 1. ITERATION IS MANDATORY
-        // Constraints are coupled. Fixing one disrupts the neighbor.
-        // We must loop until all are satisfied simultaneously.
-        for _ in 0..SHAKE_MAX_IT {
-            let mut max_error: f32 = 0.0;
+        // RATTLE on velocities so that d/dt(|r|²)=0  ⇒  v_ij · r_ij = 0
+        for (indices, (_r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
+            let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
 
-            for (indices, (r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
-                let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
+            let r_meas = aj.posit - ai.posit;
+            let v_meas = aj.vel - ai.vel;
+            let r_sq = r_meas.magnitude_squared();
 
-                let r_meas = aj.posit - ai.posit;
-                let v_meas = aj.vel - ai.vel;
+            // λ' = (v_ij·r_ij) / (inv_m · r_ij·r_ij)
+            let lambda_p = v_meas.dot(r_meas) / (inv_mass * r_sq.max(EPS_SHAKE_RATTLE));
+            let corr_v = r_meas * lambda_p;
 
-                // 2. STABILITY OPTIMIZATION
-                // Use the ideal length r0_sq instead of measured r_sq.
-                // Since SHAKE just ran, r_meas^2 ≈ r0_sq, but r0_sq is constant and exact.
-                // This prevents numerical drift in the denominator.
-                let r_sq_ref = *r0_sq;
+            ai.vel += corr_v / ai.mass;
+            aj.vel -= corr_v / aj.mass;
 
-                // Calculate current constraint violation (speed along bond)
-                let v_dot_r = v_meas.dot(r_meas);
-
-                // Optimization: Skip if already satisfied within tolerance
-                if v_dot_r.abs() < SHAKE_TOL {
-                    continue;
-                }
-
-                // λ' = (v_ij · r_ij) / (inv_M · r₀²)
-                let lambda_p = v_dot_r / (inv_mass * r_sq_ref);
-
-                // Vector correction
-                let corr_v = r_meas * lambda_p;
-
-                // 3. APPLY CORRECTION
-                // Your signs were correct:
-                // If expanding (lambda_p > 0), pull j back (-=) and push i forward (+=).
-                if !ai.static_ {
-                    ai.vel += corr_v / ai.mass;
-                }
-                if !aj.static_ {
-                    aj.vel -= corr_v / aj.mass;
-                }
-
-                // Track max error to decide when to stop looping
-                max_error = max_error.max(v_dot_r.abs());
-
-                // ---- Constraint virial (kcal/mol) ----
-                let virial = -r_sq_ref * lambda_p / dt;
-                self.barostat.virial_constraints += virial as f64;
-            }
-
-            // 4. CONVERGENCE CHECK
-            if max_error < SHAKE_TOL {
-                break;
-            }
+            // ---- Constraint virial (kcal/mol) ----
+            // W_c = -(r^2 * lambda_p / dt_ps) * S
+            let virial = -r_sq * lambda_p / dt;
+            self.barostat.virial_constraints += virial as f64;
         }
     }
 }
