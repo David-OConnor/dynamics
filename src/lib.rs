@@ -516,6 +516,9 @@ impl Default for SimBoxInit {
 /// by removing long range forces.
 pub struct MdOverrides {
     pub skip_water: bool,
+    /// Skips the initial water relaxation, where a simulation is run until
+    /// hydrogen bonds are established, and temperature is initialized.
+    pub skip_water_relaxation: bool,
     pub bonded_disabled: bool,
     pub coulomb_disabled: bool,
     pub lj_disabled: bool,
@@ -943,7 +946,7 @@ impl MdState {
         #[cfg(target_arch = "x86_64")]
         result.pack_atoms();
 
-        if !result.cfg.overrides.skip_water {
+        if !result.cfg.overrides.skip_water && !result.cfg.overrides.skip_water_relaxation {
             result.md_on_water_only(dev);
         }
 
