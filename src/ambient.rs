@@ -26,14 +26,18 @@ pub(crate) const GAS_CONST_R: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Am
 pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 
-// TAU is for the CSVR thermostat only. Lower means more sensitive.
+// TAU is for the CSVR thermostat. In ps. Lower means more sensitive.
 // We set an aggressive thermostat during water initialization, then a more relaxed one at runtime.
 // This is for the VV/CVSR themostat only.
-pub(crate) const TAU_TEMP_DEFAULT: f64 = 1.0;
-pub(crate) const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
+// Note: These are publically exposed, for use in applications.
+// pub const TAU_TEMP_DEFAULT: f64 = 1.0;
+pub const TAU_TEMP_DEFAULT: f64 = 0.9;
+pub const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
 
-// Gamma is for the Langevin thermostat.
-const GAMMA_WATER_INIT: f32 = 1.; // todo: Experiment
+// These are in 1/ps. 1 ps^-1 is a good default for explicit solvent and constrained H bonds.
+// Lower is closer to Newtonian dynamics.
+pub const LANGEVIN_GAMMA_DEFAULT: f32 = 1.0;
+pub const LANGEVIN_GAMMA_WATER_INIT: f32 = 15.;
 
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for water atoms. Its size and position should be such as to keep the system
@@ -390,14 +394,7 @@ impl MdState {
     /// A thermostat that integrates the stochastic Langevin equation. Good temperature control
     /// and ergodicity, but the friction parameter damps real dynamics as it grows. This applies an OU update.
     /// todo: Should this be based on f64?
-    pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma_ps: f32, temp_tgt_k: f32) {
-        // More aggressive gamma for water init
-        let gamma = if self.water_only_sim_at_init {
-            GAMMA_WATER_INIT
-        } else {
-            gamma_ps
-        };
-
+    pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma: f32, temp_tgt_k: f32) {
         let c = (-gamma * dt).exp();
         let s2 = (1.0 - c * c).max(0.0); // numerical guard
 

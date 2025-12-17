@@ -12,7 +12,10 @@ use bincode::{Decode, Encode};
 use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
     HydrogenConstraint, MdState,
-    ambient::{TAU_TEMP_DEFAULT, TAU_TEMP_WATER_INIT, measure_instantaneous_pressure},
+    ambient::{
+        LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_DEFAULT, TAU_TEMP_WATER_INIT,
+        measure_instantaneous_pressure,
+    },
     water::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
         settle::{
@@ -33,8 +36,9 @@ const MAX_ACCEL_SQ: f32 = MAX_ACCEL * MAX_ACCEL;
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Integrator {
-    /// The inner value is the temperature-coupling time constant, if the thermostat is enabled.
-    /// Lower means more sensitive. 1 is a good default.
+    /// The inner value is the temperature-coupling time constant if the thermostat is enabled.
+    /// This value is in ps.
+    /// Lower means more sensitive. 1ps is a good default.
     VerletVelocity { thermostat: Option<f64> },
     /// Velocity-verlet with a Langevin thermometer. Good temperature control
     /// and ergodicity, but the friction parameter damps real dynamics as it grows.
@@ -46,11 +50,12 @@ pub enum Integrator {
 
 impl Default for Integrator {
     fn default() -> Self {
-        // todo: Langevin middle is not working well.
-        // Self::LangevinMiddle { gamma: 1. }
-        Self::VerletVelocity {
-            thermostat: Some(TAU_TEMP_DEFAULT),
+        Self::LangevinMiddle {
+            gamma: LANGEVIN_GAMMA_DEFAULT,
         }
+        // Self::VerletVelocity {
+        //     thermostat: Some(TAU_TEMP_DEFAULT),
+        // }
     }
 }
 
@@ -102,11 +107,19 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                if !self.cfg.overrides.thermo_disabled {
+                if !self.cfg.overrides.thermo_disabled && !self.water_only_sim_at_init {
                     self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
                     // Update KE after vel updates from the thermostat, prior to barostat.
                     self.kinetic_energy = self.kinetic_energy();
+                } else if self.water_only_sim_at_init {
+                    self.apply_langevin_thermostat(
+                        dt,
+                        LANGEVIN_GAMMA_WATER_INIT,
+                        self.cfg.temp_target,
+                    );
+                    self.kinetic_energy = self.kinetic_energy();
                 }
+
                 // Rattle after the thermostat run, as it updates velocities in a non-uniform manner.
                 if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
                     self.rattle_hydrogens(dt);
@@ -253,15 +266,12 @@ impl MdState {
                     && !self.water_only_sim_at_init
                 {
                     self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
-                    // Update KE after the thermostat updated velocities.
-                    // self.kinetic_energy = self.kinetic_energy();
                 } else if self.water_only_sim_at_init {
                     self.apply_thermostat_csvr(
                         dt as f64,
                         TAU_TEMP_WATER_INIT,
                         self.cfg.temp_target as f64,
                     );
-                    // self.kinetic_energy = self.kinetic_energy();
                 }
 
                 if log_time {
@@ -322,10 +332,9 @@ impl MdState {
             }
         }
 
-        // todo temp
-        // if self.water_only_sim_at_init {
-        //     self.take_snapshot_if_required(pressure);
-        // }
+        if self.cfg.overrides.snapshots_during_equilibration && self.water_only_sim_at_init {
+            self.take_snapshot_if_required(pressure);
+        }
     }
 
     /// Half kick and drift for non-water and water. We call this one or more time

@@ -11,8 +11,8 @@ use rand::{Rng, distr::Uniform, rngs::ThreadRng};
 use rand_distr::{Distribution, Normal};
 
 use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, MdState,
-    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
+    ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, Integrator, MdState,
+    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox, TAU_TEMP_DEFAULT},
     sa_surface,
     water::WaterMol,
 };
@@ -47,13 +47,14 @@ const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 const MIN_WATER_O_O_DIST: f32 = 1.7;
 const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
 
-// Higher is better, but slower. After hydrogen bond networks are settled, higher doens't
+// Higher is better, but slower. After hydrogen bond networks are settled, higher doensn't
 // improve things.
 
-const NUM_SIM_STEPS: usize = 800;
+const NUM_SIM_STEPS: usize = 1_000;
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 // We seem to get better settling results with a low dt.
-const SIM_DT: f32 = 0.001;
+// const SIM_DT: f32 = 0.001;
+const SIM_DT: f32 = 0.0005;
 
 /// Generate water molecules to meet a temperature target, using standard density assumptions.
 /// We deconflict with (solute) atoms in the simulation, and base the number of molecules to add

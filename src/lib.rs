@@ -137,6 +137,7 @@ pub use prep::{HydrogenConstraint, merge_params};
 pub use util::{load_snapshots, save_snapshots};
 pub use water::ForcesOnWaterMol;
 
+pub use crate::ambient::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 #[cfg(feature = "cuda")]
@@ -525,6 +526,9 @@ pub struct MdOverrides {
     pub long_range_recip_disabled: bool,
     pub thermo_disabled: bool,
     pub baro_disabled: bool,
+    /// Run this block if we wish to, for dev purposes, take snapshots during the
+    /// equilibration phase, e.g. for tuning it.
+    pub snapshots_during_equilibration: bool,
 }
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
