@@ -1,4 +1,4 @@
-//! Taken from Daedalus. Shows how to bind application-specific data structures to
+//! Taken from ChemForma. Shows how to bind application-specific data structures to
 //! this library's API.
 
 use std::{

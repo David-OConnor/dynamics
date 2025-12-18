@@ -1,12 +1,12 @@
-//! todo: This is a C+P from Daedalus, with args modified, e.g. Atom type, f32 vs f64.
+//! todo: This is a C+P from ChemForma, with args modified, e.g. Atom type, f32 vs f64.
 // todo to not use its Atom type.
 
-use std::f32::consts::TAU;
-use lin_alg::f32::Vec3;
-use na_seq::Element::{Fluorine, Hydrogen, Nitrogen, Oxygen, Sulfur};
 use crate::AtomDynamics;
 use crate::snapshot::HydrogenBond;
 use crate::water::WaterMol;
+use lin_alg::f32::Vec3;
+use na_seq::Element::{Fluorine, Hydrogen, Nitrogen, Oxygen, Sulfur};
+use std::f32::consts::TAU;
 
 // Note: Chimera shows H bonds as ranging generally from 2.8 to 3.3.
 // Note: These values all depend on which is the donor. Your code doesn't take this into account.
@@ -89,7 +89,12 @@ fn hydrogen_bond_inner(
 
 /// Create hydrogen bonds between all atoms in a group. See `create_hydrogen_bonds_one_way` for the more
 /// flexible fn it calls.
-pub(crate) fn create_hydrogen_bonds(atoms: &[AtomDynamics], posits: &[Vec3], waters: &[WaterMol], bonds: &[Bond]) -> Vec<HydrogenBond> {
+pub(crate) fn create_hydrogen_bonds(
+    atoms: &[AtomDynamics],
+    posits: &[Vec3],
+    waters: &[WaterMol],
+    bonds: &[Bond],
+) -> Vec<HydrogenBond> {
     let indices: Vec<_> = (0..atoms.len()).collect();
     create_hydrogen_bonds_one_way(atoms, &indices, bonds, atoms, &indices, false)
 }
@@ -173,7 +178,11 @@ fn create_hydrogen_bonds_one_way(
 }
 
 /// A helper fn. Maps from a global index, to a local atom from a subset.
-fn find_atom<'a>(atoms: &'a [AtomDynamics], indices: &[usize], i_to_find: usize) -> Option<&'a AtomDynamics> {
+fn find_atom<'a>(
+    atoms: &'a [AtomDynamics],
+    indices: &[usize],
+    i_to_find: usize,
+) -> Option<&'a AtomDynamics> {
     for (i_set, atom) in atoms.iter().enumerate() {
         if indices[i_set] == i_to_find {
             return Some(atom);
