@@ -31,8 +31,7 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 // This is for the VV/CVSR themostat only.
 // Note: These are publically exposed, for use in applications.
 // pub const TAU_TEMP_DEFAULT: f64 = 1.0;
-// pub const TAU_TEMP_DEFAULT: f64 = 0.9;
-pub const TAU_TEMP_DEFAULT: f64 = 0.08; // todo temp!!!
+pub const TAU_TEMP_DEFAULT: f64 = 0.9;
 pub const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
 
 // These are in 1/ps. 1 ps^-1 is a good default for explicit solvent and constrained H bonds.
@@ -132,7 +131,6 @@ impl SimBox {
     /// periodic image. Allows distance measurements to use the shortest separation.
     pub fn min_image(&self, dv: Vec3) -> Vec3 {
         let ext = &self.extent;
-        debug_assert!(ext.x > 0.0 && ext.y > 0.0 && ext.z > 0.0);
 
         Vec3::new(
             dv.x - (dv.x / ext.x).round() * ext.x,
@@ -176,6 +174,15 @@ impl SimBox {
             let ext = &self.extent;
             ext.x > 0.0 && ext.y > 0.0 && ext.z > 0.0
         });
+    }
+
+    pub fn contains(&self, posit: Vec3) -> bool {
+        !(posit.x < self.bounds_low.x
+            || posit.y < self.bounds_low.y
+            || posit.z < self.bounds_low.z
+            || posit.x > self.bounds_high.x
+            || posit.y > self.bounds_high.y
+            || posit.z > self.bounds_high.z)
     }
 }
 

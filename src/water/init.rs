@@ -50,9 +50,12 @@ const MIN_WATER_O_O_DIST: f32 = 1.7;
 const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
 
 // Higher is better, but slower. After hydrogen bond networks are settled, higher doensn't
-// improve things.
+// improve things. Note that we initialize from a pre-equilibrated template, so we shouldn't
+// need many effects. This mainly deals with template tiling effects, and water-solute conflicts.
 
-const NUM_SIM_STEPS: usize = 1_000;
+// todo: Make this dynamic based on thngs like solute size relative to sim box?
+// const NUM_SIM_STEPS: usize = 1_000;
+const NUM_SIM_STEPS: usize = 300;
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 // We seem to get better settling results with a low dt.
 // const SIM_DT: f32 = 0.001;
@@ -97,6 +100,7 @@ impl WaterInitTemplate {
         let mut o_posits = Vec::with_capacity(n);
         let mut h0_posits = Vec::with_capacity(n);
         let mut h1_posits = Vec::with_capacity(n);
+
         let mut o_velocities = Vec::with_capacity(n);
         let mut h0_velocities = Vec::with_capacity(n);
         let mut h1_velocities = Vec::with_capacity(n);
@@ -122,6 +126,7 @@ impl WaterInitTemplate {
             o_posits.push(mol.o.posit);
             h0_posits.push(mol.h0.posit);
             h1_posits.push(mol.h1.posit);
+
             o_velocities.push(mol.o.vel);
             h0_velocities.push(mol.h0.vel);
             h1_velocities.push(mol.h1.vel);
@@ -137,7 +142,6 @@ impl WaterInitTemplate {
             o_velocities,
             h0_velocities,
             h1_velocities,
-            // box_bounds: (min, max),
             bounds,
         };
 
@@ -167,9 +171,9 @@ fn calc_n_mols(cell: &SimBox, atoms: &[AtomDynamics]) -> usize {
 /// Contains repetition with the deprecated latice-based approach.
 pub fn make_water_mols(
     cell: &SimBox,
-    temperature_tgt: f32,
+    _temperature_tgt: f32,
     atoms: &[AtomDynamics],
-    zero_com_drift: bool,
+    _zero_com_drift: bool,
 ) -> Vec<WaterMol> {
     println!("Initializing water molecules...");
     let start = Instant::now();
@@ -188,9 +192,9 @@ pub fn make_water_mols(
     // Solute
     let atom_posits: Vec<_> = atoms.iter().map(|a| a.posit).collect();
 
-    // Prevents unbounded looping. A higher value means we're more likely to succed,
+    // Prevents unbounded looping. A higher value means we're more likely to succeed,
     // but the run time could be higher.
-    let fault_ratio = 3;
+    let fault_ratio = 4;
 
     let mut num_added = 0;
     let mut loops_used = 0;
@@ -202,55 +206,143 @@ pub fn make_water_mols(
         && cell_size.y <= template_size.y
         && cell_size.z <= template_size.z;
 
+    // todo: QC this offset
+    let mut offset = Vec3::new_zero();
+
     // Iterate inside out using the template
     if cell_fits_in_template {
+        // Align the template center to the cell center.
+        let template_ctr = (template.bounds.0 + template.bounds.1) / 2.;
+        let cell_ctr = (cell.bounds_low + cell.bounds_high) / 2.;
+        offset = cell_ctr - template_ctr;
+
+        // This loop requires the template to iterate inside-out.
+        'outer: for i in 0..n_mols * fault_ratio {
+            let o_posit = template.o_posits[i] + offset;
+
+            // If overlapping with a solute atom, don't place. We'll catch populate it towards the end.
+            for atom_p in &atom_posits {
+                let dist_sq = (*atom_p - o_posit).magnitude_squared();
+                if dist_sq < MIN_NONWATER_DIST_SQ {
+                    loops_used += 1;
+                    continue 'outer;
+                }
+            }
+
+            // Check for an overlap with existing water molecules.
+            for w in &result {
+                // todo: QC , and if you even need this
+                // todo: If the problem you have lies elsewhere, you can remove this check.
+                let dist_sq =
+                    (cell.min_image(w.o.posit) - cell.min_image(o_posit)).magnitude_squared();
+
+                if dist_sq < MIN_WATER_O_O_DIST_SQ {
+                    loops_used += 1;
+                    continue 'outer;
+                }
+            }
+
+            // todo: You must check sim box edge effects of water-water interactions.
+
+            // Check if the molecule is inside the cell. Our templates iterate in a spherical pattern
+            // outwards, so this will happen for molecules outside the cell faces towards their center,
+            // until the corners are filled.
+            if !cell.contains(o_posit) {
+                loops_used += 1;
+                continue 'outer;
+            }
+
+            // This template sets up the charge, mass, element, etc. We override posits and vels.
+            let mut mol = WaterMol::new(
+                Vec3::new_zero(),
+                Vec3::new_zero(),
+                Quaternion::new_identity(),
+            );
+            mol.o.posit = o_posit;
+            mol.h0.posit = template.h0_posits[i] + offset;
+            mol.h1.posit = template.h1_posits[i] + offset;
+
+            // todo: Temp rm
+            // mol.o.vel = template.o_velocities[i];
+            // mol.h0.vel = template.h0_velocities[i];
+            // mol.h1.vel = template.h1_velocities[i];
+
+            println!("MOL: {mol:?}");
+
+            result.push(mol);
+            num_added += 1;
+
+            if num_added == n_mols {
+                break;
+            }
+            loops_used += 1;
+        }
     } else {
         // Tile the template.
-        unimplemented!()
-    }
+        let min0 = template.bounds.0 + offset;
+        let max1 = template.bounds.1 + offset;
 
-    // This loop requires the template to iterate inside-out.
-    'outer: for i in 0..n_mols * fault_ratio {
-        let o_posit = template.o_posits[i];
+        let ix_min = ((cell.bounds_low.x - max1.x) / template_size.x).floor() as i32;
+        let iy_min = ((cell.bounds_low.y - max1.y) / template_size.y).floor() as i32;
+        let iz_min = ((cell.bounds_low.z - max1.z) / template_size.z).floor() as i32;
 
-        // If overlapping with a solute atom, don't place. We'll catch it at the end.
-        for atom_p in &atom_posits {
-            let dist_sq = (*atom_p - o_posit).magnitude_squared();
-            if dist_sq < MIN_NONWATER_DIST_SQ {
-                loops_used += 1;
-                continue 'outer;
+        let ix_max = ((cell.bounds_high.x - min0.x) / template_size.x).ceil() as i32;
+        let iy_max = ((cell.bounds_high.y - min0.y) / template_size.y).ceil() as i32;
+        let iz_max = ((cell.bounds_high.z - min0.z) / template_size.z).ceil() as i32;
+
+        'tiles: for ix in ix_min..=ix_max {
+            for iy in iy_min..=iy_max {
+                for iz in iz_min..=iz_max {
+                    let tile_offset = offset
+                        + Vec3::new(
+                            ix as f32 * template_size.x,
+                            iy as f32 * template_size.y,
+                            iz as f32 * template_size.z,
+                        );
+
+                    for i in 0..template.o_posits.len() {
+                        let o_posit = template.o_posits[i] + tile_offset;
+                        let h0_posit = template.h0_posits[i] + tile_offset;
+                        let h1_posit = template.h1_posits[i] + tile_offset;
+
+                        loops_used += 1;
+
+                        if !cell.contains(o_posit) {
+                            continue;
+                        }
+
+                        // todo: Put in
+                        // if overlaps_solute_sites(o_posit, h0_posit, h1_posit, &atom_posits) {
+                        //     continue;
+                        // }
+                        //
+                        // if overlaps_water_sites(o_posit, h0_posit, h1_posit, &result) {
+                        //     continue;
+                        // }
+
+                        let mut mol = WaterMol::new(
+                            Vec3::new_zero(),
+                            Vec3::new_zero(),
+                            Quaternion::new_identity(),
+                        );
+                        mol.o.posit = o_posit;
+                        mol.h0.posit = h0_posit;
+                        mol.h1.posit = h1_posit;
+
+                        mol.o.vel = template.o_velocities[i];
+                        mol.h0.vel = template.h0_velocities[i];
+                        mol.h1.vel = template.h1_velocities[i];
+
+                        result.push(mol);
+                        num_added += 1;
+
+                        if num_added == n_mols {
+                            break 'tiles;
+                        }
+                    }
+                }
             }
         }
-
-        for w in &result {
-            let dist_sq = (w.o.posit - o_posit).magnitude_squared();
-            if dist_sq < MIN_WATER_O_O_DIST_SQ {
-                loops_used += 1;
-                continue 'outer;
-            }
-        }
-
-        // This template sets up the charge, mass, el etc. We override posits and vels.
-        let mut mol = WaterMol::new(
-            Vec3::new_zero(),
-            Vec3::new_zero(),
-            Quaternion::new_identity(),
-        );
-        mol.o.posit = o_posit;
-        mol.h0.posit = template.h0_posits[i];
-        mol.h1.posit = template.h1_posits[i];
-
-        mol.o.vel = template.o_velocities[i];
-        mol.h0.vel = template.h0_velocities[i];
-        mol.h1.vel = template.h1_velocities[i];
-
-        result.push(mol);
-        num_added += 1;
-
-        if num_added == n_mols {
-            break;
-        }
-        loops_used += 1;
     }
 
     let elapsed = start.elapsed().as_millis();
@@ -349,6 +441,7 @@ pub fn _make_water_mols_grid(
             }
         }
 
+        // Check for an overlap with existing water molecules.
         for w in &result {
             let dist_sq = (w.o.posit - posit).magnitude_squared();
             if dist_sq < MIN_WATER_O_O_DIST_SQ {
