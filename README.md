@@ -1,41 +1,38 @@
 # Molecular Dynamics
 
 [![Crate](https://img.shields.io/crates/v/dynamics.svg)](https://crates.io/crates/dynamics)
-[![Docs](https://docs.rs/dynamics/badge.svg)](https://docs.rs/dynamics)
+[![API Docs](https://docs.rs/dynamics/badge.svg)](https://docs.rs/dynamics)
+[![Descriptive Docs](https://docs.rs/dynamics/badge.svg)](https://www.athanorlab.com/docs/md.html)
 [![PyPI](https://img.shields.io/pypi/v/mol_dynamics.svg)](https://pypi.org/project/mol_dynamics)
 
 A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac.
-Uses CPU with threadpools and SIMD, or an Nvidia GPU.
+Uses CPU with threadpools and SIMD, or an Nvidia GPU. It uses traditional forcefield-based molecular dynamics, and is
+inspired by Amber. It does not use quantum-mechanics, nor ab-initio methods.
 
-It uses traditional forcefield-based molecular dynamics, and is inspired by Amber.
-It does not use quantum-mechanics, nor ab-initio methods.
+It uses the [Bio-Files](https://github.com/david-oconnor/bio-files) dependency to load molecule and force-field files.
 
-It uses the [Bio-Files](https://github.com/david-oconnor/bio-files) dependency to load molecule
-and force-field files.
-
-Please reference the [API documentation](https://docs.rs/dynamics) for details on the functionality
-of each data structure and function. You may with to reference the [Bio Files API docs](https://docs.rs/bio-files)
-as well.
+This readme is a general overview, and focuses on code examples integration into application, and code examples. For
+more information about the algorithm, reference the [docs here](https://www.athanorlab.com/docs/md.html). Please
+reference the [API documentation](https://docs.rs/dynamics) for details on the functionality of each data structure and
+function. You may wish to reference the [Bio Files API docs](https://docs.rs/bio-files) as well.
 
 **Note: We currently only support saving and loading snapshots/trajectories in a custom format.**
 
-We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer,
-with nvidia drivers 580 or newer.
+We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer, with nvidia
+drivers 580 or newer.
 
 **Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having
-trouble
-linking the cuFFT dependency.
+trouble linking the cuFFT dependency.
 
 ## Use of this library
 
 This is intended for integration into a Rust or Python program, another Rust or Python library, or in small scripts that
 describe a workflow. When scripting, you will likely load molecule files directly, use integrated force fields or load
-them
-from file, and save results to a reporter format like DCD. If incorporating into an application, you might do more in
-memory using the [data structures](https://docs.rs/dynamics/latest/dynamics/) we provide.
+them from file, and save results to a reporter format like DCD. If incorporating into an application, you might do more
+in memory using the [data structures](https://docs.rs/dynamics/latest/dynamics/) we provide.
 
-Our API goal is to both provide a default terse syntax with safe defaults, and allow customization and
-flexibility that facilitates integration into bigger systems.
+Our API goal is to both provide a default terse syntax with safe defaults, and allow customization and flexibility that
+facilitates integration into bigger systems.
 
 ## Goals
 
@@ -51,21 +48,19 @@ Python: `pip install mol-dynamics`
 Rust: Add `dynamics` to `Cargo.toml`. Likely `bio_files` as well.
 
 For a GUI application that uses this library, download
-the [ChemForma molecule viewer](https://github.com/david-oconnor/chemformaa) This
-provides an easy-to-use way to set up the simulation, and play back trajectories.
+the [Molchanica software](https://github.com/david-oconnor/molchanicaa) This provides an easy-to-use way to set up the
+simulation, and play back trajectories.
 
 ## Input topology
 
-The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/bio_files/struct.AtomGeneric.html) and
-[BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading
-molecular
-file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library
+The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/bio_files/struct.AtomGeneric.html)
+and [BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading
+molecular file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library
 ([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them
 directly. See examples below and in the [examples folder](https://github.com/David-OConnor/dynamics/tree/main/examples),
-and the
-docs links above; those are structs of plain data that can be built from from arbitrary input sources. For example, if
-you're building an application, you might use a more complicated Atom format; you can create a function that converts
-between yours, and `AtomGeneric`.
+and the docs links above; those are structs of plain data that can be built from from arbitrary input sources. For
+example, if you're building an application, you might use a more complicated Atom format; you can create a function that
+converts between yours, and `AtomGeneric`.
 
 ## Parameters
 
@@ -529,7 +524,7 @@ These are available in [Amber tools](https://ambermd.org/GetAmber.php). Download
 - `RNA.lib`
 
 We provide
-a [copy of these files](https://github.com/David-OConnor/chemformaa/releases/download/0.1.3/amber_params_sept_2025.zip)
+a [copy of these files](https://github.com/David-OConnor/molchanicaa/releases/download/0.1.3/amber_params_sept_2025.zip)
 for convenience; this is a much smaller download than the entire Amber package, and prevents needing to locate the
 specific files.
 Unpack, and place these under `resources` prior to compiling.

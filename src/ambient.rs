@@ -31,7 +31,8 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 // This is for the VV/CVSR themostat only.
 // Note: These are publically exposed, for use in applications.
 // pub const TAU_TEMP_DEFAULT: f64 = 1.0;
-pub const TAU_TEMP_DEFAULT: f64 = 0.9;
+// pub const TAU_TEMP_DEFAULT: f64 = 0.9;
+pub const TAU_TEMP_DEFAULT: f64 = 0.08; // todo temp!!!
 pub const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
 
 // These are in 1/ps. 1 ps^-1 is a good default for explicit solvent and constrained H bonds.

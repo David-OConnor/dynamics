@@ -51,7 +51,7 @@ Python: `pip install mol-dynamics`
 Rust: Add `dynamics` to `Cargo.toml`. Likely `bio_files` as well.
 
 For a GUI application that uses this library, download
-the [ChemForma molecule viewer](https://github.com/david-oconnor/chemformaa) This
+the [molchanica molecule viewer](https://github.com/david-oconnor/molchanicaa) This
 provides an easy-to-use way to set up the simulation, and play back trajectories.
 
 ## Input topology
@@ -565,7 +565,7 @@ These are available in [Amber tools](https://ambermd.org/GetAmber.php). Download
 - `RNA.lib`
 
 We provide
-a [copy of these files](https://github.com/David-OConnor/chemformaa/releases/download/0.1.3/amber_params_sept_2025.zip)
+a [copy of these files](https://github.com/David-OConnor/molchanicaa/releases/download/0.1.3/amber_params_sept_2025.zip)
 for convenience; this is a much smaller download than the entire Amber package, and prevents needing to locate the
 specific files.
 Unpack, and place these under `resources` prior to compiling.

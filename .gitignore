@@ -35,5 +35,5 @@ Cargo.lock
 
 # ML models
 *.pt
-*.safetensors
-*.vocab
+#*.safetensors
+#*.vocab

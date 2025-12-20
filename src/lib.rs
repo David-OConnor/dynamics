@@ -135,7 +135,7 @@ use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use util::{load_snapshots, save_snapshots};
-pub use water::ForcesOnWaterMol;
+pub use water::{ForcesOnWaterMol, init::WaterInitTemplate};
 
 pub use crate::ambient::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 #[cfg(feature = "cuda")]

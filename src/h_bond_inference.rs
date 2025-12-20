@@ -1,4 +1,4 @@
-//! todo: This is a C+P from ChemForma, with args modified, e.g. Atom type, f32 vs f64.
+//! todo: This is a C+P from molchanica, with args modified, e.g. Atom type, f32 vs f64.
 // todo to not use its Atom type.
 
 use crate::AtomDynamics;
