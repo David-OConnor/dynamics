@@ -7,6 +7,8 @@ use crate::{
     water::{H_MASS, MASS_WATER_MOL, O_MASS},
 };
 
+const EPS: f64 = 1e-6;
+
 impl MdState {
     /// Remove center-of-mass drift. This can help stabilize system energy.
     /// We perform the sums here as f64.
@@ -30,7 +32,7 @@ impl MdState {
             p_sum += p_o + p_h0 + p_h1;
         }
 
-        if mass_sum <= 0. {
+        if mass_sum <= EPS {
             return;
         }
 
@@ -74,7 +76,7 @@ impl MdState {
             m_r_sum += mr_o + mr_h0 + mr_h1;
         }
 
-        if mass_sum <= 0.0 {
+        if mass_sum <= EPS {
             return;
         }
         let rot_com: Vec3 = (m_r_sum / mass_sum).into();

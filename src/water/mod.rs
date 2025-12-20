@@ -134,6 +134,7 @@ pub struct ForcesOnWaterMolx16 {
 /// Important: We repurpose the `accel` field of `AtomDynamics` to store forces instead. These differ
 /// by a factor of mass.
 /// todo: We may or may not change this A/R.
+#[derive(Clone)]
 pub struct WaterMol {
     /// Chargeless; its charge is represented at the offset "M" or "EP".
     /// The only Lennard Jones/Vdw source. Has mass.

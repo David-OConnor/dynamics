@@ -314,9 +314,9 @@ impl MdState {
         }
 
         if !self.water_only_sim_at_init {
-            if self.step_count.is_multiple_of(500) {
-                self.print_ambient_data(pressure);
-            }
+            // if self.step_count.is_multiple_of(500) {
+            //     self.print_ambient_data(pressure);
+            // }
 
             let start = Instant::now(); // Not sure how else to handle. (Option would work)
             self.take_snapshot_if_required(pressure);

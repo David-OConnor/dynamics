@@ -706,11 +706,11 @@ impl MdState {
         let mut adjacency_list = Vec::new();
 
         // todo: Allow a water-only sim, buut need to rework how your simbox sizes for that.
-        if mols.is_empty() {
-            return Err(ParamError::new(
-                "No molecules to simulate. Please provide at least one molecule.",
-            ));
-        }
+        // if mols.is_empty() {
+        //     return Err(ParamError::new(
+        //         "No molecules to simulate. Please provide at least one molecule.",
+        //     ));
+        // }
 
         // We combine all molecule general and specific params into this set, then
         // create Indexed params from it.
@@ -841,18 +841,17 @@ impl MdState {
             atom_ct_prior_to_this_mol += atoms.len();
         }
 
-        if atoms_md.is_empty() {
-            return Err(ParamError::new(
-                "No atoms to simulate; please provide at least one.",
-            ));
-        }
+        // if atoms_md.is_empty() {
+        //     return Err(ParamError::new(
+        //         "No atoms to simulate; please provide at least one.",
+        //     ));
+        // }
 
         let force_field_params = ForceFieldParamsIndexed::new(
             &params,
             &atoms_md,
             &adjacency_list,
             cfg.hydrogen_constraint,
-            // cfg.overrides.allow_missing_dihedral_params,
         )?;
 
         let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());
@@ -862,6 +861,22 @@ impl MdState {
             atom.assign_data_from_params(&force_field_params, i);
             mass_accel_factor.push(ACCEL_CONVERSION / atom.mass);
         }
+
+        // let cell = if atoms_md.is_empty() {
+        //     match cfg.sim_box {
+        //         SimBoxInit::Fixed(v) => cfg.sim_box,
+        //         SimBoxInit::Pad()
+        //     }
+        //
+        //     let corner = Vec3::new(
+        //         SIMBOX_SIZE_NO_ATOMS / 2.,
+        //         SIMBOX_SIZE_NO_ATOMS / 2.,
+        //         SIMBOX_SIZE_NO_ATOMS / 2.,
+        //     );
+        //     SimBox::new(&atoms_md, &SimBoxInit::Fixed((-corner, corner)))
+        // } else {
+        //     SimBox::new(&atoms_md, &cfg.sim_box)
+        // };
 
         let cell = SimBox::new(&atoms_md, &cfg.sim_box);
 

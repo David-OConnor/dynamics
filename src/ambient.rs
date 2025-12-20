@@ -61,6 +61,11 @@ impl SimBox {
                     max = max.max(a.posit);
                 }
 
+                if atoms.is_empty() {
+                    min = Vec3::new_zero();
+                    max = Vec3::new_zero();
+                }
+
                 let bounds_low = min - Vec3::splat(*pad);
                 let bounds_high = max + Vec3::splat(*pad);
 
@@ -84,6 +89,10 @@ impl SimBox {
 
     /// We periodically run this to keep the solvent surrounding the dynamic atoms, as they move.
     pub fn recenter(&mut self, atoms: &[AtomDynamics]) {
+        if atoms.is_empty() {
+            return;
+        }
+
         let half_ext = self.extent / 2.;
 
         // todo: DRY with new.

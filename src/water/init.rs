@@ -73,6 +73,9 @@ const SIM_DT: f32 = 0.0005;
 ///
 /// Note: If we're able to place most, but not all waters, the barostat should adjust the sim box size
 /// to account for the lower-than-specific pressure.
+///
+/// todo: Update this so it creates realistic orientations and molecules intead of a lattice.
+/// todo: This will require (much?) less equilibration.
 pub fn make_water_mols(
     cell: &SimBox,
     temperature_tgt: f32,
@@ -92,14 +95,13 @@ pub fn make_water_mols(
 
     // Estimate free volume & n_mols from it
     let n_mols = (WATER_MOLS_PER_VOL * free_vol).round() as usize;
+    let mut result = Vec::with_capacity(n_mols);
 
     println!(
         "Solvent-free vol: {:.2} Cell vol: {:.2} (Å³ / 1,000)",
         free_vol / 1_000.,
         cell_volume / 1_000.
     );
-
-    let mut result = Vec::with_capacity(n_mols);
 
     if n_mols == 0 {
         println!("Complete in {} ms.", start.elapsed().as_millis());
