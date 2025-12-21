@@ -35,6 +35,10 @@ const N_A: f32 = 6.022_140_76e23;
 // Multiplying this by volume in Angstrom^3 gives us AMU g cm^-3 Å^3 mol^-1
 const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 
+// We use this to determine if we need to check for edge image conflicts when
+// adding molecules.
+const THRESH_NEAR_CELL_EDGE: f32 = 3.;
+
 // Don't generate water molecules that are too close to other atoms.
 // Vdw contact distance between water molecules and organic molecules is roughly 3.5 Å.
 // todo: Hmm. We could get lower, but there's some risk of an H atom being too close,
@@ -44,7 +48,6 @@ const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 
 // This seems low, but allows more flexibility in placement, and isn't so low
 // as to cause the system to blow up. Distances will be set up accurately
-// in the initial water-only sim.
 // in the initial water-only sim.
 const MIN_WATER_O_O_DIST: f32 = 1.7;
 const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
@@ -219,6 +222,8 @@ pub fn make_water_mols(
         // This loop requires the template to iterate inside-out.
         'outer: for i in 0..n_mols * fault_ratio {
             let o_posit = template.o_posits[i] + offset;
+            let h0_posit = template.h0_posits[i] + offset;
+            let h1_posit = template.h1_posits[i] + offset;
 
             // If overlapping with a solute atom, don't place. We'll catch populate it towards the end.
             for atom_p in &atom_posits {
@@ -229,16 +234,40 @@ pub fn make_water_mols(
                 }
             }
 
-            // Check for an overlap with existing water molecules.
+            // Check for an overlap with existing water molecules. This should only occur at the boundaries,
+            // either from tiling, or an image from the opposite side of the cell.
             for w in &result {
-                // todo: QC , and if you even need this
-                // todo: If the problem you have lies elsewhere, you can remove this check.
-                let dist_sq =
-                    (cell.min_image(w.o.posit) - cell.min_image(o_posit)).magnitude_squared();
+                // We only need to worry abou this conflict near the edges; this escape
+                // saves time.
+                if (o_posit.x - cell.bounds_low.x).abs() > THRESH_NEAR_CELL_EDGE
+                    && (o_posit.y - cell.bounds_low.y).abs() > THRESH_NEAR_CELL_EDGE
+                    && (o_posit.z - cell.bounds_low.z).abs() > THRESH_NEAR_CELL_EDGE
+                    && (o_posit.x - cell.bounds_high.x).abs() > THRESH_NEAR_CELL_EDGE
+                    && (o_posit.y - cell.bounds_high.y).abs() > THRESH_NEAR_CELL_EDGE
+                    && (o_posit.z - cell.bounds_high.z).abs() > THRESH_NEAR_CELL_EDGE
+                {
+                    continue;
+                }
 
-                if dist_sq < MIN_WATER_O_O_DIST_SQ {
-                    loops_used += 1;
-                    continue 'outer;
+                for posit_0 in [
+                    cell.min_image(w.o.posit),
+                    cell.min_image(w.h0.posit),
+                    cell.min_image(w.h1.posit),
+                ] {
+                    for posit_1 in [
+                        cell.min_image(o_posit),
+                        cell.min_image(h0_posit),
+                        cell.min_image(h1_posit),
+                    ] {
+                        let dist_sq = cell
+                            .min_image(posit_0 - cell.min_image(posit_1))
+                            .magnitude_squared();
+
+                        if dist_sq < MIN_WATER_O_O_DIST_SQ {
+                            loops_used += 1;
+                            continue 'outer;
+                        }
+                    }
                 }
             }
 
@@ -252,6 +281,7 @@ pub fn make_water_mols(
                 continue 'outer;
             }
 
+            // todo: You can come up with a cheaper way to skip the orientation geometry.
             // This template sets up the charge, mass, element, etc. We override posits and vels.
             let mut mol = WaterMol::new(
                 Vec3::new_zero(),
@@ -259,15 +289,12 @@ pub fn make_water_mols(
                 Quaternion::new_identity(),
             );
             mol.o.posit = o_posit;
-            mol.h0.posit = template.h0_posits[i] + offset;
-            mol.h1.posit = template.h1_posits[i] + offset;
+            mol.h0.posit = h0_posit;
+            mol.h1.posit = h1_posit;
 
-            // todo: Temp rm
-            // mol.o.vel = template.o_velocities[i];
-            // mol.h0.vel = template.h0_velocities[i];
-            // mol.h1.vel = template.h1_velocities[i];
-
-            println!("MOL: {mol:?}");
+            mol.o.vel = template.o_velocities[i];
+            mol.h0.vel = template.h0_velocities[i];
+            mol.h1.vel = template.h1_velocities[i];
 
             result.push(mol);
             num_added += 1;

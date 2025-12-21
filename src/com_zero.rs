@@ -12,7 +12,7 @@ const EPS: f64 = 1e-6;
 impl MdState {
     /// Remove center-of-mass drift. This can help stabilize system energy.
     /// We perform the sums here as f64.
-    pub fn zero_linear_momentum_atoms(&mut self) {
+    pub fn zero_linear_momentum(&mut self) {
         let mut mass_sum = 0.0;
         let mut p_sum = Vec3F64::new_zero(); // Σ m v
 
@@ -55,7 +55,7 @@ impl MdState {
     // todo: Assess if you want this for multi-molecule systems.
     /// Remove rigid-body rotation.
     /// Computes ω from I ω = L about the atoms' COM, then sets v' = v - ω × (r - r_cm).
-    pub fn zero_angular_momentum_atoms(&mut self) {
+    pub fn zero_angular_momentum(&mut self) {
         let mut mass_sum = 0.0;
         let mut m_r_sum = Vec3F64::new_zero();
 
@@ -204,6 +204,6 @@ impl MdState {
         }
 
         // Clean up any translation introduced by roundoff
-        self.zero_linear_momentum_atoms();
+        self.zero_linear_momentum();
     }
 }

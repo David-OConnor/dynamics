@@ -32,7 +32,7 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
 // Note: These are publically exposed, for use in applications.
 // pub const TAU_TEMP_DEFAULT: f64 = 1.0;
 pub const TAU_TEMP_DEFAULT: f64 = 0.9;
-pub const TAU_TEMP_WATER_INIT: f64 = 0.03; // for CSVR
+pub const TAU_TEMP_WATER_INIT: f64 = 0.02; // for CSVR
 
 // These are in 1/ps. 1 ps^-1 is a good default for explicit solvent and constrained H bonds.
 // Lower is closer to Newtonian dynamics.
