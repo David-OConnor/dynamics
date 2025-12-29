@@ -14,9 +14,9 @@ use lin_alg::f32::Vec3;
 
 use crate::AtomDynamics;
 
-// Append to any snapshot-saving files every this number of snapshots.
-// todo:  Update A/R. Likely higher.
-pub(crate) const FILE_SAVE_INTERVAL: usize = 100;
+// // Append to any snapshot-saving files every this number of snapshots.
+// // todo:  Update A/R. Likely higher.
+// pub(crate) const FILE_SAVE_INTERVAL: usize = 100;
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -62,6 +62,9 @@ pub struct Snapshot {
     /// Used to track which molecule each atom is associated with in our flattened structures.
     /// This is the potential energy between every pair of molecules.
     pub energy_potential_between_mols: Vec<f32>,
+    /// Energy from non-bonded interactions only. A simple proxy for molecule-molecule potential energy,
+    /// although includes energy within the molecule as well.
+    pub energy_potential_nonbonded: f32,
     /// Optionally added as a post-processing step.
     pub hydrogen_bonds: Vec<HydrogenBond>,
     /// Instantaneous temperature in Kelvin.
@@ -180,6 +183,9 @@ impl Snapshot {
         copy_le!(result, self.temperature, i..i + 4);
         i += 4;
         copy_le!(result, self.pressure, i..i + 4);
+        i += 4;
+
+        copy_le!(result, self.energy_potential_nonbonded, i..i + 4);
         // i += 4;
 
         result
@@ -224,6 +230,9 @@ impl Snapshot {
         let temperature = parse_le!(bytes, f32, i..i + 4);
         i += 4;
         let pressure = parse_le!(bytes, f32, i..i + 4);
+        i += 4;
+
+        let energy_potential_nonbonded = parse_le!(bytes, f32, i..i + 4);
         // i += 4;
 
         Ok(Self {
@@ -238,6 +247,7 @@ impl Snapshot {
             energy_potential,
             energy_potential_between_mols: Vec::new(),
             hydrogen_bonds: Vec::new(),
+            energy_potential_nonbonded,
             temperature,
             pressure,
         })
@@ -362,9 +372,11 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
         icntrl[10] = 0;
         icntrl[11] = 0;
         icntrl[19] = 1;
+
         for v in icntrl {
             header.extend_from_slice(&v.to_le_bytes());
         }
+
         header[4 + 36..4 + 40].copy_from_slice(&delta.to_le_bytes());
         rec(&mut f, &header)?;
 
@@ -373,6 +385,7 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
         let tb = title.as_bytes();
         let n = tb.len().min(80);
         line[..n].copy_from_slice(&tb[..n]);
+
         let mut title_block = Vec::with_capacity(4 + 80);
         title_block.extend_from_slice(&(1i32).to_le_bytes());
         title_block.extend_from_slice(&line);

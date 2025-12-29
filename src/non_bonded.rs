@@ -459,6 +459,7 @@ impl MdState {
 
         self.barostat.virial_nonbonded_short_range += virial;
         self.potential_energy += energy;
+        self.potential_energy_nonbonded += energy;
 
         // todo; not sure. For one mol, we get 1 and 0.
         if energy_between_mols.len() == self.potential_energy_between_mols.len() {
@@ -607,9 +608,10 @@ impl MdState {
                     #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
                     let v = pme_recip.forces(&pos_all, &q_all);
                     #[cfg(any(feature = "cufft", feature = "vkfft"))]
-                    // todo temp!!!
-                    // let v = pme_recip.forces(&pos_all, &q_all);
-                    let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
+                    // todo temp!!! GPU version is broken/the old one that has runaway
+                    // todo energy, and CPU version is not validated.
+                    let v = pme_recip.forces(&pos_all, &q_all);
+                    // let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
 
                     v
                 }
@@ -619,7 +621,7 @@ impl MdState {
             }
         };
 
-        // println!("F Recip: {}", f_recip[0]);
+        // println!("F Recip: {:.6?}", f_recip[0]);
 
         self.potential_energy += e_recip as f64;
         let mut virial_lr_recip = self.unpack_apply_pme_forces(&f_recip, &pos_all);
@@ -804,6 +806,7 @@ pub fn f_nonbonded_cpu(
         )
     };
 
+    // println!("F Short range: {}", f_coulomb);
     // println!("\nQ: {:?}, dist: {:?}, f: {:?}", tgt.partial_charge, dist, f_coulomb.x);
 
     // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
@@ -811,8 +814,6 @@ pub fn f_nonbonded_cpu(
         f_coulomb *= SCALE_COUL_14;
         energy_coulomb *= SCALE_COUL_14;
     }
-
-    // todo: How do we prevent accumulating energy on static atoms and water?
 
     // println!("F coulomb (CPU): {f_coulomb} LJ: {f_lj}");
 

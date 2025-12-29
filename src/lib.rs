@@ -147,7 +147,7 @@ use crate::{
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
-    snapshot::{FILE_SAVE_INTERVAL, SaveType, Snapshot, SnapshotHandler, append_dcd},
+    snapshot::{SaveType, Snapshot, SnapshotHandler, append_dcd},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
     water::{WaterMol, WaterMolx8, WaterMolx16, init::make_water_mols},
 };
@@ -645,6 +645,9 @@ pub struct MdState {
     /// Used to track which molecule each atom is associated with in our flattened structures.
     /// This is the potential energy between every pair of molecules.
     pub potential_energy_between_mols: Vec<f64>,
+    /// A newer, simpler approach for energy between molecules, compared to `potential_energy_between_mols`.
+    /// This is simply the potential energy from non-bonded interactions, and excludes that from bonded.
+    pub potential_energy_nonbonded: f64,
     /// Every so many snapshots, write these to file, then clear from memory.
     snapshot_queue_for_file: Vec<Snapshot>,
     #[cfg(feature = "cuda")]
@@ -704,13 +707,6 @@ impl MdState {
         // These Vecs all share indices, and all include all molecules.
         let mut atoms_md = Vec::new();
         let mut adjacency_list = Vec::new();
-
-        // todo: Allow a water-only sim, buut need to rework how your simbox sizes for that.
-        // if mols.is_empty() {
-        //     return Err(ParamError::new(
-        //         "No molecules to simulate. Please provide at least one molecule.",
-        //     ));
-        // }
 
         // We combine all molecule general and specific params into this set, then
         // create Indexed params from it.
@@ -828,7 +824,7 @@ impl MdState {
                 None => &build_adjacency_list(&atoms, &mol.bonds)?,
             };
 
-            // Update indices based on atoms from previously-added molecules.
+            // Update indices based on atoms from previously added molecules.
             for aj in adjacency_list_ {
                 let mut updated = aj.clone();
                 for neighbor in &mut updated {
@@ -840,12 +836,6 @@ impl MdState {
 
             atom_ct_prior_to_this_mol += atoms.len();
         }
-
-        // if atoms_md.is_empty() {
-        //     return Err(ParamError::new(
-        //         "No atoms to simulate; please provide at least one.",
-        //     ));
-        // }
 
         let force_field_params = ForceFieldParamsIndexed::new(
             &params,
@@ -861,22 +851,6 @@ impl MdState {
             atom.assign_data_from_params(&force_field_params, i);
             mass_accel_factor.push(ACCEL_CONVERSION / atom.mass);
         }
-
-        // let cell = if atoms_md.is_empty() {
-        //     match cfg.sim_box {
-        //         SimBoxInit::Fixed(v) => cfg.sim_box,
-        //         SimBoxInit::Pad()
-        //     }
-        //
-        //     let corner = Vec3::new(
-        //         SIMBOX_SIZE_NO_ATOMS / 2.,
-        //         SIMBOX_SIZE_NO_ATOMS / 2.,
-        //         SIMBOX_SIZE_NO_ATOMS / 2.,
-        //     );
-        //     SimBox::new(&atoms_md, &SimBoxInit::Fixed((-corner, corner)))
-        // } else {
-        //     SimBox::new(&atoms_md, &cfg.sim_box)
-        // };
 
         let cell = SimBox::new(&atoms_md, &cfg.sim_box);
 
@@ -1011,6 +985,7 @@ impl MdState {
         self.barostat.virial_nonbonded_long_range = 0.0;
 
         self.potential_energy = 0.;
+        self.potential_energy_nonbonded = 0.;
         self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)]
     }
 
@@ -1120,8 +1095,7 @@ impl MdState {
                 SaveType::Dcd(path) => {
                     take_ss_file = true;
 
-                    // todo: Handle the case of the final step!
-                    if self.step_count.is_multiple_of(FILE_SAVE_INTERVAL) {
+                    if self.step_count.is_multiple_of(handler.ratio) {
                         if let Err(e) = append_dcd(&self.snapshot_queue_for_file, path) {
                             eprintln!("Error saving snapshot as DCD: {e:?}");
                         }
@@ -1144,24 +1118,21 @@ impl MdState {
         }
     }
 
-    // todo: For calling by user at the end (temp), don't force it to append the path.
-    //todo: DRY with in the main step path (Doesn't call this) to avoid a dbl borrow.
-    pub fn save_snapshots_to_file(&mut self, path: &Path) {
-        if self.step_count.is_multiple_of(FILE_SAVE_INTERVAL) {
-            if let Err(e) = append_dcd(&self.snapshot_queue_for_file, path) {
-                eprintln!("Error saving snapshot as DCD: {e:?}");
+    /// For calling by the applicastion. Saves in-memory snapshots to file, e.g. DCD.
+    pub fn save_snapshots_to_file(&self, path: &Path, ratio: usize) -> Result<(), io::Error> {
+        let mut snaps_to_save = Vec::with_capacity(self.snapshots.len() / ratio);
+        for (i, snap) in self.snapshots.iter().enumerate() {
+            if i.is_multiple_of(ratio) {
+                snaps_to_save.push(snap.clone());
             }
-            self.snapshot_queue_for_file = Vec::new();
         }
-    }
 
-    // /// Note: This is currently only for the dynamic atoms; does not take water kinetic energy into account.
-    // fn current_kinetic_energy(&self) -> f64 {
-    //     self.atoms
-    //         .iter()
-    //         .map(|a| 0.5 * (a.mass * a.vel.magnitude_squared()) as f64)
-    //         .sum()
-    // }
+        if let Err(e) = append_dcd(&snaps_to_save, path) {
+            eprintln!("Error saving snapshot as DCD: {e:?}");
+        }
+
+        Ok(())
+    }
 
     /// We pass in pressure, as we calculate each step as part of the barostat.
     fn take_snapshot(&self, pressure: f64) -> Snapshot {
@@ -1197,6 +1168,7 @@ impl MdState {
             energy_kinetic: self.kinetic_energy as f32,
             energy_potential: self.potential_energy as f32,
             energy_potential_between_mols,
+            energy_potential_nonbonded: self.potential_energy_nonbonded as f32,
             hydrogen_bonds: Vec::new(), // Populated later A/R.
             temperature,
             pressure: pressure as f32,
@@ -1255,4 +1227,31 @@ pub(crate) fn split4_mut<T>(
             &mut *base.add(i3),
         )
     }
+}
+
+/// Set up with no water molecules or relaxation. Run one step to compute energies, then return
+/// the snapshot taken.
+pub fn compute_energy_snapshot(
+    dev: &ComputationDevice,
+    mols: &[MolDynamics],
+    param_set: &FfParamSet,
+) -> Result<Snapshot, ParamError> {
+    let cfg = MdConfig {
+        integrator: Integrator::VerletVelocity { thermostat: None },
+        hydrogen_constraint: HydrogenConstraint::Flexible,
+        max_init_relaxation_iters: None,
+        overrides: MdOverrides {
+            skip_water: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut md_state = MdState::new(dev, &cfg, mols, param_set)?;
+
+    // dt is arbitrary?
+    let dt = 0.001;
+    md_state.step(dev, dt);
+
+    Ok(md_state.snapshots[0].clone())
 }

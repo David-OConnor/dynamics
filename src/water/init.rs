@@ -4,20 +4,23 @@
 //! velocities. Set up to meet density, pressure, and or temperature targets. Not specific to the
 //! water model used.
 
-use crate::partial_charge_inference::files::{load, load_from_bytes};
-use crate::partial_charge_inference::save;
-use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, MdState,
-    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
-    sa_surface,
-    water::WaterMol,
-};
+use std::{f32::consts::TAU, io, path::Path, time::Instant};
+
 use bincode::{Decode, Encode};
 use lin_alg::f32::{Mat3 as Mat3F32, Quaternion, Vec3};
 use rand::{Rng, distr::Uniform, rngs::ThreadRng};
 use rand_distr::{Distribution, Normal};
-use std::path::Path;
-use std::{f32::consts::TAU, io, time::Instant};
+
+use crate::{
+    ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, MdState,
+    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
+    partial_charge_inference::{
+        files::{load, load_from_bytes},
+        save,
+    },
+    sa_surface,
+    water::WaterMol,
+};
 
 // 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing
 // and maintaining the water density and molecule count.
@@ -52,16 +55,12 @@ const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 const MIN_WATER_O_O_DIST: f32 = 1.7;
 const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
 
-// Higher is better, but slower. After hydrogen bond networks are settled, higher doensn't
+// Higher is more accurate, but slower. After hydrogen bond networks are settled, higher doensn't
 // improve things. Note that we initialize from a pre-equilibrated template, so we shouldn't
 // need many effects. This mainly deals with template tiling effects, and water-solute conflicts.
-
-// todo: Make this dynamic based on thngs like solute size relative to sim box?
-// const NUM_SIM_STEPS: usize = 1_000;
-const NUM_SIM_STEPS: usize = 300;
+const NUM_SIM_STEPS: usize = 200;
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 // We seem to get better settling results with a low dt.
-// const SIM_DT: f32 = 0.001;
 const SIM_DT: f32 = 0.0005;
 
 const INIT_TEMPLATE: &[u8] = include_bytes!("../../param_data/water_60A.water_init_template");
