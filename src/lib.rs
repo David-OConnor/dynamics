@@ -79,6 +79,7 @@ mod add_hydrogens;
 mod ambient;
 mod bonded;
 mod bonded_forces;
+mod dcd;
 mod forces;
 pub mod integrate;
 mod neighbors;
@@ -126,6 +127,8 @@ use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2
 use cudarc::driver::{CudaContext, CudaFunction, CudaStream};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
+use dcd::append_dcd;
+pub use dcd::load_dcd;
 use ewald::PmeRecip;
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -147,7 +150,7 @@ use crate::{
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
-    snapshot::{SaveType, Snapshot, SnapshotHandler, append_dcd},
+    snapshot::{SaveType, Snapshot, SnapshotHandler},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
     water::{WaterMol, WaterMolx8, WaterMolx16, init::make_water_mols},
 };
@@ -642,13 +645,15 @@ pub struct MdState {
     /// kcal/mol
     pub kinetic_energy: f64,
     pub potential_energy: f64,
-    /// Used to track which molecule each atom is associated with in our flattened structures.
-    /// This is the potential energy between every pair of molecules.
-    pub potential_energy_between_mols: Vec<f64>,
     /// A newer, simpler approach for energy between molecules, compared to `potential_energy_between_mols`.
     /// This is simply the potential energy from non-bonded interactions, and excludes that from bonded.
     pub potential_energy_nonbonded: f64,
+    /// E.g. energy in covalent bonds, as modelled as oscillators.
+    pub potential_energy_bonded: f64,
     /// Every so many snapshots, write these to file, then clear from memory.
+    /// Used to track which molecule each atom is associated with in our flattened structures.
+    /// This is the potential energy between every pair of molecules.
+    pub potential_energy_between_mols: Vec<f64>,
     snapshot_queue_for_file: Vec<Snapshot>,
     #[cfg(feature = "cuda")]
     gpu_kernel: Option<CudaFunction>, // Option only due to not impling Default.
@@ -986,6 +991,7 @@ impl MdState {
 
         self.potential_energy = 0.;
         self.potential_energy_nonbonded = 0.;
+        self.potential_energy_bonded = 0.;
         self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)]
     }
 
@@ -1020,25 +1026,26 @@ impl MdState {
         // todo of the short-range part of the recip. This depends on the application.
         if !self.cfg.overrides.long_range_recip_disabled {
             if self.step_count.is_multiple_of(SPME_RATIO) {
-                {
-                    // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
-                    // It will produce inaccurate results otherwise.
-                    if log_time {
-                        start = Instant::now();
-                    }
+                // Compute SPME recip forces as usual, and cache for use in steps where we don't.
 
-                    let data = self.handle_spme_recip(dev);
+                // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
+                // It will produce inaccurate results otherwise.
+                if log_time {
+                    start = Instant::now();
+                }
 
-                    if SPME_RATIO != 1 {
-                        self.spme_force_prev = Some(data);
-                    }
+                let data = self.handle_spme_recip(dev);
 
-                    if log_time {
-                        let elapsed = start.elapsed().as_micros() as u64;
-                        self.computation_time.ewald_long_range_sum += elapsed;
-                    }
+                if SPME_RATIO != 1 {
+                    self.spme_force_prev = Some(data);
+                }
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.ewald_long_range_sum += elapsed;
                 }
             } else {
+                // Use the previously-cached SPME forces.
                 match &self.spme_force_prev {
                     Some((forces, potential_e, virial_e)) => {
                         // Unpack; forces were applied to flattened water and non-water
@@ -1047,9 +1054,6 @@ impl MdState {
                         // self.unpack_apply_pme_forces(forces, &[]);
                         // todo: This is a C+P from the unpack fn! We are getting a borrow error otherwise.
                         let water_start = self.atoms.len();
-
-                        // todo: SPME is injecting energy into the system; fix!
-                        // todo: The thermostat is struggling to keep up.
 
                         for (i, f) in forces.iter().enumerate() {
                             if i < water_start {
@@ -1066,6 +1070,8 @@ impl MdState {
                         }
 
                         self.potential_energy += potential_e;
+                        self.potential_energy_nonbonded += potential_e;
+
                         self.barostat.virial_nonbonded_long_range += virial_e;
                     }
                     None => {
@@ -1096,7 +1102,7 @@ impl MdState {
                     take_ss_file = true;
 
                     if self.step_count.is_multiple_of(handler.ratio) {
-                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, path) {
+                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, path, false) {
                             eprintln!("Error saving snapshot as DCD: {e:?}");
                         }
                         self.snapshot_queue_for_file = Vec::new();
@@ -1127,7 +1133,7 @@ impl MdState {
             }
         }
 
-        if let Err(e) = append_dcd(&snaps_to_save, path) {
+        if let Err(e) = append_dcd(&snaps_to_save, path, false) {
             eprintln!("Error saving snapshot as DCD: {e:?}");
         }
 
@@ -1169,6 +1175,7 @@ impl MdState {
             energy_potential: self.potential_energy as f32,
             energy_potential_between_mols,
             energy_potential_nonbonded: self.potential_energy_nonbonded as f32,
+            energy_potential_bonded: self.potential_energy_bonded as f32,
             hydrogen_bonds: Vec::new(), // Populated later A/R.
             temperature,
             pressure: pressure as f32,
@@ -1252,6 +1259,12 @@ pub fn compute_energy_snapshot(
     // dt is arbitrary?
     let dt = 0.001;
     md_state.step(dev, dt);
+
+    if md_state.snapshots.is_empty() {
+        return Err(ParamError {
+            descrip: String::from("Snapshots empty on energy compuptation"),
+        });
+    }
 
     Ok(md_state.snapshots[0].clone())
 }

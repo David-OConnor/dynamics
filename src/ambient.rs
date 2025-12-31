@@ -24,7 +24,7 @@ pub(crate) const GAS_CONST_R: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Am
 // Boltzmann constant in (amu · Å²/ps²) K⁻¹
 // We use this for the Langevin and Anderson thermostat, where we need per-particle Gaussian noise or variance.
 pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
-pub(crate) const BAR_PER_KCAL_MOL_PER_A3: f64 = 69476.95457055373;
+pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 
 // TAU is for the CSVR thermostat. In ps. Lower means more sensitive.
 // We set an aggressive thermostat during water initialization, then a more relaxed one at runtime.
@@ -330,12 +330,11 @@ impl MdState {
         (2.0 * self.kinetic_energy) / (self.thermo_dof as f64 * GAS_CONST_R)
     }
 
-    /// Used in temperature computation. Constraints tracked are Hydrogen if configured, and
-    /// static atoms.
+    /// Used in temperature computation. Constraints tracked are Hydrogen if constrained, COM drift removal,
+    /// and static atoms.
     /// We cache this at init. Used for kinetic energy and temperature computations.
     pub(crate) fn dof_for_thermo(&self) -> usize {
-        // 6 positional + 3 rotational for each water mol.
-        // let mut result = 3 * self.water.len();
+        // 3 positional + 3 rotational for each water mol.
         let mut result = 6 * self.water.len();
 
         if !self.water_only_sim_at_init {
@@ -356,7 +355,7 @@ impl MdState {
             }
 
             if self.cfg.zero_com_drift {
-                c += 3;
+                c += 6;
             }
             c
         };
@@ -457,19 +456,21 @@ impl MdState {
     }
 }
 
-/// Instantaneous pressure in bar.
-/// P = (2K + W) / (3V), in kcal/mol/Å^3
+/// Measure instantaneous pressure, in bar.
+/// P = (2K + W) / (3V), in kcal/mol/Å³
 pub(crate) fn measure_instantaneous_pressure(
     kinetic_energy: f64, // kcal
     simbox: &SimBox,
     virial_total: f64,
 ) -> f64 {
-    // P = (2K + W) / (3V)  in kcal/mol/Å^3
-    let v_a3 = simbox.volume() as f64;
-    let p_kcal_per_a3 = (2.0 * kinetic_energy + virial_total) / (3.0 * v_a3);
+    // P = (2K + W) / (3V)  in kcal/mol/Å³
+    let vol = simbox.volume() as f64; // Å³
 
-    // Convert to bar
-    p_kcal_per_a3 * BAR_PER_KCAL_MOL_PER_A3
+    // This is in kcal/mol/ Å³
+    let result_native_units = (2.0 * kinetic_energy + virial_total) / (3.0 * vol);
+
+    // Convert from native units to bar
+    result_native_units * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED
 }
 
 impl MdState {

@@ -624,6 +624,8 @@ impl MdState {
         // println!("F Recip: {:.6?}", f_recip[0]);
 
         self.potential_energy += e_recip as f64;
+        self.potential_energy_nonbonded += e_recip as f64;
+
         let mut virial_lr_recip = self.unpack_apply_pme_forces(&f_recip, &pos_all);
 
         // 1–4 Coulomb scaling correction (vacuum correction)

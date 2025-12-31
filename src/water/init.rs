@@ -592,7 +592,7 @@ fn _init_velocities(
     // Remove global COM drift
     remove_com_velocity(mols);
 
-    let (ke_raw, dof) = kinetic_energy_and_dof(mols, zero_com_drift);
+    let (ke_raw, dof) = _kinetic_energy_and_dof(mols, zero_com_drift);
 
     // current T = 2 KE / (dof * R)
     let temperature_meas = (2.0 * ke_raw) / (dof as f32 * GAS_CONST_R as f32);
@@ -607,7 +607,7 @@ fn _init_velocities(
 
 /// Calculate kinetic energy in kcal/mol, and DOF for water only.
 /// Water is rigid, so 3 DOF per molecule.
-fn kinetic_energy_and_dof(mols: &[WaterMol], zero_com_drift: bool) -> (f32, usize) {
+fn _kinetic_energy_and_dof(mols: &[WaterMol], zero_com_drift: bool) -> (f32, usize) {
     let mut ke = 0.;
     for w in mols {
         ke += (w.o.mass * w.o.vel.magnitude_squared()) as f64;

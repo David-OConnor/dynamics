@@ -37,6 +37,7 @@ impl MdState {
             self.barostat.virial_bonded += virial as f64;
 
             self.potential_energy += energy as f64;
+            self.potential_energy_bonded += energy as f64;
         }
     }
 
@@ -64,6 +65,7 @@ impl MdState {
             self.barostat.virial_bonded += virial as f64;
 
             self.potential_energy += energy as f64;
+            self.potential_energy_bonded += energy as f64;
         }
     }
 
@@ -99,6 +101,7 @@ impl MdState {
             self.barostat.virial_bonded += virial as f64;
 
             self.potential_energy += energy as f64;
+            self.potential_energy_bonded += energy as f64;
         }
     }
 
