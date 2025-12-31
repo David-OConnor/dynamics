@@ -348,6 +348,7 @@ impl MdState {
                 for atom in &self.atoms {
                     if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained
                         && atom.element == Element::Hydrogen
+                        && !atom.static_
                     {
                         c += 1;
                     }
@@ -463,7 +464,6 @@ pub(crate) fn measure_instantaneous_pressure(
     simbox: &SimBox,
     virial_total: f64,
 ) -> f64 {
-    // P = (2K + W) / (3V)  in kcal/mol/Å³
     let vol = simbox.volume() as f64; // Å³
 
     // This is in kcal/mol/ Å³
