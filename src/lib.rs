@@ -1,7 +1,11 @@
 #![allow(non_snake_case)]
 #![allow(confusable_idents)]
 
-//! See the [https://github.com/David-OConnor/dynamics/blob/main/README.md](Readme) for a general overview.
+//! See the [Readme](https://github.com/David-OConnor/dynamics/blob/main/README.md) for a general overview,
+//! or [Molchanica docs, MD section](https://www.athanorlab.com/docs/md.html) for more information about
+//! assumptions. Or see the [examples folder on Github](https://github.com/David-OConnor/dynamics/tree/main/examples)
+//! for how to use this in your application.
+//!
 //! The textual information here is informal, and aimed at code maintenance; not library use.
 //!
 //! This module contains high-level tools for running Newtonian molecular dynamics simulations.

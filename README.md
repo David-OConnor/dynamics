@@ -5,9 +5,9 @@
 [![Descriptive Docs](https://docs.rs/dynamics/badge.svg)](https://www.athanorlab.com/docs/md.html)
 [![PyPI](https://img.shields.io/pypi/v/mol_dynamics.svg)](https://pypi.org/project/mol_dynamics)
 
-A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac.
-Uses CPU with threadpools and SIMD, or an Nvidia GPU. It uses traditional forcefield-based molecular dynamics, and is
-inspired by Amber. It does not use quantum-mechanics, nor ab-initio methods.
+A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac. Uses CPU with threadpools and
+SIMD, or an Nvidia GPU. It uses traditional forcefield-based molecular dynamics, and is inspired by Amber. It does not
+use quantum-mechanics, nor ab-initio methods.
 
 It uses the [Bio-Files](https://github.com/david-oconnor/bio-files) dependency to load molecule and force-field files.
 
@@ -16,9 +16,7 @@ more information about the algorithm, reference the [docs here](https://www.atha
 reference the [API documentation](https://docs.rs/dynamics) for details on the functionality of each data structure and
 function. You may wish to reference the [Bio Files API docs](https://docs.rs/bio-files) as well.
 
-**Note: We currently only support saving and loading snapshots/trajectories in a custom format.**
-
-We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer, with nvidia
+We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer, with Nvidia
 drivers 580 or newer.
 
 **Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having
@@ -55,12 +53,12 @@ simulation, and play back trajectories.
 
 The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/bio_files/struct.AtomGeneric.html)
 and [BondGeneric](https://docs.rs/bio_files/latest/bio_files/struct.BondGeneric.html). You can get these by loading
-molecular file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files) library
-([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them
-directly. See examples below and in the [examples folder](https://github.com/David-OConnor/dynamics/tree/main/examples),
-and the docs links above; those are structs of plain data that can be built from from arbitrary input sources. For
-example, if you're building an application, you might use a more complicated Atom format; you can create a function that
-converts between yours, and `AtomGeneric`.
+molecular file formats (mmCIF, Mol2, SDF, etc) using the [Bio Files](https://github.com/david-OConnor/bio_files)
+library ([biology-files in Python](https://pypi.org/project/biology-files/)), or by creating them directly. See examples
+below and in the [examples folder](https://github.com/David-OConnor/dynamics/tree/main/examples), and the docs links
+above; those are structs of plain data that can be built from from arbitrary input sources. For example, if you're
+building an application, you might use a more complicated Atom format; you can create a function that converts between
+yours, and `AtomGeneric`.
 
 ## Parameters
 
@@ -80,18 +78,50 @@ This library uses a traditional MD workflow. We use the following components:
 
 ### Integrators, thermostats, barostats
 
-We provide a Velocity-Verlet integrator. It can be used with a Berendsen barostat, and either a
-CSVR/Bussi, or Langevin thermostat (Middle or traditional). These continuously update atom velocities (for molecules and
-solvents) to match target pressure and temperatures. The Langevin Middle thermostat is a good starting point.
+We provide a Velocity-Verlet integrator. It can be used with a Berendsen barostat, and either
+a  [CSVR](https://arxiv.org/pdf/0803.4060), or Langevin Middle thermostat. Or, use the Velocity Verlet integrator
+without a thermostat. These continuously update atom velocities (for molecules and solvents) to match target pressure
+and temperatures. You can select the target temperature to the right of the integrator selector.
 
-### Solvation
+The Verlet Velocity integrator can be either used with CSVR thermostat, or without; this is selected using the
+*thermostat* checkbox next to the integrator selector. At this time, the thermostat temperature constant, τ, is
+hard-coded to be 0.9ps. Lower values correct more aggressively.
+
+The Langevin Middle integrator is selected by default, and is always used with a thermostat. Its coefficient γ is
+selectable in the UI, next to the integrator selector, and is in 1/ps. Higher γ values correct to the target temperature
+more aggressively.
+
+## Solvation
 
 We use an explicit water solvation model: A 4-point rigid OPC model, with a point partial charge on each Hydrogen, and a
 M (or EP) point offset from the Oxygen.
-We use the [SETTLE]() algorithm to maintain rigidity, while applying forces to each atom. Only the Oxygen atom
-carries a Lennard Jones(LJ) force.
 
-### Bonded forces
+We use the [SETTLE](https://onlinelibrary.wiley.com/doi/10.1002/jcc.540130805) algorithm to maintain rigidity, while
+applying forces to each atom. Only the Oxygen atom carries a Lennard Jones(LJ) force. Solvation is set up by default,
+and requires no special adjustments. If you wish, you may change the size of the simulation box padding with its
+associated input on the MD toolbar.
+
+The simulation box uses periodic boundary conditions: When a water molecule exits one side of it, it simultaneously
+re-appears on the opposite side. Further, our long-range SPME computations are designed to incorporate this periodic
+boundary position, simulating an infinitely-extending simulation box. Note that this has an unfortunate (But usually
+negligible) side effect of also including *images* of non-water molecules in computations.
+
+## Equilibration
+
+Prior to the simulation properly starting, we perform equilibration with two techniques: Iterative energy minimization
+of the (non-water) molecules, and running a short simulation of only the water molecules. The minimization helps to
+relieve tension in the initial atom configuration. For example, if the bond length provided by the initial atom
+coordinates doesn't match that of the *bonded* length parameter.
+
+The water pre-simulation breaks the initial crystal lattice configuration, builds hydrogen bond networks, and allows the
+simulation to settle at the specific temperature. We initialize water molecules with appropriate velocities, but this
+additional step helps. When the snapshots (aka trajectories) start building, the system will be equilibrated.
+
+You can disable the energy minimization using the *relax* check box in the UI, but the water equilibration is always
+active. It runs in the range of a few hundred to 1,000 steps, and uses a more aggressive thermostat coefficient (τ for
+CSVR, and γ for Langevin) than is used during the normal simulation.
+
+## Bonded forces
 
 We use Amber-style spring-based forces to maintain covalent bonds. We maintain the following parameters:
 
@@ -102,7 +132,7 @@ We use Amber-style spring-based forces to maintain covalent bonds. We maintain t
 - Improper Dihedral angles between 4-atoms in a hub-and-spoke configuration. These, for example, maintain stability
 - where rings meet other parts of the molecule, or other rings.
 
-### Non-bonded forces
+## Non-bonded forces
 
 These are Coulomb and Lennard Jones (LJ) interactions. These make up the large majority of computational effort. Coulomb
 forces represent electric forces occurring from dipoles and similar effects, or ions. We use atom-centered pre-computed
@@ -114,27 +144,88 @@ the [SPME Ewald](https://manual.gromacs.org/nightly/reference-manual/functions/l
 approximation to reduce computation time. This algorithm
 is suited for periodic boundary conditions, which we use for the solvent.
 
-We use Amber's scaling and exclusion rules: LJ and Coulomb force is reduced between atoms separated by 1 and 2
-covalent bonds, and skipped between atoms separated by 3 covalent bonds.
+We use Amber's scaling and exclusion rules: LJ and Coulomb force is reduced between atoms separated by 1 and 2 covalent
+bonds, and skipped between atoms separated by 3 covalent bonds.
 
 We have two modes of handling Hydrogen in bonded forces: The same as other atoms, and rigid, with position maintained
 using SHAKE and RATTLE algorithms. The latter allows for stability under higher timesteps. (e.g. 2ps)
 
-### Initial relaxation
+## Center-of-mass drift removal
 
-We run a relaxation / energy-minimization function prior to starting each simulation. This adjusts atom
-positions to reduce the amount of energy that comes from initial conditions deviating from bonded parameters.
+Periodically we remove any linear and angular center of mass drift, that applies to the whole system. This helps reduce
+extra energy in the system that may have entered from numerical precision and other error sources. We apply this to both
+water, and non-water molecules.
 
-### Floating point precision
+## Velocity initiation and maintenance
 
-Mixed precision: 32-bit floating points for most operations. We use 64-bit accumulators, and in thermostat
-and barostat computations. This is especially relevant, as consumer GPUs have poor f64 performance.
+Water molecules are initiated with velocities according to
+the [Maxwell-Boltzmann distribution](https://en.wikipedia.org/wiki/Maxwell%E2%80%93Boltzmann_distribution), according to
+the prescribed target temperature. This temperature is specified in the UI. Prior to our proper simulation start time,
+we briefly perform MD on water molecules only, holding the solute rigid. This allows hydrogen bond networks to form, and
+lets the thermostat fine-tune the velocities.
+
+![MD of a DNA strand](https://www.athanorlab.com/static/images/molchanica/dna_md.png)
+
+## Partial Charges
+
+For proteins, nucleic acids, and lipids, we use partial charges provided by Amber force fields (listed above) directly.
+
+For small organic molecules, we infer [AM1-BCC partial charges](https://onlinelibrary.wiley.com/doi/10.1002/jcc.10128)
+for each molecule when loading it. We do so using a machine learning algorithm trained on Amber's Geostd set. We use
+the [candle](https://github.com/huggingface/candle) library's neural nets. It's trained on this set of ~30k small
+organic molecules that have force field types, and partial charges assigned using AM1-BCC computations. Inference is
+fast, typically taking a few milliseconds.
+
+If your small molecule already has partial charges, we use those directly instead of computing new ones. Partial charges
+may be provided in Mol2 files as part of their column data, or as SDF metadata. For the latter, we support both
+*OpenFF*'s "atom.dprop.PartialCharge", and *Pubchem*'s "PUBCHEM_MMFF94_PARTIAL_CHARGES" formats.
+
+If ORCA is installed, you can use it to generate [MBIS](https://arxiv.org/pdf/1608.05556) charges. This is one of the
+most accurate approaches, but is very slow; it may take several minutes to complete for a single small molecule. To use
+this, click *Assign MBIS q* from the *ORCA* UI section; it will update charges for the active molecule. You may then
+save this to `Mol2` or `SDF` format if you wish. When saving to SDF, we use the Pubchem metadata format
+for partial charges.
+
+## Bonded parameter overrides for small organic molecules
+
+Small organic molecules use bonded parameters from Amber's Gaff2 set. Most molecules have dihedral parameters (proper
+and improper) that are not present in Gaff2. We substitute Gaff2 parameters in for these based on the closest match
+of their force field types to parameters present in Gaff2. We (rarely) do the same for missing bond and valence angle
+parameters. Alternatively, you may provide these overrides directly by opening *FRDMOD* or
+*PRMPTOP* files directly.
+
+## Floating point precision
+
+This application uses mixed precision: 32-bit floating point is the default for most operations. We use 64-bit for
+accumulation computations (e.g. kinetic and potential energy), and in thermostat and barostat computations. The use of
+32-bit floating point introduces more precision errors than 64-bit, but reduces memory and bandwidth cost. This is
+especially relevant for parallel computations: The CPU can perform twice as many 32-bit SIMD operations are 64-bit, and
+bandwidth to and from the GPU on the PCIe bus is halved. Perhaps more importantly, consumer GPUs have poor f64
+performance, so using 32-bit values significantly improves speed on these devices.
 
 ### How pH adjustment works
 
 pH in proteins is represented by the protenation state of certain amino acids. In particular, His,
 Asp, Cys, Glu, and Lys are affected. These changes are affected in utility functions we provide that
 add Hydrogen atoms.
+
+## Energy, temperature, and pressure measurements
+
+Snapshots contain energy data. Potential energy is broken down into two components: That from covalent bonds (*Bonded*),
+and that from Coulomb, Lennard Jones, and SPME forces. (*Non-bonded*) These values all take into account both the
+molecules loaded, and the explicit water solvent molecules. Water molecules are treated as any other, with some
+exceptions due to their rigidly-defined geometry.
+
+Kinetic energy is computed using the standard manner: By computing the mass of each atom multiplied by the magnitude
+squared of its velocity, summed over every atom. Temperature, displayed in Kelvin, is computed as follows:
+$2 KE / (**DOF** × **R**) $ , where **R** is the Boltzmann gas constant, defined as 1.987 × 10³ kcal mol⁻¹ K⁻¹. (These
+are the simulation's native units).
+
+**DOF** is the number of degrees-of-freedom of the system. We compute this as 3 × the number of non-static atoms in the
+system excluding water, for the 3 orthogonal directions an atom can move. We add 6 × the number of water molecules in
+the system; this takes into account its rigid character, with each water molecule having 3 positional degrees of
+freedom, and 3 rotational ones. We subtract one degree of freedom for each non-water hydrogen atom, if hydrogens are set
+as constrained. We also subtract 3 DOF for the center-of-motion drift removal, and 3 for its angular motion removal.
 
 ### Saving results
 
