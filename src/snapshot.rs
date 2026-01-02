@@ -2,13 +2,16 @@
 
 use std::{
     collections::HashMap,
-    io::{self, ErrorKind},
-    path::PathBuf,
+    fs,
+    fs::File,
+    io::{self, ErrorKind, Write},
+    path::{Path, PathBuf},
 };
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType};
+use bio_files::{AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType, dcd::DcdFrame};
+use candle_core::Shape;
 use lin_alg::f32::Vec3;
 
 use crate::AtomDynamics;
@@ -81,6 +84,27 @@ impl Snapshot {
 
         // self.hydrogen_bonds = result;
     }
+
+    pub fn to_dcd(&self, write_water: bool) -> DcdFrame {
+        let mut atom_posits = self.atom_posits.clone();
+
+        if write_water {
+            for pos in &self.water_o_posits {
+                atom_posits.push(pos.clone());
+            }
+            for pos in &self.water_h0_posits {
+                atom_posits.push(pos.clone());
+            }
+            for pos in &self.water_h1_posits {
+                atom_posits.push(pos.clone());
+            }
+        }
+
+        DcdFrame {
+            time: self.time,
+            atom_posits,
+        }
+    }
 }
 
 /// Used for visualizing hydrogen bonds on a given snapshot.
@@ -109,158 +133,6 @@ macro_rules! copy_le {
 }
 
 impl Snapshot {
-    /// E.g. for saving to file. Saves all items as 32-bit floating point.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        const SIZE: usize = 12 * 7; // Assumes 32
-        let mut result = Vec::with_capacity(SIZE);
-
-        let mut i = 0;
-
-        copy_le!(result, self.time, i..i + 4);
-        i += 4;
-        copy_le!(result, self.atom_posits.len() as u32, i..i + 4);
-        i += 4;
-        copy_le!(result, self.water_o_posits.len() as u32, i..i + 4);
-        i += 4;
-
-        for pos in &self.atom_posits {
-            copy_le!(result, pos.x, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z, i..i + 4);
-            i += 4;
-        }
-
-        for v in &self.atom_velocities {
-            copy_le!(result, v.x, i..i + 4);
-            i += 4;
-            copy_le!(result, v.y, i..i + 4);
-            i += 4;
-            copy_le!(result, v.z, i..i + 4);
-            i += 4;
-        }
-
-        for pos in &self.water_o_posits {
-            copy_le!(result, pos.x, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z, i..i + 4);
-            i += 4;
-        }
-
-        for pos in &self.water_h0_posits {
-            copy_le!(result, pos.x, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z, i..i + 4);
-            i += 4;
-        }
-
-        for pos in &self.water_h1_posits {
-            copy_le!(result, pos.x, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.y, i..i + 4);
-            i += 4;
-            copy_le!(result, pos.z, i..i + 4);
-            i += 4;
-        }
-
-        for v in &self.water_velocities {
-            copy_le!(result, v.x, i..i + 4);
-            i += 4;
-            copy_le!(result, v.y, i..i + 4);
-            i += 4;
-            copy_le!(result, v.z, i..i + 4);
-            i += 4;
-        }
-
-        copy_le!(result, self.energy_kinetic, i..i + 4);
-        i += 4;
-        copy_le!(result, self.energy_potential, i..i + 4);
-        i += 4;
-        copy_le!(result, self.temperature, i..i + 4);
-        i += 4;
-        copy_le!(result, self.pressure, i..i + 4);
-        i += 4;
-
-        copy_le!(result, self.energy_potential_nonbonded, i..i + 4);
-        i += 4;
-
-        copy_le!(result, self.energy_potential_bonded, i..i + 4);
-        // i += 4;
-
-        result
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
-        let mut i = 0usize;
-
-        let time_f32 = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-        let n_atoms = parse_le!(bytes, u32, i..i + 4) as usize;
-        i += 4;
-        let n_waters = parse_le!(bytes, u32, i..i + 4) as usize;
-        i += 4;
-
-        let mut read_vec3s = |count: usize| {
-            let mut v = Vec::with_capacity(count);
-            for _ in 0..count {
-                let x = parse_le!(bytes, f32, i..i + 4);
-                i += 4;
-                let y = parse_le!(bytes, f32, i..i + 4);
-                i += 4;
-                let z = parse_le!(bytes, f32, i..i + 4);
-                i += 4;
-                v.push(Vec3 { x, y, z });
-            }
-            v
-        };
-
-        let atom_posits = read_vec3s(n_atoms);
-        let atom_velocities = read_vec3s(n_atoms);
-        let water_o_posits = read_vec3s(n_waters);
-        let water_h0_posits = read_vec3s(n_waters);
-        let water_h1_posits = read_vec3s(n_waters);
-        let water_velocities = read_vec3s(n_waters);
-
-        let energy_kinetic = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-        let energy_potential = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-        // todo: Omitting H bonds and mol potential for now.
-        let temperature = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-        let pressure = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-
-        let energy_potential_nonbonded = parse_le!(bytes, f32, i..i + 4);
-        i += 4;
-
-        let energy_potential_bonded = parse_le!(bytes, f32, i..i + 4);
-        // i += 4;
-
-        Ok(Self {
-            time: time_f32 as f64,
-            atom_posits,
-            atom_velocities,
-            water_o_posits,
-            water_h0_posits,
-            water_h1_posits,
-            water_velocities,
-            energy_kinetic,
-            energy_potential,
-            energy_potential_nonbonded,
-            energy_potential_bonded,
-            energy_potential_between_mols: Vec::new(),
-            hydrogen_bonds: Vec::new(),
-            temperature,
-            pressure,
-        })
-    }
-
     pub fn make_mol2(&self, atoms_: &[AtomGeneric], bonds: &[BondGeneric]) -> io::Result<Mol2> {
         if atoms_.len() != self.atom_posits.len() {
             return Err(io::Error::new(

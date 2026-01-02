@@ -83,7 +83,7 @@ mod add_hydrogens;
 mod ambient;
 mod bonded;
 mod bonded_forces;
-mod dcd;
+// mod dcd;
 mod forces;
 pub mod integrate;
 mod neighbors;
@@ -104,9 +104,9 @@ pub mod minimize_energy;
 
 pub mod param_inference;
 mod sa_surface;
+pub mod snapshot_mdt;
 #[cfg(test)]
 mod tests;
-// mod xtc;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
@@ -127,13 +127,15 @@ pub use add_hydrogens::{
 use ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, BondGeneric, Sdf, md_params::ForceFieldParams, mol2::Mol2};
+use bio_files::{
+    AtomGeneric, BondGeneric, Sdf, dcd::DcdTrajectory, md_params::ForceFieldParams, mol2::Mol2,
+};
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaContext, CudaFunction, CudaStream};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
-use dcd::append_dcd;
-pub use dcd::load_dcd;
+// use dcd::append_dcd;
+// pub use dcd::load_dcd;
 use ewald::PmeRecip;
 pub use integrate::Integrator;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -156,6 +158,7 @@ use crate::{
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{SaveType, Snapshot, SnapshotHandler},
+    snapshot_mdt::save_mdt,
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
     water::{WaterMol, WaterMolx8, WaterMolx16, init::make_water_mols},
 };
@@ -1107,8 +1110,15 @@ impl MdState {
                     take_ss_file = true;
 
                     if self.step_count.is_multiple_of(handler.ratio) {
-                        if let Err(e) = append_dcd(&self.snapshot_queue_for_file, path, false) {
-                            eprintln!("Error saving snapshot as DCD: {e:?}");
+                        let frames: Vec<_> = self
+                            .snapshot_queue_for_file
+                            .iter()
+                            .map(|ss| ss.to_dcd(false))
+                            .collect();
+                        let dcd = DcdTrajectory { frames };
+
+                        if let Err(e) = dcd.save(path) {
+                            eprintln!("Error saving snapshots as DCD: {e:?}");
                         }
                         self.snapshot_queue_for_file = Vec::new();
                     }
@@ -1131,6 +1141,12 @@ impl MdState {
 
     /// For calling by the applicastion. Saves in-memory snapshots to file, e.g. DCD.
     pub fn save_snapshots_to_file(&self, path: &Path, ratio: usize) -> Result<(), io::Error> {
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .ok_or_else(|| io::Error::other("Output path must have a file extension"))?;
+
         let mut snaps_to_save = Vec::with_capacity(self.snapshots.len() / ratio);
         for (i, snap) in self.snapshots.iter().enumerate() {
             if i.is_multiple_of(ratio) {
@@ -1138,7 +1154,27 @@ impl MdState {
             }
         }
 
-        if let Err(e) = append_dcd(&snaps_to_save, path, false) {
+        let result = match ext.as_ref() {
+            "dcd" => {
+                let frames: Vec<_> = snaps_to_save.iter().map(|ss| ss.to_dcd(false)).collect();
+                let dcd = DcdTrajectory { frames };
+                dcd.save(path)
+            }
+            "xtc" => {
+                let frames: Vec<_> = snaps_to_save.iter().map(|ss| ss.to_dcd(false)).collect();
+                let dcd = DcdTrajectory { frames };
+                dcd.save_xtc(path)
+            }
+            "mdt" => save_mdt(&snaps_to_save, path),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid file extension for saving snapshots.",
+                ));
+            }
+        };
+
+        if let Err(e) = result {
             eprintln!("Error saving snapshot as DCD: {e:?}");
         }
 
