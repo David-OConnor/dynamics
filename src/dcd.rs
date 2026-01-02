@@ -1,18 +1,18 @@
-//! For teh DCD reporter format. Todo: Move to bio_files?
+//! For the DCD reporter format. This is a format used by other software, including VMD. Todo: Move to bio_files?
 
 use std::{
     fs::{File, OpenOptions},
     io,
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::Path,
-    ptr::write,
 };
 
 use lin_alg::f32::Vec3;
 
 use crate::snapshot::Snapshot;
 
-fn rec<W: Write>(w: &mut W, payload: &[u8]) -> io::Result<()> {
+/// A wrapper for writing a DCD record: Payload sandwhiched by lenth.
+fn write_record<W: Write>(w: &mut W, payload: &[u8]) -> io::Result<()> {
     let len = payload.len() as u32;
 
     w.write_all(&len.to_le_bytes())?;
@@ -47,6 +47,7 @@ fn f32s_from_le_bytes(b: &[u8]) -> io::Result<Vec<f32>> {
             "float block not multiple of 4",
         ));
     }
+
     let n = b.len() / 4;
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -71,8 +72,6 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
         n_atoms +=
             first.water_o_posits.len() + first.water_h0_posits.len() + first.water_h1_posits.len();
     }
-
-    println!("N atoms: {:?} Write water: {:?}", n_atoms, write_water);
 
     for s in snapshots.iter().skip(1) {
         let mut n2 = s.atom_posits.len();
@@ -103,6 +102,7 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
         let nsets = snapshots.len() as i32;
         let istart: i32 = 0;
         let nsavc: i32 = 1;
+
         let delta: f32 = if snapshots.len() >= 2 {
             (snapshots[1].time - snapshots[0].time) as f32
         } else {
@@ -111,6 +111,7 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
 
         let mut header = Vec::with_capacity(84);
         header.extend_from_slice(b"CORD");
+
         let mut icntrl = [0i32; 20];
         icntrl[0] = nsets;
         icntrl[1] = istart;
@@ -125,7 +126,7 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
         }
 
         header[4 + 36..4 + 40].copy_from_slice(&delta.to_le_bytes());
-        rec(&mut f, &header)?;
+        write_record(&mut f, &header)?;
 
         let title = format!("Created by Dynamics  NATOMS={}  NFRAMES={}", n_atoms, nsets);
         let mut line = [0u8; 80];
@@ -136,16 +137,17 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
         let mut title_block = Vec::with_capacity(4 + 80);
         title_block.extend_from_slice(&(1i32).to_le_bytes());
         title_block.extend_from_slice(&line);
-        rec(&mut f, &title_block)?;
+        write_record(&mut f, &title_block)?;
 
         let mut natom_block = Vec::with_capacity(4);
         natom_block.extend_from_slice(&(n_atoms as i32).to_le_bytes());
-        rec(&mut f, &natom_block)?;
+        write_record(&mut f, &natom_block)?;
     } else {
         // verify header and NATOM; compute current NSET; then append and bump NSET
         f.seek(SeekFrom::Start(0))?;
         let l1 = read_u32_le(&mut f)?;
         let mut hdr = vec![0u8; l1 as usize];
+
         f.read_exact(&mut hdr)?;
         let l1e = read_u32_le(&mut f)?;
         if l1e != l1 || &hdr[0..4] != b"CORD" {
@@ -163,7 +165,7 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
         }
         let cur_nset = icntrl[0];
 
-        // Skip title
+        // Skip the title
         let l2 = read_u32_le(&mut f)?;
         f.seek(SeekFrom::Current(l2 as i64))?;
         let l2e = read_u32_le(&mut f)?;
@@ -182,8 +184,10 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
                 "unexpected NATOM record length",
             ));
         }
+
         let mut nb = [0u8; 4];
         f.read_exact(&mut nb)?;
+
         let natom_existing = i32::from_le_bytes(nb) as usize;
         let l3e = read_u32_le(&mut f)?;
         if l3e != l3 {
@@ -200,7 +204,6 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
             ));
         }
 
-        // Append frames
         f.seek(SeekFrom::End(0))?;
 
         let mut xs = vec![0f32; n_atoms];
@@ -229,15 +232,16 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
             let yb = unsafe { core::slice::from_raw_parts(ys.as_ptr() as *const u8, ys.len() * 4) };
             let zb = unsafe { core::slice::from_raw_parts(zs.as_ptr() as *const u8, zs.len() * 4) };
 
-            rec(&mut f, xb)?;
-            rec(&mut f, yb)?;
-            rec(&mut f, zb)?;
+            write_record(&mut f, xb)?;
+            write_record(&mut f, yb)?;
+            write_record(&mut f, zb)?;
         }
 
         // Update NSET in header (payload offset = 4-byte marker + 4 for "CORD")
         let new_nset = cur_nset
             .checked_add(snapshots.len() as i32)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "NSET overflow"))?;
+
         f.seek(SeekFrom::Start(8))?;
         f.write_all(&new_nset.to_le_bytes())?;
         f.flush()?;
@@ -245,13 +249,12 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
         return Ok(());
     }
 
-    // initial write path: write frames
-    let mut xs = vec![0f32; n_atoms];
-    let mut ys = vec![0f32; n_atoms];
-    let mut zs = vec![0f32; n_atoms];
+    let mut xs = vec![0.; n_atoms];
+    let mut ys = vec![0.; n_atoms];
+    let mut zs = vec![0.; n_atoms];
 
-    for s in snapshots {
-        let mut i = 0usize;
+    for snap in snapshots {
+        let mut i = 0;
         let mut push = |v: &Vec<Vec3>| {
             for p in v {
                 xs[i] = p.x;
@@ -260,21 +263,21 @@ pub fn append_dcd(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
                 i += 1;
             }
         };
-        push(&s.atom_posits);
+        push(&snap.atom_posits);
 
         if write_water {
-            push(&s.water_o_posits);
-            push(&s.water_h0_posits);
-            push(&s.water_h1_posits);
+            push(&snap.water_o_posits);
+            push(&snap.water_h0_posits);
+            push(&snap.water_h1_posits);
         }
 
         let xb = unsafe { core::slice::from_raw_parts(xs.as_ptr() as *const u8, xs.len() * 4) };
         let yb = unsafe { core::slice::from_raw_parts(ys.as_ptr() as *const u8, ys.len() * 4) };
         let zb = unsafe { core::slice::from_raw_parts(zs.as_ptr() as *const u8, zs.len() * 4) };
 
-        rec(&mut f, xb)?;
-        rec(&mut f, yb)?;
-        rec(&mut f, zb)?;
+        write_record(&mut f, xb)?;
+        write_record(&mut f, yb)?;
+        write_record(&mut f, zb)?;
     }
 
     f.flush()
@@ -289,7 +292,7 @@ pub fn load_dcd(path: &Path) -> io::Result<Vec<Snapshot>> {
     if hdr.len() < 84 || &hdr[0..4] != b"CORD" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "not a CORD/DCD file",
+            "Not a CORD/DCD file",
         ));
     }
     let mut icntrl = [0i32; 20];
@@ -310,7 +313,7 @@ pub fn load_dcd(path: &Path) -> io::Result<Vec<Snapshot>> {
     if natom_block.len() != 4 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "unexpected NATOM block size",
+            "Unexpected NATOM block size",
         ));
     }
     let n_atoms = i32::from_le_bytes(natom_block[0..4].try_into().unwrap()) as usize;
@@ -325,7 +328,7 @@ pub fn load_dcd(path: &Path) -> io::Result<Vec<Snapshot>> {
         if xb.len() != 4 * n_atoms || yb.len() != 4 * n_atoms || zb.len() != 4 * n_atoms {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "coordinate block size mismatch",
+                "Coordinate block size mismatch",
             ));
         }
 

@@ -106,6 +106,7 @@ pub mod param_inference;
 mod sa_surface;
 #[cfg(test)]
 mod tests;
+// mod xtc;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
