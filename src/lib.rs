@@ -144,7 +144,6 @@ use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
-pub use util::{load_snapshots, save_snapshots};
 pub use water::{ForcesOnWaterMol, init::WaterInitTemplate};
 
 pub use crate::ambient::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};

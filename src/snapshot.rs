@@ -2,16 +2,16 @@
 
 use std::{
     collections::HashMap,
-    fs,
-    fs::File,
-    io::{self, ErrorKind, Write},
-    path::{Path, PathBuf},
+    io::{self, ErrorKind},
+    path::PathBuf,
 };
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::{AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType, dcd::DcdFrame};
-use candle_core::Shape;
+use bio_files::{
+    AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
+    dcd::{DcdFrame, DcdTrajectory},
+};
 use lin_alg::f32::Vec3;
 
 use crate::AtomDynamics;
@@ -104,6 +104,22 @@ impl Snapshot {
             time: self.time,
             atom_posits,
         }
+    }
+
+    /// Note: Most of our fields are not available in the DCD format, so we leave them empty, using
+    /// the Default impl.
+    pub fn from_dcd(dcd: &DcdTrajectory) -> Vec<Self> {
+        let mut result = Vec::with_capacity(dcd.frames.len());
+
+        for frame in &dcd.frames {
+            result.push(Snapshot {
+                time: frame.time,
+                atom_posits: frame.atom_posits.clone(),
+                ..Default::default()
+            })
+        }
+
+        result
     }
 }
 

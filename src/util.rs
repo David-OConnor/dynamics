@@ -56,48 +56,6 @@ pub(crate) fn build_adjacency_list(
     Ok(result)
 }
 
-pub fn save_snapshots(snapshots: &[Snapshot], path: &Path) -> io::Result<()> {
-    let mut file = File::create(path)?;
-
-    let mut result = Vec::new();
-    let mut i = 0;
-
-    // todo: Add a header if/when required.
-
-    for snap in snapshots {
-        let snap_ser = snap.to_bytes();
-        result[i..i + snap_ser.len()].copy_from_slice(&snap_ser);
-
-        i += snap_ser.len();
-    }
-
-    file.write_all(&result)?;
-
-    Ok(())
-}
-
-pub fn load_snapshots(path: &Path) -> io::Result<Vec<Snapshot>> {
-    let mut f = File::open(path)?;
-    let mut out = Vec::new();
-
-    loop {
-        let mut len_buf = [0u8; 4];
-        match f.read_exact(&mut len_buf) {
-            Ok(()) => {
-                let len = u32::from_le_bytes(len_buf) as usize;
-                let mut buf = vec![0u8; len];
-                f.read_exact(&mut buf)?;
-                let s = Snapshot::from_bytes(&buf)?;
-                out.push(s);
-            }
-            Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(out)
-}
-
 /// The output of `ComputationTime`, averaged over step count. In μs.
 #[derive(Debug)]
 pub struct ComputationTime {
