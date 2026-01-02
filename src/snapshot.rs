@@ -6,15 +6,16 @@ use std::{
     path::PathBuf,
 };
 
+use crate::AtomDynamics;
+use crate::ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
+use bio_files::dcd::DcdUnitCell;
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
     dcd::{DcdFrame, DcdTrajectory},
 };
 use lin_alg::f32::Vec3;
-
-use crate::AtomDynamics;
 
 // // Append to any snapshot-saving files every this number of snapshots.
 // // todo:  Update A/R. Likely higher.
@@ -85,7 +86,7 @@ impl Snapshot {
         // self.hydrogen_bonds = result;
     }
 
-    pub fn to_dcd(&self, write_water: bool) -> DcdFrame {
+    pub fn to_dcd(&self, cell: &SimBox, write_water: bool) -> DcdFrame {
         let mut atom_posits = self.atom_posits.clone();
 
         if write_water {
@@ -103,6 +104,10 @@ impl Snapshot {
         DcdFrame {
             time: self.time,
             atom_posits,
+            unit_cell: DcdUnitCell {
+                bounds_low: cell.bounds_low.into(),
+                bounds_high: cell.bounds_high.into(),
+            },
         }
     }
 

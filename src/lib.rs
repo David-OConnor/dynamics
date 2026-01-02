@@ -151,6 +151,7 @@ pub use crate::ambient::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 #[cfg(feature = "cuda")]
 use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
+use crate::snapshot_mdt::load_mdt;
 use crate::{
     ambient::BerendsenBarostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
@@ -1112,7 +1113,7 @@ impl MdState {
                         let frames: Vec<_> = self
                             .snapshot_queue_for_file
                             .iter()
-                            .map(|ss| ss.to_dcd(false))
+                            .map(|ss| ss.to_dcd(&self.cell, false))
                             .collect();
                         let dcd = DcdTrajectory { frames };
 
@@ -1138,7 +1139,7 @@ impl MdState {
         }
     }
 
-    /// For calling by the applicastion. Saves in-memory snapshots to file, e.g. DCD.
+    /// For calling by the applicastion. Saves in-memory snapshots to file, e.g. DCD, XTC, or MDT.
     pub fn save_snapshots_to_file(&self, path: &Path, ratio: usize) -> Result<(), io::Error> {
         let ext = path
             .extension()
@@ -1155,12 +1156,18 @@ impl MdState {
 
         let result = match ext.as_ref() {
             "dcd" => {
-                let frames: Vec<_> = snaps_to_save.iter().map(|ss| ss.to_dcd(false)).collect();
+                let frames: Vec<_> = snaps_to_save
+                    .iter()
+                    .map(|ss| ss.to_dcd(&self.cell, false))
+                    .collect();
                 let dcd = DcdTrajectory { frames };
                 dcd.save(path)
             }
             "xtc" => {
-                let frames: Vec<_> = snaps_to_save.iter().map(|ss| ss.to_dcd(false)).collect();
+                let frames: Vec<_> = snaps_to_save
+                    .iter()
+                    .map(|ss| ss.to_dcd(&self.cell, false))
+                    .collect();
                 let dcd = DcdTrajectory { frames };
                 dcd.save_xtc(path)
             }
@@ -1307,4 +1314,39 @@ pub fn compute_energy_snapshot(
     }
 
     Ok(md_state.snapshots[0].clone())
+}
+
+/// For calling by the application. Loads snapshots from a file (e.g. DCD/XTC/MDT) into memory.
+pub fn load_snapshots_from_file(path: &Path) -> Result<Vec<Snapshot>, io::Error> {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .ok_or_else(|| io::Error::other("Input path must have a file extension"))?;
+
+    let result: io::Result<Vec<Snapshot>> = match ext.as_ref() {
+        "dcd" => {
+            let dcd = DcdTrajectory::load(path)?;
+            let snaps: Vec<_> = Snapshot::from_dcd(&dcd);
+            Ok(snaps)
+        }
+        "xtc" => {
+            let dcd = DcdTrajectory::load_xtc(path)?;
+            let snaps: Vec<_> = Snapshot::from_dcd(&dcd);
+            Ok(snaps)
+        }
+        "mdt" => load_mdt(path),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid file extension for loading snapshots.",
+        )),
+    };
+
+    match result {
+        Ok(snaps) => Ok(snaps),
+        Err(e) => {
+            eprintln!("Error loading snapshots from file: {e:?}");
+            Err(e)
+        }
+    }
 }
