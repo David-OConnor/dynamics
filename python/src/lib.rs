@@ -541,7 +541,7 @@ impl MdState {
 
     fn step(&mut self, dt: f32) {
         let dev = get_dev();
-        self.inner.step(&dev, dt);
+        self.inner.step(&dev, dt, None);
     }
 
     /// A string for now to keep this wrapper simple.

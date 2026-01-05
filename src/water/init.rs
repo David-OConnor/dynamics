@@ -687,7 +687,7 @@ impl MdState {
         }
 
         for _ in 0..NUM_SIM_STEPS {
-            self.step(dev, SIM_DT);
+            self.step(dev, SIM_DT, None);
         }
 
         // Restore the original static state.

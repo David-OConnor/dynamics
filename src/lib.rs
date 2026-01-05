@@ -151,14 +151,13 @@ pub use crate::ambient::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 #[cfg(feature = "cuda")]
 use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
-use crate::snapshot_mdt::load_mdt;
 use crate::{
     ambient::BerendsenBarostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{SaveType, Snapshot, SnapshotHandler},
-    snapshot_mdt::save_mdt,
+    snapshot_mdt::{load_mdt, save_mdt},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
     water::{WaterMol, WaterMolx8, WaterMolx16, init::make_water_mols},
 };
@@ -1305,7 +1304,7 @@ pub fn compute_energy_snapshot(
 
     // dt is arbitrary?
     let dt = 0.001;
-    md_state.step(dev, dt);
+    md_state.step(dev, dt, None);
 
     if md_state.snapshots.is_empty() {
         return Err(ParamError {
@@ -1327,12 +1326,12 @@ pub fn load_snapshots_from_file(path: &Path) -> Result<Vec<Snapshot>, io::Error>
     let result: io::Result<Vec<Snapshot>> = match ext.as_ref() {
         "dcd" => {
             let dcd = DcdTrajectory::load(path)?;
-            let snaps: Vec<_> = Snapshot::from_dcd(&dcd);
+            let snaps = Snapshot::from_dcd(&dcd);
             Ok(snaps)
         }
         "xtc" => {
             let dcd = DcdTrajectory::load_xtc(path)?;
-            let snaps: Vec<_> = Snapshot::from_dcd(&dcd);
+            let snaps = Snapshot::from_dcd(&dcd);
             Ok(snaps)
         }
         "mdt" => load_mdt(path),

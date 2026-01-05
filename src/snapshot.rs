@@ -6,16 +6,15 @@ use std::{
     path::PathBuf,
 };
 
-use crate::AtomDynamics;
-use crate::ambient::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::dcd::DcdUnitCell;
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
-    dcd::{DcdFrame, DcdTrajectory},
+    dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
 };
 use lin_alg::f32::Vec3;
+
+use crate::{AtomDynamics, ambient::SimBox};
 
 // // Append to any snapshot-saving files every this number of snapshots.
 // // todo:  Update A/R. Likely higher.

@@ -8,6 +8,7 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
+use lin_alg::f32::Vec3;
 
 use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
@@ -53,9 +54,6 @@ impl Default for Integrator {
         Self::LangevinMiddle {
             gamma: LANGEVIN_GAMMA_DEFAULT,
         }
-        // Self::VerletVelocity {
-        //     thermostat: Some(TAU_TEMP_DEFAULT),
-        // }
     }
 }
 
@@ -74,7 +72,20 @@ impl MdState {
     /// with typical values of 0.001, or 0.002ps (1 or 2fs).
     /// This method orchestrates the dynamics at each time step. Uses a Verlet Velocity base,
     /// with different thermostat approaches depending on configuration.
-    pub fn step(&mut self, dev: &ComputationDevice, dt: f32) {
+    ///
+    /// `External force` is indexed by atom.
+    pub fn step(&mut self, dev: &ComputationDevice, dt: f32, external_force: Option<Vec<Vec3>>) {
+        if let Some(f_ext) = &external_force {
+            if f_ext.len() != self.atoms.len() {
+                eprintln!("Error: External force vector length does not match number of atoms.");
+                return;
+            }
+        }
+
+        if self.atoms.is_empty() && self.water.is_empty() {
+            return;
+        }
+
         let start_entire_step = Instant::now();
         let mut start = Instant::now(); // Re-used for different items
 
@@ -149,6 +160,12 @@ impl MdState {
                 self.reset_accel_pe_virial();
                 self.apply_all_forces(dev);
 
+                if let Some(f_ext) = &external_force {
+                    for (i, f) in f_ext.iter().enumerate() {
+                        self.atoms[i].force += *f;
+                    }
+                }
+
                 // todo: QC
                 self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
                 self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
@@ -204,6 +221,12 @@ impl MdState {
 
                 self.reset_accel_pe_virial();
                 self.apply_all_forces(dev);
+
+                if let Some(f_ext) = &external_force {
+                    for (i, f) in f_ext.iter().enumerate() {
+                        self.atoms[i].force += *f;
+                    }
+                }
 
                 self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
                 self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
@@ -357,9 +380,6 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt_kick;
             w.h1.vel += w.h1.accel * dt_kick;
 
-            // integrate_rigid_water(
-            // settle_drift(
-            // settle_analytic(
             integrate_rigid_water(
                 w,
                 dt_drift,

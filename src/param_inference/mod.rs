@@ -90,7 +90,7 @@ impl AmberDefSet {
 /// Describes an atom with information about the atoms it's bonded to, for
 /// the purposes of assigning it's FF type.
 #[derive(Debug)]
-struct AtomEnvData {
+pub struct AtomEnvData {
     degree: u8,
     num_attached_h: u8,
     ring_sizes: Vec<u8>,
@@ -460,8 +460,7 @@ fn atomic_property_matches(
 
 /// Checks each atom against a FF def to determine if it's a match. If it is, we assign the FF
 /// type from the def.
-///
-fn matches_def(
+pub fn matches_def(
     def: &AtomTypeDef,
     idx: usize,
     atoms: &[AtomGeneric],
@@ -731,14 +730,6 @@ pub fn find_ff_types(
     defs: &AmberDefSet,
 ) -> Vec<String> {
     let start = Instant::now();
-
-    // println!("\n\nDebug dump of dev env types: ");
-    // for def in &defs.gff2.atomtypes {
-    //     if let Some(env) = &def.chem_env {
-    //         let pattern: ChemEnvPattern = env.as_str().into();
-    //         println!("Env pattern for {}:{:?}", def.name, pattern);
-    //     }
-    // }
 
     let adj = build_adjacency_list(atoms, bonds).unwrap();
     let env = build_env(atoms, bonds, &adj);

@@ -156,7 +156,7 @@ fn main() {
 
     let cfg = MdConfig {
         // Defaults to Langevin middle.
-        integrator: Integrator::VerletVelocity,
+        integrator: Integrator::VerletVelocity { thermostat: None },
         // If enabled, zero the drift in center of mass of the system.
         zero_com_drift: true,
         // Kelvin. Defaults to 310 K.
