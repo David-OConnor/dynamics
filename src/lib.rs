@@ -537,8 +537,10 @@ pub struct MdOverrides {
     pub thermo_disabled: bool,
     pub baro_disabled: bool,
     /// Run this block if we wish to, for dev purposes, take snapshots during the
-    /// equilibration phase, e.g. for tuning it.
+    /// water equilibration phase, e.g. for tuning it.
     pub snapshots_during_equilibration: bool,
+    /// Take snapshots during the energy minimization phase. (Not water equilibration)
+    pub snapshots_during_energy_min: bool,
 }
 
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -956,7 +958,7 @@ impl MdState {
         }
 
         if let Some(max_iters) = result.cfg.max_init_relaxation_iters {
-            result.minimize_energy(dev, max_iters);
+            result.minimize_energy(dev, max_iters, None);
         }
 
         // Reset computation time to negate anything that was applied by minimization, initial
@@ -1002,7 +1004,7 @@ impl MdState {
         self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)]
     }
 
-    fn apply_all_forces(&mut self, dev: &ComputationDevice) {
+    fn apply_all_forces(&mut self, dev: &ComputationDevice, external_force: &Option<Vec<Vec3>>) {
         let mut start = Instant::now();
         let log_time = self.step_count.is_multiple_of(COMPUTATION_TIME_RATIO);
 
@@ -1087,6 +1089,12 @@ impl MdState {
                         );
                     }
                 }
+            }
+        }
+
+        if let Some(f_ext) = external_force {
+            for (i, f) in f_ext.iter().enumerate() {
+                self.atoms[i].force += *f;
             }
         }
     }

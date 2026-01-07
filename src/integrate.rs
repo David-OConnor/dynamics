@@ -158,13 +158,7 @@ impl MdState {
                 }
 
                 self.reset_accel_pe_virial();
-                self.apply_all_forces(dev);
-
-                if let Some(f_ext) = &external_force {
-                    for (i, f) in f_ext.iter().enumerate() {
-                        self.atoms[i].force += *f;
-                    }
-                }
+                self.apply_all_forces(dev, &external_force);
 
                 // todo: QC
                 self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
@@ -220,13 +214,7 @@ impl MdState {
                 }
 
                 self.reset_accel_pe_virial();
-                self.apply_all_forces(dev);
-
-                if let Some(f_ext) = &external_force {
-                    for (i, f) in f_ext.iter().enumerate() {
-                        self.atoms[i].force += *f;
-                    }
-                }
+                self.apply_all_forces(dev, &external_force);
 
                 self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
                 self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
