@@ -946,8 +946,6 @@ impl MdState {
             ));
         }
 
-        println!("Init pair count: {:?}", result.nb_pairs.len());
-
         // todo: Move this AR
         // Pack SIMD once at init.
         #[cfg(target_arch = "x86_64")]

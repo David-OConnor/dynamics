@@ -385,7 +385,14 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&coulomb_disabled);
     launch_args.arg(&lj_disabled);
 
-    unsafe { launch_args.launch(cfg) }.unwrap();
+    unsafe {
+        if launch_args.launch(cfg).is_err() {
+            eprintln!(
+                "Error launching the non bonded GPU force kernel. (This can happen if there is one or\
+                more NaNs in the system"
+            );
+        }
+    }
 
     // todo: Consider dtoh; passing to an existing vec instead of re-allocating?
     let forces_on_dyn = vec3s_from_dev(stream, &forces.forces_on_dyn);
