@@ -14,14 +14,12 @@ use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
     HydrogenConstraint, MdState,
     ambient::{
-        LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_DEFAULT, TAU_TEMP_WATER_INIT,
+        LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT,
         measure_instantaneous_pressure,
     },
     water::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
-        settle::{
-            RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle, settle_analytic, settle_drift,
-        },
+        settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
     },
 };
 
@@ -75,11 +73,11 @@ impl MdState {
     ///
     /// `External force` is indexed by atom.
     pub fn step(&mut self, dev: &ComputationDevice, dt: f32, external_force: Option<Vec<Vec3>>) {
-        if let Some(f_ext) = &external_force {
-            if f_ext.len() != self.atoms.len() {
-                eprintln!("Error: External force vector length does not match number of atoms.");
-                return;
-            }
+        if let Some(f_ext) = &external_force
+            && f_ext.len() != self.atoms.len()
+        {
+            eprintln!("Error: External force vector length does not match number of atoms.");
+            return;
         }
 
         if self.atoms.is_empty() && self.water.is_empty() {
@@ -99,9 +97,7 @@ impl MdState {
             return;
         }
 
-        let mut pressure = 0.;
-
-        match self.cfg.integrator {
+        let pressure = match self.cfg.integrator {
             Integrator::LangevinMiddle { gamma } => {
                 if log_time {
                     start = Instant::now();
@@ -166,7 +162,7 @@ impl MdState {
                 self.barostat.virial_nonbonded_long_range *= ACCEL_CONVERSION_INV as f64;
                 self.barostat.virial_constraints *= ACCEL_CONVERSION_INV as f64;
 
-                pressure = measure_instantaneous_pressure(
+                let pressure = measure_instantaneous_pressure(
                     self.kinetic_energy,
                     &self.cell,
                     self.barostat.virial_total(),
@@ -200,6 +196,8 @@ impl MdState {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.integration_sum += elapsed;
                 }
+
+                pressure
             }
             Integrator::VerletVelocity { thermostat } => {
                 if log_time {
@@ -225,7 +223,7 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                pressure = measure_instantaneous_pressure(
+                let pressure = measure_instantaneous_pressure(
                     self.kinetic_energy,
                     &self.cell,
                     self.barostat.virial_total(),
@@ -289,8 +287,9 @@ impl MdState {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.ambient_sum += elapsed;
                 }
+                pressure
             }
-        }
+        };
 
         // Linear calls angular, which is why we don't run both at the same time.
         if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {

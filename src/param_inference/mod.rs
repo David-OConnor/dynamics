@@ -17,7 +17,7 @@ mod frcmod_missing_params;
 mod parmchk_parse;
 mod post_process;
 
-use std::{io, time::Instant};
+use std::io;
 
 use bio_files::{
     AtomGeneric, BondGeneric, BondType,
@@ -102,6 +102,7 @@ pub struct AtomEnvData {
     // e.g. something that has a `From<String>` method that parses `(XD4[sb',db])	&`(C(N4))`, etc (f9 col)
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Part of the ring detection pipeline.
 fn dfs_find_rings(
     start: usize,
@@ -343,7 +344,7 @@ fn ew_count_for_atom(idx: usize, atoms: &[AtomGeneric], adj: &[Vec<usize>]) -> u
     }
 }
 
-fn non_h_env_matches(
+fn _non_h_env_matches(
     env_str: &str,
     idx: usize,
     _atoms: &[AtomGeneric],
@@ -404,58 +405,6 @@ fn non_h_env_matches(
     let aromatic_neighbors = adj[idx].iter().filter(|&&j| env_all[j].is_aromatic).count();
 
     aromatic_neighbors >= required_aromatic_neighbors
-}
-
-fn atomic_property_matches(
-    prop: &str,
-    idx: usize,
-    _atoms: &[AtomGeneric],
-    env_all: &[AtomEnvData],
-) -> bool {
-    let prop = prop.trim();
-    let env = &env_all[idx];
-
-    // RGn ring size (e.g. [RG3], [RG4])
-    if let Some(ring_size) = parse_ring_size(prop)
-        && !env.ring_sizes.contains(&ring_size)
-    {
-        return false;
-    }
-
-    // Any AR* tag → must be aromatic
-    if prop.contains("AR") && !env.is_aromatic {
-        return false;
-    }
-
-    // Gently handle [DB] / [TB] when they appear as plain tokens inside [...]
-    if let (Some(l), Some(r)) = (prop.find('['), prop.rfind(']'))
-        && r > l + 1
-    {
-        let inside = &prop[l + 1..r];
-        let tokens: Vec<&str> = inside.split(',').map(str::trim).collect();
-
-        let mut needs_db = false;
-        let mut needs_tb = false;
-
-        for t in tokens {
-            match t {
-                "DB" => needs_db = true,
-                "TB" => needs_tb = true,
-                _ => {}
-            }
-        }
-
-        if needs_db && env.num_double_bonds == 0 {
-            return false;
-        }
-
-        if needs_tb && env.num_triple_bonds == 0 {
-            return false;
-        }
-    }
-
-    // We intentionally ignore DL, sb, numeric qualifiers (2DL, 1DB, 3sb, …) here.
-    true
 }
 
 /// Checks each atom against a FF def to determine if it's a match. If it is, we assign the FF
@@ -729,8 +678,6 @@ pub fn find_ff_types(
     bonds: &[BondGeneric],
     defs: &AmberDefSet,
 ) -> Vec<String> {
-    let start = Instant::now();
-
     let adj = build_adjacency_list(atoms, bonds).unwrap();
     let env = build_env(atoms, bonds, &adj);
 
@@ -792,8 +739,8 @@ pub fn find_ff_types(
     postprocess_c2_to_ce_if_vinylic_attached_to_aromatic(atoms, bonds, &adj, &mut result);
     postprocess_n1_to_n2_unless_sp_like(atoms, bonds, &adj, &mut result);
 
-    let elapsed = start.elapsed().as_micros();
-    println!("Complete in {elapsed} μs");
+    // let elapsed = start.elapsed().as_micros();
+    // println!("Complete in {elapsed} μs");
 
     result
 }

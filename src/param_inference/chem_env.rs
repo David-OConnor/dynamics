@@ -55,10 +55,11 @@ impl SecondHopPattern {
 #[derive(Debug, Clone)]
 pub(super) struct NeighborPattern {
     base: NeighborBase,
-    ring_size: Option<u8>,    // RGn on the neighbor, if present
-    requires_aromatic: bool,  // AR1/AR2/AR3
-    requires_db: bool,        // DB
-    requires_tb: bool,        // TB
+    ring_size: Option<u8>,   // RGn on the neighbor, if present
+    requires_aromatic: bool, // AR1/AR2/AR3
+    requires_db: bool,       // DB
+    requires_tb: bool,       // TB
+    #[allow(unused)]
     other_flags: Vec<String>, // sb, sb', DL, XA1, etc (for future extension)\
     second_hop: Option<SecondHopPattern>,
 }
@@ -182,6 +183,7 @@ impl ChemEnvPattern {
             return false;
         }
 
+        #[allow(clippy::too_many_arguments)]
         fn backtrack(
             pat_idx: usize,
             pattern: &[NeighborPattern],

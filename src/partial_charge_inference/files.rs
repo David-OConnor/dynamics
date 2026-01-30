@@ -1,10 +1,7 @@
 //! For managing inference-related files
 
 use std::{
-    fs,
-    fs::File,
-    io,
-    io::{ErrorKind, Read},
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -42,25 +39,6 @@ pub fn find_mol2_paths(geostd_dir: &Path) -> io::Result<Vec<PathBuf>> {
     }
 
     Ok(result)
-}
-
-// C+P from graphics.
-/// Load from file, using Bincode. We currently use this for preference files.
-pub(crate) fn load<T: Decode<()>>(path: &Path) -> io::Result<T> {
-    let config = bincode::config::standard();
-
-    let mut file = File::open(path)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-
-    let (decoded, _len) = match bincode::decode_from_slice(&buffer, config) {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("Error loading from file. Did the format change?");
-            return Err(io::Error::other("error loading"));
-        }
-    };
-    Ok(decoded)
 }
 
 /// Load from file, using Bincode. We currently use this for preference files.

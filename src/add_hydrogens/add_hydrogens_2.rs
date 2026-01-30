@@ -26,9 +26,6 @@ use crate::{
     },
 };
 
-// The dihedral angle must be within this of [0 | TAU | TAU/2] for atoms to be considered planar.
-const PLANAR_DIHEDRAL_THRESH: f64 = 0.4;
-
 // The angle between adjacent bonds must be greater than this for a bond to be considered triplanar,
 // vice tetrahedral. Tetra ideal: 1.91. Planar idea: 2.094
 // todo: This seems high, but produces better results from oneo data set.d
@@ -463,47 +460,43 @@ fn add_h_sc_het(
                 }
             }
             Oxygen => {
-                match atoms_bonded.len() {
-                    1 => unsafe {
-                        // Hydroxyl. Add a single H with tetrahedral geometry.
-                        // todo: The bonds are coming out right; not sure why.
-                        // todo: This segment is DRY with 2+ sections above.
-                        let (bond_prev, bond_back2) =
-                            match get_prev_bonds(atom, atoms, i, atoms_bonded[0]) {
-                                Ok(v) => v,
-                                Err(_) => {
-                                    eprintln!("Error: Could not find prev bonds on Hydroxyl");
-                                    continue;
-                                }
-                            };
+                if atoms_bonded.len() == 1 {
+                    // Hydroxyl. Add a single H with tetrahedral geometry.
+                    // todo: The bonds are coming out right; not sure why.
+                    // todo: This segment is DRY with 2+ sections above.
+                    let (bond_prev, bond_back2) =
+                        match get_prev_bonds(atom, atoms, i, atoms_bonded[0]) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                eprintln!("Error: Could not find prev bonds on Hydroxyl");
+                                continue;
+                            }
+                        };
 
-                        let bond_prev_non_norm = atoms_bonded[0].1.posit - atom.posit;
-                        // This crude check may force these to only be created on Hydroxyls (?)
-                        // Looking for len characterisitic of a single bond vice double.
-                        if bond_prev_non_norm.magnitude() < 1.30 {
-                            continue;
-                        }
+                    let bond_prev_non_norm = atoms_bonded[0].1.posit - atom.posit;
+                    // This crude check may force these to only be created on Hydroxyls (?)
+                    // Looking for len characterisitic of a single bond vice double.
+                    if bond_prev_non_norm.magnitude() < 1.30 {
+                        continue;
+                    }
 
-                        let rotator_a = Quaternion::from_unit_vecs(TETRA_A, bond_prev);
+                    let rotator_a = Quaternion::from_unit_vecs(TETRA_A, bond_prev);
 
-                        let tetra_rotated = rotator_a.rotate_vec(TETRA_B);
-                        let dihedral = calc_dihedral_angle(bond_prev, tetra_rotated, bond_back2);
+                    let tetra_rotated = rotator_a.rotate_vec(unsafe { TETRA_B });
+                    let dihedral = calc_dihedral_angle(bond_prev, tetra_rotated, bond_back2);
 
-                        // Offset; don't align; avoids steric hindrence.
-                        let rotator_b =
-                            Quaternion::from_axis_angle(bond_prev, -dihedral + TAU / 6.);
-                        let rotator = rotator_b * rotator_a;
+                    // Offset; don't align; avoids steric hindrence.
+                    let rotator_b = Quaternion::from_axis_angle(bond_prev, -dihedral + TAU / 6.);
+                    let rotator = rotator_b * rotator_a;
 
-                        let at = h_type_in_res_sidechain(0, parent_tir, aa, digit_map)?;
-                        let Some(at) = at else { continue };
-                        hydrogens.push(AtomGeneric {
-                            posit: atom.posit + rotator.rotate_vec(TETRA_B) * LEN_O_H,
-                            type_in_res: Some(at),
-                            hetero: aa.is_none(),
-                            ..h_default_sc.clone()
-                        });
-                    },
-                    _ => (),
+                    let at = h_type_in_res_sidechain(0, parent_tir, aa, digit_map)?;
+                    let Some(at) = at else { continue };
+                    hydrogens.push(AtomGeneric {
+                        posit: atom.posit + rotator.rotate_vec(unsafe { TETRA_B }) * LEN_O_H,
+                        type_in_res: Some(at),
+                        hetero: aa.is_none(),
+                        ..h_default_sc.clone()
+                    });
                 }
             }
             _ => {}

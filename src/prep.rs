@@ -26,8 +26,7 @@ use std::{collections::HashSet, fmt};
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::md_params::{
-    AngleBendingParams, BondStretchingParams, DihedralParams, ForceFieldParams, LjParams,
-    MassParams,
+    AngleBendingParams, BondStretchingParams, ForceFieldParams, LjParams, MassParams,
 };
 use itertools::Itertools;
 use na_seq::Element::Hydrogen;

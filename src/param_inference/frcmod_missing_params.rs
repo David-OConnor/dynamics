@@ -1,7 +1,7 @@
 //! We use this module to identify which bonded parameters are present in a small organic molecule,
 //! but are absent from GAFF2.dat.
 
-use std::{collections::HashSet, io, io::ErrorKind};
+use std::{collections::HashSet, io};
 
 use bio_files::{AtomGeneric, md_params::ForceFieldParams};
 use itertools::Itertools;

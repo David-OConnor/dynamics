@@ -2,15 +2,13 @@
 
 use std::{
     fmt::{Display, Formatter},
-    fs::File,
     io,
-    io::{ErrorKind, Read, Write},
-    path::Path,
+    io::ErrorKind,
 };
 
 use bio_files::{AtomGeneric, BondGeneric};
 
-use crate::{COMPUTATION_TIME_RATIO, ParamError, snapshot::Snapshot};
+use crate::{COMPUTATION_TIME_RATIO, ParamError};
 
 /// Build a list of indices that relate atoms that are connected by covalent bonds.
 /// For each outer atom index, the inner values are indices of the atom it's bonded to.

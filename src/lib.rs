@@ -77,8 +77,6 @@
 // todo: You should keep more data on the GPU betwween time steps, instead of passing back and
 // todo forth each time. If practical.
 
-extern crate core;
-
 mod add_hydrogens;
 mod ambient;
 mod bonded;
@@ -138,6 +136,7 @@ use cudarc::nvrtc::Ptx;
 // pub use dcd::load_dcd;
 use ewald::PmeRecip;
 pub use integrate::Integrator;
+#[allow(unused)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
@@ -440,6 +439,7 @@ impl AtomDynamics {
     }
 }
 
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug)]
 pub(crate) struct AtomDynamicsx8 {
@@ -457,6 +457,7 @@ pub(crate) struct AtomDynamicsx8 {
     pub lj_eps: f32x8,
 }
 
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug)]
 pub(crate) struct AtomDynamicsx16 {
@@ -597,13 +598,17 @@ pub struct MdState {
     // todo: You need to rework this state in light of arbitrary mol count.
     pub cfg: MdConfig,
     pub atoms: Vec<AtomDynamics>,
+    #[allow(unused)]
     #[cfg(target_arch = "x86_64")]
     pub(crate) atoms_x8: Vec<AtomDynamicsx8>,
+    #[allow(unused)]
     #[cfg(target_arch = "x86_64")]
     pub(crate) atoms_x16: Vec<AtomDynamicsx16>,
     pub water: Vec<WaterMol>,
+    #[allow(unused)]
     #[cfg(target_arch = "x86_64")]
     pub(crate) water_x8: Vec<WaterMolx8>,
+    #[allow(unused)]
     #[cfg(target_arch = "x86_64")]
     pub(crate) water_x16: Vec<WaterMolx16>,
     /// Note: We don't use bond structs once the simulation is set up; the adjacency list is the
@@ -685,7 +690,7 @@ pub struct MdState {
     /// on the steps where we don't re-calculate. (Force, potential energy, virial energy)
     spme_force_prev: Option<(Vec<Vec3>, f64, f64)>,
     /// Cached at init; used for kinetic energy calculations.
-    num_static_atoms: usize,
+    _num_static_atoms: usize,
     // todo: Sub-struct for ambient cache like num_static atoms and thermo_dof
     /// Degrees of freedom, used in temperature and kinetic energy calculations.
     thermo_dof: usize,
@@ -881,7 +886,7 @@ impl MdState {
             pairs_14_scaled: HashSet::new(),
             force_field_params,
             mass_accel_factor,
-            num_static_atoms,
+            _num_static_atoms: num_static_atoms,
             mol_start_indices,
             potential_energy_between_mols,
             ..Default::default()

@@ -474,6 +474,7 @@ pub(crate) fn measure_instantaneous_pressure(
 }
 
 impl MdState {
+    #[allow(unused)]
     // todo: Consider removing this in favor or exposing these values in snapshots.
     // todo: Then, applications could display in GUI etc.
     /// Print ambient parameters, as a sanity check.

@@ -23,6 +23,7 @@
 //!
 //! Note: H bond average maintenance time: 1-20ps: Use this to validate your water model
 
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16};
 use lin_alg::{
@@ -32,6 +33,7 @@ use lin_alg::{
 use na_seq::Element;
 
 use crate::{ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER};
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
@@ -105,6 +107,7 @@ pub struct ForcesOnWaterMol {
     pub f_m: Vec3,
 }
 
+#[allow(unused)]
 // todo: Note: These are 32-bit due to limits on 64-bit with. Be careful; you use 64-bit elsewhere.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Default)]
@@ -115,6 +118,7 @@ pub struct ForcesOnWaterMolx8 {
     pub f_m: Vec3x8,
 }
 
+#[allow(unused)]
 // todo: Note: These are 32-bit due to limits on 64-bit with. Be careful; you use 64-bit elsewhere.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Default)]
@@ -146,6 +150,7 @@ pub struct WaterMol {
     pub m: AtomDynamics,
 }
 
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 pub struct WaterMolx8 {
     pub o: AtomDynamicsx8,
@@ -154,6 +159,7 @@ pub struct WaterMolx8 {
     pub m: AtomDynamicsx8,
 }
 
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 pub struct WaterMolx16 {
     pub o: AtomDynamicsx16,
@@ -223,7 +229,7 @@ impl WaterMol {
 
     /// Run this after updating force on the EP site; converts its force to the O and H sites,
     /// and leaves it at 0.
-    pub(crate) fn project_ep_force_to_real_sites(&mut self, cell: &SimBox) {
+    pub(crate) fn _project_ep_force_to_real_sites(&mut self, cell: &SimBox) {
         // Geometry in O-centered frame
         let r_O_H0 = self.o.posit + cell.min_image(self.h0.posit - self.o.posit) - self.o.posit;
         let r_O_H1 = self.o.posit + cell.min_image(self.h1.posit - self.o.posit) - self.o.posit;

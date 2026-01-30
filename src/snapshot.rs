@@ -79,7 +79,7 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// The element indices must match the atom posits.
-    pub fn populate_hydrogen_bonds(&mut self, atoms: &[AtomDynamics]) {
+    pub fn populate_hydrogen_bonds(&mut self, _atoms: &[AtomDynamics]) {
         // let result = create_hydrogen_bonds(&atoms, &self.atom_posits, &self.water_o_posits, &self.bonds);
 
         // self.hydrogen_bonds = result;
@@ -90,13 +90,13 @@ impl Snapshot {
 
         if write_water {
             for pos in &self.water_o_posits {
-                atom_posits.push(pos.clone());
+                atom_posits.push(*pos);
             }
             for pos in &self.water_h0_posits {
-                atom_posits.push(pos.clone());
+                atom_posits.push(*pos);
             }
             for pos in &self.water_h1_posits {
-                atom_posits.push(pos.clone());
+                atom_posits.push(*pos);
             }
         }
 
@@ -104,8 +104,8 @@ impl Snapshot {
             time: self.time,
             atom_posits,
             unit_cell: DcdUnitCell {
-                bounds_low: cell.bounds_low.into(),
-                bounds_high: cell.bounds_high.into(),
+                bounds_low: cell.bounds_low,
+                bounds_high: cell.bounds_high,
             },
         }
     }
@@ -144,14 +144,6 @@ pub struct HydrogenBond {
     pub hydrogen: (HBondAtomType, usize),
 }
 
-macro_rules! parse_le {
-    ($bytes:expr, $t:ty, $range:expr) => {{ <$t>::from_le_bytes($bytes[$range].try_into().unwrap()) }};
-}
-
-macro_rules! copy_le {
-    ($dest:expr, $src:expr, $range:expr) => {{ $dest[$range].copy_from_slice(&$src.to_le_bytes()) }};
-}
-
 impl Snapshot {
     pub fn make_mol2(&self, atoms_: &[AtomGeneric], bonds: &[BondGeneric]) -> io::Result<Mol2> {
         if atoms_.len() != self.atom_posits.len() {
@@ -177,7 +169,7 @@ impl Snapshot {
         })
     }
 
-    pub fn make_mmcif(&self, atoms_: &[AtomGeneric], bonds: &[BondGeneric]) -> io::Result<MmCif> {
+    pub fn make_mmcif(&self, atoms_: &[AtomGeneric], _bonds: &[BondGeneric]) -> io::Result<MmCif> {
         if atoms_.len() != self.atom_posits.len() {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,

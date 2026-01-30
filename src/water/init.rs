@@ -14,10 +14,7 @@ use rand_distr::{Distribution, Normal};
 use crate::{
     ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, MdState,
     ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
-    partial_charge_inference::{
-        files::{load, load_from_bytes},
-        save,
-    },
+    partial_charge_inference::{files::load_from_bytes, save},
     sa_surface,
     water::WaterMol,
 };
@@ -220,6 +217,15 @@ pub fn make_water_mols(
 
         // This loop requires the template to iterate inside-out.
         'outer: for i in 0..n_mols * fault_ratio {
+            if i >= template.o_posits.len() {
+                eprintln!(
+                    "Can't make water; Template is too small for the cell size. i: {}, o posits len: {}",
+                    i,
+                    template.o_posits.len()
+                );
+                return Vec::new();
+            }
+
             let o_posit = template.o_posits[i] + offset;
             let h0_posit = template.h0_posits[i] + offset;
             let h1_posit = template.h1_posits[i] + offset;
@@ -398,8 +404,7 @@ pub fn make_water_mols(
 /// Note: If we're able to place most, but not all waters, the barostat should adjust the sim box size
 /// to account for the lower-than-specific pressure.
 ///
-/// todo: Update this so it creates realistic orientations and molecules intead of a lattice.
-/// todo: This will require (much?) less equilibration.
+/// Note: We no longer use this directly, but keep it as it's used to initialize the template we do use.
 pub fn _make_water_mols_grid(
     cell: &SimBox,
     temperature_tgt: f32,
@@ -479,7 +484,7 @@ pub fn _make_water_mols_grid(
         result.push(WaterMol::new(
             posit,
             Vec3::new_zero(),
-            random_quaternion(&mut rng, distro),
+            _random_quaternion(&mut rng, distro),
         ));
         num_added += 1;
 
@@ -647,7 +652,7 @@ fn remove_com_velocity(mols: &mut [WaterMol]) {
 
 // todo: It might be nice to have this in lin_alg, although I don't want to add the rand
 // todo dependency to it.
-fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
+fn _random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
     let (u1, u2, u3) = (rng.sample(distro), rng.sample(distro), rng.sample(distro));
     let sqrt1_minus_u1 = (1.0 - u1).sqrt();
     let sqrt_u1 = u1.sqrt();

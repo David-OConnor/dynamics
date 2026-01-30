@@ -1994,6 +1994,7 @@ pub(in crate::param_inference) fn postprocess_n3_to_nh_if_conjugated(
         }
     }
 
+    #[allow(clippy::needless_range_loop)]
     for n in 0..atoms.len() {
         if types[n].as_str() != "nh" {
             continue;

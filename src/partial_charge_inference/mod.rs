@@ -13,7 +13,6 @@ use std::{
     io,
     io::Write,
     path::{Path, PathBuf},
-    time::Instant,
 };
 
 use bincode::{Decode, Encode};
@@ -71,14 +70,14 @@ impl AtomVocab {
             el_map.insert(el, i);
         }
 
-        let mut atom_type_map = HashMap::new();
+        let mut ff_type_map = HashMap::new();
         for (i, t) in ff_types.into_iter().enumerate() {
-            atom_type_map.insert(t, i);
+            ff_type_map.insert(t, i);
         }
 
         Ok(Self {
             el: el_map,
-            atom_type: atom_type_map,
+            atom_type: ff_type_map,
             charge_mean: 0.,
             charge_std: 0.,
         })
@@ -348,7 +347,7 @@ fn run_inference(
 
 /// Infer partial charge for each atom.
 pub fn infer_charge(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> candle_core::Result<Vec<f32>> {
-    let start = Instant::now();
+    // let start = Instant::now();
 
     // Note: CUDA doesn't seem faster here.
     let dev_candle = Device::Cpu;
@@ -367,8 +366,8 @@ pub fn infer_charge(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> candle_core
 
     let charges = run_inference(&model, &vocabs, atoms, bonds, &dev_candle)?;
 
-    let elapsed = start.elapsed().as_millis();
-    println!("Inference complete in {elapsed} ms");
+    // let elapsed = start.elapsed().as_millis();
+    // println!("Inference complete in {elapsed} ms");
 
     // We know that most molecules in the GeoStd set don't specify  bond or
     // valence angles (although some do) We can therefor assume that every 3

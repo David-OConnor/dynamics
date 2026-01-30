@@ -538,9 +538,8 @@ impl Sidechain {
         }
     }
     pub fn _add_to_χ5(&mut self, val: f64) {
-        match self {
-            Self::Arg(aa) => aa.χ_5 += val,
-            _ => (),
+        if let Self::Arg(aa) = self {
+            aa.χ_5 += val;
         }
     }
 

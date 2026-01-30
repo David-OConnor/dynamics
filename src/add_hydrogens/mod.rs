@@ -361,7 +361,7 @@ pub(crate) fn h_type_in_res_sidechain(
 
     let result = AtomTypeInRes::H(val);
 
-    if !validate_h_atom_type(depth, *digit, aa, &h_digit_map)? {
+    if !validate_h_atom_type(depth, *digit, aa, h_digit_map)? {
         return Err(ParamError::new(&format!(
             "Invalid H type: {result} on {aa}. Parent: {parent_tir}"
         )));

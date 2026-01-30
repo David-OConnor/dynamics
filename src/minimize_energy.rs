@@ -109,7 +109,7 @@ impl MdState {
             a.vel = Vec3::new_zero();
         }
 
-        compute_forces_and_energy(self, dev, &external_force);
+        compute_forces_and_energy(self, dev, external_force);
 
         let alpha = STEP_INIT;
         let e_prev = self.potential_energy;
@@ -196,7 +196,7 @@ impl MdState {
 
             self.build_neighbors_if_needed(dev);
 
-            compute_forces_and_energy(self, dev, &external_force);
+            compute_forces_and_energy(self, dev, external_force);
             let e_new = self.potential_energy;
 
             if self.cfg.overrides.snapshots_during_energy_min {

@@ -333,7 +333,7 @@ fn find_angle_alts(
 fn find_dihedral_alts(
     gaff2: &ForceFieldParams,
     parmchk: &ParmChk,
-    atcor: &AtCor,
+    _atcor: &AtCor,
     eq_map: &HashMap<String, &str>,
     key: &(String, String, String, String),
     proper: bool,
@@ -437,7 +437,7 @@ fn find_dihedral_alts(
     );
 
     // todo: Figure out if/how you use this. GEostd FRCMOD seem to use this, but where?
-    let improper_default = DihedralParams {
+    let _improper_default = DihedralParams {
         atom_types: (
             "X".to_string(),
             "X".to_string(),
@@ -537,6 +537,7 @@ fn is_carbonyl_improper_candidate(key: (&str, &str, &str, &str)) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Helper to abstract over wildcards, and apply a scoring system.
 fn dihedral_inner(
     key0: &str,

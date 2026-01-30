@@ -230,9 +230,9 @@ pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial
 
     // 2. Unconstrained Drift (Predictor Step)
     // Move atoms according to current velocities and forces (if integrated into vel)
-    let mut r_o = r0_o + mol.o.vel * dt;
-    let mut r_h0 = r0_h0 + mol.h0.vel * dt;
-    let mut r_h1 = r0_h1 + mol.h1.vel * dt;
+    let r_o = r0_o + mol.o.vel * dt;
+    let r_h0 = r0_h0 + mol.h0.vel * dt;
+    let r_h1 = r0_h1 + mol.h1.vel * dt;
 
     // 3. Define the Coordinate System based on Unconstrained Positions
     // -------------------------------------------------------------
@@ -251,14 +251,14 @@ pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial
     let mut ax = d_h1 - d_h0;
     // B (z-axis): Perpendicular to the plane defined by O and HH
     // Note: Use d_o (vector to Oxygen) to find the plane
-    let mut az = d_o.cross(ax);
+    let az = d_o.cross(ax);
     // C (y-axis): The "Bisector" axis, perpendicular to A and B
     let mut ay = az.cross(ax);
 
     // Normalize
     ax = ax.to_normalized();
     ay = ay.to_normalized();
-    az = az.to_normalized();
+    // az = az.to_normalized();
 
     // 4. Analytic Constraint Satisfaction
     // -------------------------------------------------------------

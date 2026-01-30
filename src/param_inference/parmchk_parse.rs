@@ -246,14 +246,10 @@ impl ParmChk {
         let mut depth = 0;
 
         // Follow alias chain like OS -> os, or via short CORR aliases.
-        loop {
-            if let Some(next) = self.aliases.get(cur) {
-                cur = next;
-                depth += 1;
-                if depth > 10 {
-                    break;
-                }
-            } else {
+        while let Some(next) = self.aliases.get(cur) {
+            cur = next;
+            depth += 1;
+            if depth > 10 {
                 break;
             }
         }

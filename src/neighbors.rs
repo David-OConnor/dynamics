@@ -97,6 +97,7 @@ impl MdState {
         self.neighbors_nb.max_displacement_sq = 0.0;
     }
 
+    #[allow(unused)] // Unused when not using GPU.
     /// This rebuilds all neighbor lists.
     pub(crate) fn build_all_neighbors(&mut self, dev: &ComputationDevice) {
         let atom_posits: Vec<_> = self.atoms.iter().map(|a| a.posit).collect();

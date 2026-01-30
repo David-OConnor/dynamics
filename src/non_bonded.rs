@@ -3,6 +3,7 @@
 use std::ops::AddAssign;
 
 use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
@@ -16,6 +17,7 @@ use crate::{
     forces::force_e_lj,
     water::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
@@ -87,6 +89,7 @@ pub struct LjTables {
     pub n_std: usize,
 }
 
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 #[derive(Default)]
 pub struct LjTablesx8 {
@@ -97,6 +100,7 @@ pub struct LjTablesx8 {
     pub n_std: [usize; 8],
 }
 
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 #[derive(Default)]
 pub struct LjTablesx16 {
@@ -604,6 +608,7 @@ impl MdState {
             Some(pme_recip) => match dev {
                 ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
+                #[allow(unused)]
                 ComputationDevice::Gpu(stream) => {
                     #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
                     let v = pme_recip.forces(&pos_all, &q_all);
@@ -747,6 +752,7 @@ impl MdState {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Lennard Jones and (short-range) Coulomb forces. Used by water and non-water.
 /// We run long-range SPME Coulomb force separately.
 ///

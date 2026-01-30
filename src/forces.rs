@@ -1,4 +1,5 @@
 use lin_alg::f32::Vec3;
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 
@@ -18,6 +19,7 @@ pub fn force_e_lj(dir: Vec3, inv_dist: f32, sigma: f32, eps: f32) -> (Vec3, f32)
 }
 
 /// SIMD variant
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 pub fn force_e_lj_x8(dir: Vec3x8, inv_dist: f32x8, sigma: f32x8, eps: f32x8) -> (Vec3x8, f32x8) {
     let sr = sigma * inv_dist;
@@ -32,6 +34,7 @@ pub fn force_e_lj_x8(dir: Vec3x8, inv_dist: f32x8, sigma: f32x8, eps: f32x8) -> 
 
 /// SIMD variant. Note: Having this code compiled, then run on an AVX-512 system is fine;
 /// just don't run it.
+#[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 pub fn force_e_lj_x16(
     dir: Vec3x16,
