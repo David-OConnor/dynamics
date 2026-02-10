@@ -214,6 +214,11 @@ fn build_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], adj: &[Vec<usize>]) -
 
         match bond.bond_type {
             BondType::Aromatic => {
+                if i >= ring_sizes.len() || j >= ring_sizes.len() {
+                    eprintln!("Invalid ring indices i: {i} j: {j}");
+                    return Vec::new();
+                }
+
                 let in_ring_i = ring_sizes[i].iter().any(|s| (5..=7).contains(s));
                 let in_ring_j = ring_sizes[j].iter().any(|s| (5..=7).contains(s));
 
@@ -223,6 +228,11 @@ fn build_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], adj: &[Vec<usize>]) -
                 }
             }
             BondType::Double => {
+                if i >= num_double_bonds.len() || j >= num_double_bonds.len() {
+                    eprintln!("Invalid db bond indices i: {i} j: {j}");
+                    return Vec::new();
+                }
+
                 num_double_bonds[i] = num_double_bonds[i].saturating_add(1);
                 num_double_bonds[j] = num_double_bonds[j].saturating_add(1);
 
@@ -245,6 +255,11 @@ fn build_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], adj: &[Vec<usize>]) -
                 }
             }
             BondType::Triple => {
+                if i >= num_triple_bonds.len() || j >= num_triple_bonds.len() {
+                    eprintln!("Invalid db triple indices i: {i} j: {j}");
+                    return Vec::new();
+                }
+
                 num_triple_bonds[i] = num_triple_bonds[i].saturating_add(1);
                 num_triple_bonds[j] = num_triple_bonds[j].saturating_add(1);
             }
@@ -417,6 +432,12 @@ pub fn matches_def(
     bonds: &[BondGeneric],
     adj: &[Vec<usize>],
 ) -> bool {
+    // Can occur for invalid molecules loaded.
+    if idx >= atoms.len() || idx >= env_all.len() {
+        // eprintln!("Index out of bounds when  matching def: {idx}"); // No print to avoid spam.
+        return false;
+    }
+
     let atom = &atoms[idx];
     let env = &env_all[idx];
 

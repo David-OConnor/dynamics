@@ -193,6 +193,10 @@ pub(in crate::param_inference) fn postprocess_ring_n_types(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for (i, atom) in atoms.iter().enumerate() {
         if atom.element != Nitrogen {
             continue;
@@ -321,6 +325,10 @@ pub(in crate::param_inference) fn postprocess_nd_sp2_hetero(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for idx in 0..atoms.len() {
         if atoms[idx].element != Nitrogen {
             continue;
@@ -381,6 +389,10 @@ pub(in crate::param_inference) fn postprocess_na_ring_bridge(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -433,6 +445,10 @@ pub fn postprocess_nb_aromatic(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -486,6 +502,10 @@ pub(in crate::param_inference) fn postprocess_nb_to_na_ring_with_h(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -595,6 +615,10 @@ pub(in crate::param_inference) fn postprocess_na_to_n3(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;
@@ -751,6 +775,10 @@ pub(in crate::param_inference) fn postprocess_cc_to_cd_ring_hetero(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for i in 0..atoms.len() {
         if atoms[i].element != Carbon {
             continue;
@@ -1176,6 +1204,10 @@ pub(in crate::param_inference) fn postprocess_n3_to_na_bridge_nd(
     env_all: &[AtomEnvData],
     types: &mut [String],
 ) {
+    if atoms.len() != env_all.len() {
+        return;
+    }
+
     for i in 0..atoms.len() {
         if atoms[i].element != Nitrogen {
             continue;

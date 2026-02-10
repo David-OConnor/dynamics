@@ -165,6 +165,7 @@ impl Snapshot {
             bonds: bonds.to_vec(),
             mol_type: MolType::Small,
             charge_type: ChargeType::User,
+            pharmacophore_features: Vec::new(),
             comment: None,
         })
     }
