@@ -37,40 +37,37 @@ const PKA_HIS: f32 = 6.0;
 const PKA_CYS: f32 = 8.3;
 const PKA_LYS: f32 = 10.5;
 
-const WINDOW: f32 = 0.8; // buffer to avoid edge flipping
-
 pub(crate) fn his_choice(ph: f32) -> Option<AminoAcidProtenationVariant> {
-    // HIP if clearly below pKa, neutral otherwise (choose HIE by default).
-    if ph <= PKA_HIS - WINDOW {
+    // HIP (doubly protonated) below pKa; HIE (neutral, NE2-H tautomer) at or above.
+    // HID requires per-residue local-geometry analysis (see todo above) and is not
+    // selected here.
+    if ph < PKA_HIS {
         Some(AminoAcidProtenationVariant::Hip)
-    } else if ph >= PKA_HIS + WINDOW {
-        Some(AminoAcidProtenationVariant::Hie) // neutral tautomer default
     } else {
-        // ambiguous band -> prefer neutral HIE (keeps one consistent choice)
         Some(AminoAcidProtenationVariant::Hie)
     }
 }
 
 pub(crate) fn variant_allowed_at_ph(aa_var: AminoAcidProtenationVariant, ph: f32) -> bool {
     match aa_var {
-        // Histidine: HIP at low pH; HID/HIE at high pH. We pick a single tautomer upstream.
-        AminoAcidProtenationVariant::Hip => ph <= PKA_HIS - WINDOW,
-        AminoAcidProtenationVariant::Hid | AminoAcidProtenationVariant::Hie => {
-            ph >= PKA_HIS - WINDOW
-        } // allow neutral above/borderline
+        // Histidine variants are selected by his_choice(); these entries keep
+        // variant_allowed_at_ph consistent but are not used inside make_h_digit_map.
+        AminoAcidProtenationVariant::Hip => ph < PKA_HIS,
+        AminoAcidProtenationVariant::Hid | AminoAcidProtenationVariant::Hie => ph >= PKA_HIS,
 
-        // Acids: protonated variants (ASH/GLH) only well below their pKa
-        AminoAcidProtenationVariant::Ash => ph <= PKA_ASP - WINDOW,
-        AminoAcidProtenationVariant::Glh => ph <= PKA_GLU - WINDOW,
+        // Acids: protonated variants (ASH/GLH) when pH is below pKa.
+        // Together with standard_allowed_at_ph these exactly partition all pH values.
+        AminoAcidProtenationVariant::Ash => ph < PKA_ASP,
+        AminoAcidProtenationVariant::Glh => ph < PKA_GLU,
 
-        // Cys: thiolate (CYM) only well above pKa
-        AminoAcidProtenationVariant::Cym => ph >= PKA_CYS + WINDOW,
+        // Cys: thiolate (CYM) only above pKa
+        AminoAcidProtenationVariant::Cym => ph >= PKA_CYS,
 
         // Disulfide cystine (CYX) is not pH-driven; don’t include here via pH.
         AminoAcidProtenationVariant::Cyx => false,
 
-        // Lys: neutral LYN only well above pKa
-        AminoAcidProtenationVariant::Lyn => ph >= PKA_LYS + WINDOW,
+        // Lys: neutral LYN only above pKa
+        AminoAcidProtenationVariant::Lyn => ph > PKA_LYS,
 
         // Capping or special forms (not pH-driven)
         AminoAcidProtenationVariant::Ace
@@ -81,19 +78,22 @@ pub(crate) fn variant_allowed_at_ph(aa_var: AminoAcidProtenationVariant, ph: f32
 }
 
 pub(crate) fn standard_allowed_at_ph(aa: na_seq::AminoAcid, ph: f32) -> bool {
-    // Only restrict standards when you actually have alt protonation variants in Amber.
+    // Only restrict standards when Amber has an alternate protonation variant.
+    // Thresholds use exact pKa so that standard + variant together cover all pH
+    // values with no dead zone (the previous ±WINDOW offset created gaps where
+    // neither form was selected, causing missing digit_map entries and errors).
     match aa {
-        // For acids, Amber "ASP"/"GLU" are deprotonated; allow them above pKa
-        na_seq::AminoAcid::Asp => ph >= PKA_ASP + WINDOW,
-        na_seq::AminoAcid::Glu => ph >= PKA_GLU + WINDOW,
+        // Amber "ASP"/"GLU" are deprotonated; allow at or above pKa.
+        na_seq::AminoAcid::Asp => ph >= PKA_ASP,
+        na_seq::AminoAcid::Glu => ph >= PKA_GLU,
 
-        // For Lys, Amber "LYS" is protonated; allow it below pKa
-        na_seq::AminoAcid::Lys => ph <= PKA_LYS - WINDOW,
+        // Amber "LYS" is protonated; allow at or below pKa.
+        na_seq::AminoAcid::Lys => ph <= PKA_LYS,
 
-        // For Cys, Amber "CYS" is protonated; allow it below/around pKa
-        na_seq::AminoAcid::Cys => ph <= PKA_CYS + WINDOW,
+        // Amber "CYS" is protonated; allow below pKa (CYM covers above).
+        na_seq::AminoAcid::Cys => ph < PKA_CYS,
 
-        // Histidine: you typically don’t use "HIS" in Amber; variants are used instead.
+        // Histidine: Amber uses variants (HID/HIE/HIP) not the bare "HIS" residue.
         na_seq::AminoAcid::His => false,
 
         // Others unaffected

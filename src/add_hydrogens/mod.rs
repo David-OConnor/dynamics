@@ -334,8 +334,14 @@ pub(crate) fn h_type_in_res_sidechain(
         if let Some(sd) = suffix_digit {
             if let Some(pos) = digits.iter().position(|&d| d == sd as u8) {
                 &digits[pos] // exact match: CE3 → 3, CZ3 → 3, CZ2 → 2, etc.
+            } else if digits.iter().all(|&d| d < 10) {
+                // All H names at this depth are single-digit (e.g. HD1, HD2). The parent's
+                // suffix is absent, meaning this H doesn't exist in the current protonation
+                // state — e.g. ND1 (suffix=1) has no HD1 in HIE whose 'D'→[2].
+                return Ok(None);
             } else {
-                // Fall back to the attachment-order index if suffix isn't present in this depth
+                // Multi-digit H names (e.g. HG21/22/23): the parent suffix doesn't map
+                // directly to the H digit, so fall back to attachment order.
                 digits
                     .get(h_num_this_parent)
                     .unwrap_or_else(|| &digits[digits.len() - 1])
@@ -421,19 +427,28 @@ pub fn populate_hydrogens_dihedrals(
             let res_next = &res_clone[res_i + 1];
 
             let n_next = res_next.atom_sns.iter().find(|i| {
-                if let Some(tir) = &atoms[index_map[*i]].type_in_res {
-                    *tir == AtomTypeInRes::N
+                if let Some(&idx) = index_map.get(*i) {
+                    matches!(&atoms[idx].type_in_res, Some(tir) if *tir == AtomTypeInRes::N)
                 } else {
                     false
                 }
             });
 
             if let Some(n_next) = n_next {
-                n_next_pos = Some(atoms[index_map[n_next]].posit);
+                if let Some(&idx) = index_map.get(n_next) {
+                    n_next_pos = Some(atoms[idx].posit);
+                }
             }
         }
 
-        let atoms_this_res: Vec<&_> = res.atom_sns.iter().map(|i| &atoms[index_map[i]]).collect();
+        // filter_map skips any serial numbers not yet in index_map (e.g. H atoms
+        // pushed by a previous call that haven't been re-indexed, or atoms absent
+        // from the atoms list due to alternate conformations / filtering upstream).
+        let atoms_this_res: Vec<&_> = res
+            .atom_sns
+            .iter()
+            .filter_map(|i| index_map.get(i).map(|&idx| &atoms[idx]))
+            .collect();
 
         // todo: Handle the N term and C term cases; pass those params in.
         let (dihedral, h_added_this_res, this_cp_ca) = aa_data_from_coords(
@@ -461,6 +476,7 @@ pub fn populate_hydrogens_dihedrals(
         for mut h in h_added_this_res {
             h.serial_number = next_sn;
             atoms.push(h);
+            index_map.insert(next_sn, atoms.len() - 1); // keep map in sync
 
             res.atom_sns.push(next_sn);
             chains[chain_i].atom_sns.push(next_sn);

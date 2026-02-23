@@ -400,14 +400,10 @@ fn add_h_sc_het(
                 }
             }
             Nitrogen => {
-                // No H on this His ring N. (There is on NE2 though)
-                // todo: this might depend on the protonation state.
-                if let Some(aa) = aa
-                    && aa == AminoAcid::His
-                    && *parent_tir == AtomTypeInRes::ND1
-                {
-                    continue;
-                }
+                // Note: His ND1 gets H in HID/HIP but not HIE. This is handled
+                // automatically: h_type_in_res_sidechain returns None when the parent's
+                // suffix digit is absent from the digit_map (e.g. ND1 suffix=1 is absent
+                // from HIE's 'D'→[2], but present in HID/HIP's 'D'→[1,2]).
                 match atoms_bonded.len() {
                     1 => unsafe {
                         // Add 2 H. (Amine)
@@ -659,7 +655,6 @@ pub fn aa_data_from_coords(
     atoms: &[&AtomGeneric],
     residues: &[ResidueGeneric],
     residue_type: &ResidueType,
-    // res_i: usize,
     prev_cp_ca: Option<(Vec3, Vec3)>,
     next_n: Option<Vec3>,
     digit_map: &DigitMap,

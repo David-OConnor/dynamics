@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\the_a\\\\code\\\\Bio\\\\dynamics\" && cargo check 2>&1)"
+    ]
+  }
+}
