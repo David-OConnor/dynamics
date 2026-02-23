@@ -6,16 +6,8 @@ authors = ["David O'Connor <the_alchemist@fastmail.com>"]
 description = "Molecular dynamics"
 keywords = ["molecular", "dynamics", "biology"]
 categories = [
-    "science",
     "science::bioinformatics",
-    "science::bioinformatics::genomics",
-    "science::bioinformatics::proteomics",
-    "science::bioinformatics::sequence-analysis",
-    #
-    "science::computational-biology",
     "science::computational-biology::structural-modeling",
-    #
-    "science::computational-chemistry",
     "science::computational-chemistry::cheminformatics",
     "science::computational-chemistry::molecular-simulation",
 ]
