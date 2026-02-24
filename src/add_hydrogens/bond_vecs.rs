@@ -28,6 +28,7 @@ pub const LEN_CALPHA_H: f64 = 1.080; // CA-CH
 pub const LEN_N_H: f64 = 1.010; // H -N;
 pub const LEN_C_H: f64 = 1.09; // Note: This varies depending on the side chain.
 pub const LEN_O_H: f64 = 0.9572; // In water molecules. In proteins, maybe 1.01?
+pub const LEN_S_H: f64 = 1.336; // S-H thiol bond length
 
 // Called in the creation of our bond vecs
 pub const θ_HOH_ANGLE: f64 = 1.82421813;

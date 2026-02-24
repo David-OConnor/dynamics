@@ -19,6 +19,9 @@ function. You may wish to reference the [Bio Files API docs](https://docs.rs/bio
 We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer, with Nvidia
 drivers 580 or newer.
 
+Includes auxillary functionality to faciliate ease of use, including populating force field parameters on arbitrary
+molecules, and preparing proteins for MD. For example, by populating hydrogens on mmCIF data, based on pH.
+
 **Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having
 trouble linking the cuFFT dependency.
 

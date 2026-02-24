@@ -9,20 +9,6 @@
 //!
 //! This page has atom labels for all AAs; use it as a ref and QC: https://ccpn.ac.uk/manual/v3/NEFAtomNames.html
 
-// todo notes to patch: (2025-07-20)
-// - Met: good
-// - Arg: good
-// - Asn: good
-// - Phe: good
-// - Pro: good
-// - Leu: good
-// - Ile: good
-//
-// - Asp  Missing one of the HB atoms? Seems to be based on the geometry we assess;
-// bond angle more planar; not sure how to proceed. Glu: Same, but missing Hg.
-// - Cys missing H on S. ("HS")
-// - Leucine sometimes missing one of its Methyl groups
-
 use std::collections::HashMap;
 
 use bio_files::{AtomGeneric, ChainGeneric, ResidueGeneric};
@@ -33,7 +19,7 @@ use crate::{
     add_hydrogens::{
         add_hydrogens_2::{Dihedral, aa_data_from_coords},
         bond_vecs::init_local_bond_vecs,
-        ph::{his_choice, standard_allowed_at_ph, variant_allowed_at_ph},
+        ph::{PKA_TYR, his_choice, standard_allowed_at_ph, variant_allowed_at_ph},
     },
     params::{ProtFfChargeMap, ProtFfChargeMapSet},
 };
@@ -177,6 +163,16 @@ fn make_h_digit_map(ff_map: &ProtFfChargeMap, ph: f32) -> DigitMap {
     }
 
     // Override for His, to combine
+
+    // Tyr phenol OH deprotonates above its pKa (~10.5): remove the 'H' depth entry
+    // (which holds HH for the OH parent) so h_type_in_res_sidechain returns None for
+    // Tyr OH at high pH.  Ring H atoms use depths 'D', 'E', 'Z', 'B' and are unaffected.
+    // (amino19.lib has no TYM variant, so we handle this here directly.)
+    if ph > PKA_TYR {
+        if let Some(tyr_map) = result.get_mut(&AminoAcid::Tyr) {
+            tyr_map.remove(&'H');
+        }
+    }
 
     result
 }
@@ -455,8 +451,6 @@ pub fn populate_hydrogens_dihedrals(
             &atoms_this_res,
             &res_clone,
             &res.res_type,
-            // res_i,
-            // chain_i,
             prev_cp_ca,
             n_next_pos,
             &digit_map,

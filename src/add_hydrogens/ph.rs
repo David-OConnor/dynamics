@@ -30,12 +30,13 @@ use na_seq::AminoAcidProtenationVariant;
 
 // Intrinsic pKas (typical, solvent-exposed). These are deliberately simple.
 // todo: Make them better?
-// todo: Add Arg, Tyr and Termini on AminoAcidGeneric? Are they in the Amber data?
+// todo: Add Arg, and Termini on AminoAcidGeneric? Are they in the Amber data?
 const PKA_ASP: f32 = 3.9;
 const PKA_GLU: f32 = 4.2;
 const PKA_HIS: f32 = 6.0;
 const PKA_CYS: f32 = 8.3;
 const PKA_LYS: f32 = 10.5;
+pub(crate) const PKA_TYR: f32 = 10.5;
 
 pub(crate) fn his_choice(ph: f32) -> Option<AminoAcidProtenationVariant> {
     // HIP (doubly protonated) below pKa; HIE (neutral, NE2-H tautomer) at or above.
@@ -77,11 +78,11 @@ pub(crate) fn variant_allowed_at_ph(aa_var: AminoAcidProtenationVariant, ph: f32
     }
 }
 
+/// Only restrict standards when Amber has an alternate protonation variant.
+/// Thresholds use exact pKa so that standard + variant together cover all pH
+/// values with no dead zone (the previous ±WINDOW offset created gaps where
+/// neither form was selected, causing missing digit_map entries and errors).
 pub(crate) fn standard_allowed_at_ph(aa: na_seq::AminoAcid, ph: f32) -> bool {
-    // Only restrict standards when Amber has an alternate protonation variant.
-    // Thresholds use exact pKa so that standard + variant together cover all pH
-    // values with no dead zone (the previous ±WINDOW offset created gaps where
-    // neither form was selected, causing missing digit_map entries and errors).
     match aa {
         // Amber "ASP"/"GLU" are deprotonated; allow at or above pKa.
         na_seq::AminoAcid::Asp => ph >= PKA_ASP,

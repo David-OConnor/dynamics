@@ -10,7 +10,7 @@ use bio_files::{AtomGeneric, ResidueGeneric, ResidueType};
 use lin_alg::f64::{Quaternion, Vec3, calc_dihedral_angle, calc_dihedral_angle_v2};
 use na_seq::{
     AminoAcid, AtomTypeInRes,
-    Element::{Carbon, Hydrogen, Nitrogen, Oxygen},
+    Element::{Carbon, Hydrogen, Nitrogen, Oxygen, Sulfur},
 };
 
 use crate::{
@@ -18,8 +18,8 @@ use crate::{
     add_hydrogens::{
         DigitMap,
         bond_vecs::{
-            LEN_C_H, LEN_CALPHA_H, LEN_N_H, LEN_O_H, PLANAR3_A, PLANAR3_B, PLANAR3_C, TETRA_A,
-            TETRA_B, TETRA_C, TETRA_D,
+            LEN_C_H, LEN_CALPHA_H, LEN_N_H, LEN_O_H, LEN_S_H, PLANAR3_A, PLANAR3_B, PLANAR3_C,
+            TETRA_A, TETRA_B, TETRA_C, TETRA_D,
         },
         h_type_in_res_sidechain,
         sidechain::Sidechain,
@@ -406,8 +406,7 @@ fn add_h_sc_het(
                 // from HIE's 'D'→[2], but present in HID/HIP's 'D'→[1,2]).
                 match atoms_bonded.len() {
                     1 => unsafe {
-                        // Add 2 H. (Amine)
-                        // todo: DRY with methyl code above
+                        // Add 2 H (NH2, planar) or 3 H (NH3+, tetrahedral) depending on pH.
                         let (bond_prev, bond_back2) =
                             match get_prev_bonds(atom, atoms, i, atoms_bonded[0]) {
                                 Ok(v) => v,
@@ -417,25 +416,64 @@ fn add_h_sc_het(
                                 }
                             };
 
-                        // Initial rotator to align the tetrahedral geometry; positions almost correctly,
-                        // but needs an additional rotation around the bond vec axis.
-                        let rotator_a = Quaternion::from_unit_vecs(PLANAR3_A, bond_prev);
+                        // Peek into the digit_map to count expected H on this nitrogen.
+                        // LYS NZ is NH3+ (3 H, tetrahedral) at low/neutral pH; it becomes
+                        // NH2 (2 H, planar) only above the LYS pKa (LYN variant).
+                        // All other terminal nitrogens (ARG NH1/NH2, ASN ND2, GLN NE2) are
+                        // always NH2 (2 H, planar).
+                        let depth = match parent_tir {
+                            AtomTypeInRes::NZ => 'Z',
+                            AtomTypeInRes::NH1 | AtomTypeInRes::NH2 => 'H',
+                            AtomTypeInRes::NE | AtomTypeInRes::NE1 | AtomTypeInRes::NE2 => 'E',
+                            AtomTypeInRes::ND1 | AtomTypeInRes::ND2 => 'D',
+                            _ => '\0',
+                        };
+                        let n_h = aa
+                            .and_then(|a| digit_map.get(&a))
+                            .and_then(|m| m.get(&depth))
+                            .map(|d| d.len())
+                            .unwrap_or(2);
 
-                        let planar_3_rotated = rotator_a.rotate_vec(PLANAR3_B);
-                        let dihedral = calc_dihedral_angle(bond_prev, planar_3_rotated, bond_back2);
+                        if n_h >= 3 {
+                            // NH3+ ammonium: tetrahedral geometry, 3 H (e.g. LYS NZ)
+                            let rotator_a = Quaternion::from_unit_vecs(TETRA_A, bond_prev);
+                            let tetra_rotated = rotator_a.rotate_vec(TETRA_B);
+                            let dihedral =
+                                calc_dihedral_angle(bond_prev, tetra_rotated, bond_back2);
+                            let rotator_b = Quaternion::from_axis_angle(bond_prev, -dihedral);
+                            let rotator = rotator_b * rotator_a;
 
-                        let rotator_b = Quaternion::from_axis_angle(bond_prev, -dihedral);
-                        let rotator = rotator_b * rotator_a;
+                            for (i, tetra_bond) in
+                                [TETRA_B, TETRA_C, TETRA_D].into_iter().enumerate()
+                            {
+                                let at = h_type_in_res_sidechain(i, parent_tir, aa, digit_map)?;
+                                let Some(at) = at else { continue };
+                                hydrogens.push(AtomGeneric {
+                                    posit: atom.posit + rotator.rotate_vec(tetra_bond) * LEN_N_H,
+                                    type_in_res: Some(at),
+                                    hetero: aa.is_none(),
+                                    ..h_default_sc.clone()
+                                });
+                            }
+                        } else {
+                            // NH2 amine/amide: planar trigonal geometry, 2 H
+                            let rotator_a = Quaternion::from_unit_vecs(PLANAR3_A, bond_prev);
+                            let planar_3_rotated = rotator_a.rotate_vec(PLANAR3_B);
+                            let dihedral =
+                                calc_dihedral_angle(bond_prev, planar_3_rotated, bond_back2);
+                            let rotator_b = Quaternion::from_axis_angle(bond_prev, -dihedral);
+                            let rotator = rotator_b * rotator_a;
 
-                        for (i, planar_bond) in [PLANAR3_B, PLANAR3_C].into_iter().enumerate() {
-                            let at = h_type_in_res_sidechain(i, parent_tir, aa, digit_map)?;
-                            let Some(at) = at else { continue };
-                            hydrogens.push(AtomGeneric {
-                                posit: atom.posit + rotator.rotate_vec(planar_bond) * LEN_N_H,
-                                type_in_res: Some(at),
-                                hetero: aa.is_none(),
-                                ..h_default_sc.clone()
-                            });
+                            for (i, planar_bond) in [PLANAR3_B, PLANAR3_C].into_iter().enumerate() {
+                                let at = h_type_in_res_sidechain(i, parent_tir, aa, digit_map)?;
+                                let Some(at) = at else { continue };
+                                hydrogens.push(AtomGeneric {
+                                    posit: atom.posit + rotator.rotate_vec(planar_bond) * LEN_N_H,
+                                    type_in_res: Some(at),
+                                    hetero: aa.is_none(),
+                                    ..h_default_sc.clone()
+                                });
+                            }
                         }
                     },
                     2 => {
@@ -470,9 +508,14 @@ fn add_h_sc_het(
                         };
 
                     let bond_prev_non_norm = atoms_bonded[0].1.posit - atom.posit;
-                    // This crude check may force these to only be created on Hydroxyls (?)
-                    // Looking for len characterisitic of a single bond vice double.
-                    if bond_prev_non_norm.magnitude() < 1.30 {
+                    // For hetero atoms, use bond length to distinguish single-bonded
+                    // hydroxyl (~1.41 Å) from double-bonded carbonyl (~1.23 Å).
+                    // For amino-acid residues, skip this check: carboxylate oxygens in
+                    // crystal structures (ASP OD1/OD2, GLU OE1/OE2) both appear at
+                    // ~1.25 Å due to resonance, so the length check would silently drop
+                    // the hydroxyl O of ASH/GLH at low pH. The pH-aware digit_map already
+                    // gates protonation correctly via h_type_in_res_sidechain below.
+                    if aa.is_none() && bond_prev_non_norm.magnitude() < 1.30 {
                         continue;
                     }
 
@@ -489,6 +532,37 @@ fn add_h_sc_het(
                     let Some(at) = at else { continue };
                     hydrogens.push(AtomGeneric {
                         posit: atom.posit + rotator.rotate_vec(unsafe { TETRA_B }) * LEN_O_H,
+                        type_in_res: Some(at),
+                        hetero: aa.is_none(),
+                        ..h_default_sc.clone()
+                    });
+                }
+            }
+            Sulfur => {
+                // Thiol (SH): single H when SG has exactly one heavy-atom bond (to CB).
+                // CYS (protonated) has HG in the digit_map; CYM (deprotonated) does not,
+                // so h_type_in_res_sidechain returns None for CYM and the H is skipped.
+                if atoms_bonded.len() == 1 {
+                    let (bond_prev, bond_back2) =
+                        match get_prev_bonds(atom, atoms, i, atoms_bonded[0]) {
+                            Ok(v) => v,
+                            Err(_) => {
+                                eprintln!("Error: Could not find prev bonds on Thiol");
+                                continue;
+                            }
+                        };
+
+                    let at = h_type_in_res_sidechain(0, parent_tir, aa, digit_map)?;
+                    let Some(at) = at else { continue };
+
+                    let rotator_a = Quaternion::from_unit_vecs(TETRA_A, bond_prev);
+                    let tetra_rotated = rotator_a.rotate_vec(unsafe { TETRA_B });
+                    let dihedral = calc_dihedral_angle(bond_prev, tetra_rotated, bond_back2);
+                    let rotator_b = Quaternion::from_axis_angle(bond_prev, -dihedral + TAU / 6.);
+                    let rotator = rotator_b * rotator_a;
+
+                    hydrogens.push(AtomGeneric {
+                        posit: atom.posit + rotator.rotate_vec(unsafe { TETRA_B }) * LEN_S_H,
                         type_in_res: Some(at),
                         hetero: aa.is_none(),
                         ..h_default_sc.clone()
