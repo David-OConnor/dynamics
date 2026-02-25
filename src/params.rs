@@ -356,6 +356,25 @@ pub fn populate_peptide_ff_and_q(
                             }
                         }
 
+                        // The amber template doesn't have HH23; only 2 Hs on that. I believe
+                        // this may be an omission.
+                        if aa_gen == AminoAcidGeneral::Standard(AminoAcid::Arg)
+                            && *type_in_res == AtomTypeInRes::H("HH23".to_owned())
+                        {
+                            for charge in charges {
+                                if charge.type_in_res == AtomTypeInRes::H("HH22".to_string()) {
+                                    atom.force_field_type = Some("HH22".to_string());
+                                    atom.partial_charge = Some(charge.charge);
+
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if found {
+                                break;
+                            }
+                        }
+
                         // Note: We've witnessed this due to errors in the mmCIF file, e.g. on ASP #88 on 9GLS.
                         eprintln!(
                             "Error assigning FF type and q based on atom type in res: Failed to match H type. Res #{}, Atom #{}, {type_in_res}, {aa_gen:?}. \
