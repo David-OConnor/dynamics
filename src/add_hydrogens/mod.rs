@@ -253,6 +253,7 @@ pub(crate) fn h_type_in_res_sidechain(
         AtomTypeInRes::NZ => 'Z',
         AtomTypeInRes::SE => 'E',
         AtomTypeInRes::SG => 'G',
+        AtomTypeInRes::OXT => 'X', // todo: What should this be? Observed in glycine at the C terminus.
         _ => {
             return Err(ParamError::new(&format!(
                 "Invalid parent type in res on H assignment. AA: {aa}. {parent_tir:?}",

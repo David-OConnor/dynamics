@@ -118,6 +118,11 @@ impl LjTables {
     pub fn new(atoms: &[AtomDynamics]) -> Self {
         let n_std = atoms.len();
 
+        if n_std == 0 {
+            // Otherwise, we will get an out-of-bounds error when subtracting.
+            return Default::default();
+        }
+
         // Construct an upper triangle table, excluding reverse order, and self interactions.
         let mut std = Vec::with_capacity(n_std * (n_std - 1) / 2);
 
