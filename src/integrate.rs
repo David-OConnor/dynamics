@@ -369,7 +369,7 @@ impl MdState {
                 w,
                 dt_drift,
                 &self.cell,
-                &mut self.barostat.virial_nonbonded_short_range,
+                &mut self.barostat.virial_constraints,
             );
         }
 
@@ -436,12 +436,7 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            integrate_rigid_water(
-                w,
-                dt,
-                &self.cell,
-                &mut self.barostat.virial_nonbonded_short_range,
-            );
+            integrate_rigid_water(w, dt, &self.cell, &mut self.barostat.virial_constraints);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {

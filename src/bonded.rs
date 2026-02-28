@@ -150,25 +150,29 @@ impl MdState {
             }
         }
 
-        // 3. Calculate constraint virial from the total displacement
-        let mut virial_c: f64 = 0.0;
+        // Calculate constraint virial from the total displacement
         let inv_dt2 = 1.0 / (dt * dt);
 
         for (indices, _) in &self.force_field_params.bond_rigid_constraints {
-            let ai = &self.atoms[indices.0];
-            let aj = &self.atoms[indices.1];
+            let i = indices.0;
+            let j = indices.1;
 
-            if !ai.static_ {
-                let dr_i = ai.posit - unconstrained_pos[indices.0];
-                virial_c += (ai.posit.dot(dr_i) * ai.mass * inv_dt2) as f64;
-            }
-            if !aj.static_ {
-                let dr_j = aj.posit - unconstrained_pos[indices.1];
-                virial_c += (aj.posit.dot(dr_j) * aj.mass * inv_dt2) as f64;
-            }
+            let ri_new = self.atoms[i].posit;
+            let rj_new = self.atoms[j].posit;
+
+            let dri = ri_new - unconstrained_pos[i];
+            let drj = rj_new - unconstrained_pos[j];
+
+            // Approx constraint forces
+            let fi_c = dri * (self.atoms[i].mass * inv_dt2);
+            // fj_c would be drj * (m_j/dt^2), but we only need one consistently.
+
+            // Use minimum-image bond vector
+            let rij = self.cell.min_image(rj_new - ri_new);
+
+            // Pair virial contribution (scalar)
+            self.barostat.virial_constraints += (rij.dot(fi_c)) as f64;
         }
-
-        self.barostat.virial_constraints += virial_c;
     }
 
     /// This makes the velocity constraint difference 0; run after updating velocities.

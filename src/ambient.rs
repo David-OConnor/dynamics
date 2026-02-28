@@ -521,6 +521,16 @@ impl MdState {
             self.water.len()
         );
 
+        {
+            let p_kin_native = (2.0 * self.kinetic_energy) / (3.0 * cell_vol);
+            let p_vir_native = (self.barostat.virial_total()) / (3.0 * cell_vol);
+
+            let p_kin_bar = p_kin_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
+            let p_vir_bar = p_vir_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
+
+            println!("P_kin: {p_kin_bar:.3} bar  P_vir: {p_vir_bar:.3} bar");
+        }
+
         let temp = self.temperature();
         println!("\nTemperature: {temp:.2} K");
 
