@@ -18,7 +18,7 @@ fn compute_forces_and_energy(
     dev: &ComputationDevice,
     external_force: &Option<Vec<Vec3>>,
 ) {
-    state.reset_accel_pe_virial();
+    state.reset_f_acc_pe_virial();
     state.potential_energy = 0.0;
 
     state.apply_all_forces(dev, external_force);
@@ -142,7 +142,7 @@ impl MdState {
             a.vel = Vec3::new_zero();
         }
 
-        self.reset_accel_pe_virial();
+        self.reset_f_acc_pe_virial();
 
         // Keep consistent with the normal cadence.
         self.cell.recenter(&self.atoms);

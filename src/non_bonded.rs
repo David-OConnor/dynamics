@@ -466,9 +466,10 @@ impl MdState {
             tgt.h1.force += f_h1;
         }
 
-        self.barostat.virial.nonbonded_short_range += virial;
         self.potential_energy += energy;
         self.potential_energy_nonbonded += energy;
+
+        self.barostat.virial.nonbonded_short_range += virial;
 
         // todo; not sure. For one mol, we get 1 and 0.
         if energy_between_mols.len() == self.potential_energy_between_mols.len() {
@@ -721,6 +722,7 @@ impl MdState {
                 }
             }
 
+            // todo: QC this.
             virial += 0.5 * posits[i].dot(*f) as f64; // tin-foil virial
         }
 

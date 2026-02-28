@@ -12,7 +12,7 @@ use rand::{Rng, distr::Uniform, rngs::ThreadRng};
 use rand_distr::{Distribution, Normal};
 
 use crate::{
-    ACCEL_CONVERSION_INV, AtomDynamics, ComputationDevice, MdState,
+    AtomDynamics, ComputationDevice, MdState, NATIVE_TO_KCAL,
     ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
     partial_charge_inference::{files::load_from_bytes, save},
     sa_surface,
@@ -627,7 +627,7 @@ fn _kinetic_energy_and_dof(mols: &[WaterMol], zero_com_drift: bool) -> (f32, usi
     }
 
     // Add in the 0.5 factor, and convert from amu • (Å/ps)² to kcal/mol.
-    (ke as f32 * 0.5 * ACCEL_CONVERSION_INV, dof)
+    (ke as f32 * 0.5 * NATIVE_TO_KCAL, dof)
 }
 
 fn atoms_mut(mols: &mut [WaterMol]) -> impl Iterator<Item = &mut AtomDynamics> {

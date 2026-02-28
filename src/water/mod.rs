@@ -32,7 +32,7 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{ACCEL_CONVERSION, AtomDynamics, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER};
+use crate::{AtomDynamics, KCAL_TO_NATIVE, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER};
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
@@ -82,8 +82,8 @@ const C_H: f32 = (O_EP_R / RA) / 2.;
 const C_O: f32 = 1.0 - 2.0 * C_H;
 
 // We use this to convert from force to acceleration, in the appropriate units.
-pub(crate) const ACCEL_CONV_WATER_O: f32 = ACCEL_CONVERSION / O_MASS;
-pub(crate) const ACCEL_CONV_WATER_H: f32 = ACCEL_CONVERSION / H_MASS;
+pub(crate) const ACCEL_CONV_WATER_O: f32 = KCAL_TO_NATIVE / O_MASS;
+pub(crate) const ACCEL_CONV_WATER_H: f32 = KCAL_TO_NATIVE / H_MASS;
 
 // We use this encoding when passing to CUDA. We reserve 0 for non-water atoms.
 #[derive(Copy, Clone, PartialEq)]

@@ -11,8 +11,7 @@ use bincode::{Decode, Encode};
 use lin_alg::f32::Vec3;
 
 use crate::{
-    ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
-    HydrogenConstraint, MdState,
+    CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
     ambient::{
         LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT, measure_pressure,
     },
@@ -152,15 +151,13 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                self.reset_accel_pe_virial();
+                self.reset_f_acc_pe_virial();
                 self.apply_all_forces(dev, &external_force);
-
-                self.barostat.virial.convert_kcal_mol();
 
                 let pressure = measure_pressure(
                     self.kinetic_energy,
                     &self.cell,
-                    self.barostat.virial.total(),
+                    &self.barostat.virial.to_kcal_mol(),
                 );
 
                 if !self.cfg.overrides.baro_disabled {
@@ -208,10 +205,8 @@ impl MdState {
                     self.computation_time.integration_sum += elapsed;
                 }
 
-                self.reset_accel_pe_virial();
+                self.reset_f_acc_pe_virial();
                 self.apply_all_forces(dev, &external_force);
-
-                self.barostat.virial.convert_kcal_mol();
 
                 if log_time {
                     start = Instant::now();
@@ -220,7 +215,7 @@ impl MdState {
                 let pressure = measure_pressure(
                     self.kinetic_energy,
                     &self.cell,
-                    self.barostat.virial.total(),
+                    &self.barostat.virial.to_kcal_mol(),
                 );
 
                 if log_time {
@@ -365,12 +360,7 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt_kick;
             w.h1.vel += w.h1.accel * dt_kick;
 
-            integrate_rigid_water(
-                w,
-                dt_drift,
-                &self.cell,
-                &mut self.barostat.virial.constraints,
-            );
+            integrate_rigid_water(w, dt_drift, &self.cell, &mut self.barostat.virial);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -436,7 +426,7 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            integrate_rigid_water(w, dt, &self.cell, &mut self.barostat.virial.constraints);
+            integrate_rigid_water(w, dt, &self.cell, &mut self.barostat.virial);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {

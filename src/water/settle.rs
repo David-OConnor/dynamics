@@ -11,8 +11,8 @@
 use lin_alg::f32::Vec3;
 
 use crate::{
-    ACCEL_CONVERSION_INV,
-    ambient::SimBox,
+    NATIVE_TO_KCAL,
+    ambient::{SimBox, Virial},
     water::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMol},
 };
 
@@ -108,7 +108,7 @@ pub(crate) fn integrate_rigid_water(
     mol: &mut WaterMol,
     dt: f32,
     cell: &SimBox,
-    virial_constr_kcal: &mut f64,
+    virial: &mut Virial,
 ) {
     let o_pos = mol.o.posit;
     let h0_pos_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
@@ -187,18 +187,12 @@ pub(crate) fn integrate_rigid_water(
     let fH0_amu = dvH0 * H_MASS / dt;
     let fH1_amu = dvH1 * H_MASS / dt;
 
-    // Convert to kcal·mol⁻¹·Å⁻¹ to match your pair-virial units
-    let fO_kcal = fO_amu * ACCEL_CONVERSION_INV;
-    let fH0_kcal = fH0_amu * ACCEL_CONVERSION_INV;
-    let fH1_kcal = fH1_amu * ACCEL_CONVERSION_INV;
-
     // Midpoint COM-frame positions
     let rO_mid = (rO + rO2) * 0.5;
     let rH0_mid = (rH0 + rH02) * 0.5;
     let rH1_mid = (rH1 + rH12) * 0.5;
 
-    *virial_constr_kcal +=
-        (rO_mid.dot(fO_kcal) + rH0_mid.dot(fH0_kcal) + rH1_mid.dot(fH1_kcal)) as f64;
+    virial.constraints += (rO_mid.dot(fO_amu) + rH0_mid.dot(fH0_amu) + rH1_mid.dot(fH1_amu)) as f64;
     // ---------------------------------------------------------
 
     // Final absolute velocities
@@ -219,7 +213,7 @@ pub(crate) fn integrate_rigid_water(
 /// Instead of forcing a shape, this calculates the analytic position
 /// adjustments required to satisfy OH and HH distance constraints
 /// based on the unconstrained trajectories.
-pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial_constr: &mut f64) {
+pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial: &mut Virial) {
     let dt_inv = 1.0 / dt;
 
     // 1. Initial State
@@ -340,7 +334,7 @@ pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial
     // Be sure your virial_constr expects energy units consistent with this.
     // This calculation is in (Mass * Length^2 / Time^2) -> Energy.
     // Usually no conversion needed if mass/time/length are internal units.
-    *virial_constr += (final_o.dot(fc_o) + final_h0.dot(fc_h0) + final_h1.dot(fc_h1)) as f64;
+    virial.constraints += (final_o.dot(fc_o) + final_h0.dot(fc_h0) + final_h1.dot(fc_h1)) as f64;
 
     // 8. Update Virtual Site
     mol.update_virtual_site();

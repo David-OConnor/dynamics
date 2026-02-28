@@ -7,14 +7,15 @@
 //!
 //! Note: We keep most thermostat and barostat code as f64, although we use f32 in most sections.
 
+use std::fmt::Display;
+
 use lin_alg::f32::Vec3;
 use na_seq::Element;
 use rand::{Rng, prelude::ThreadRng};
 use rand_distr::{ChiSquared, Distribution, StandardNormal};
-use std::fmt::Display;
 
 use crate::{
-    ACCEL_CONVERSION, ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
+    AtomDynamics, HydrogenConstraint, KCAL_TO_NATIVE, MdState, NATIVE_TO_KCAL, SimBoxInit,
     water::{H_MASS, O_MASS, WaterMol},
 };
 
@@ -191,8 +192,34 @@ impl SimBox {
 /// Used for the stochastic term in the C-rescale barostat.
 const KB_BAR_A3_PER_K: f64 = 138.064_9;
 
+/// The virial, in Kcal/Mol. Converted from our native units. We use a
+/// separate type to help ensure we are using the correct units.
+#[derive(Debug, Default)]
+pub struct VirialKcalMol {
+    pub bonded: f64,
+    pub nonbonded_short_range: f64,
+    pub nonbonded_long_range: f64,
+    pub constraints: f64,
+}
+
+impl VirialKcalMol {
+    pub(crate) fn total(&self) -> f64 {
+        self.bonded + self.nonbonded_short_range + self.nonbonded_long_range + self.constraints
+    }
+}
+
+impl Display for VirialKcalMol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Virial, kcal/mol. W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.3}",
+            self.bonded, self.nonbonded_short_range, self.nonbonded_long_range, self.constraints,
+        )
+    }
+}
+
 /// Acumulated during force computations. Used to measure pressure.
-/// Kcal/mol.
+/// In native units: Å² • amu / ps²
 /// We split this into components to make validating and debugging easier.
 #[derive(Debug, Default)]
 pub struct Virial {
@@ -206,16 +233,15 @@ impl Virial {
     /// Convert from  our internal units to the ones used in common practice.
     /// From amu • (Å/ps)² to kcal/mol.
     /// This constant we  multiply by is ~0.0024
-    pub(crate) fn convert_kcal_mol(&mut self) {
-        const C: f64 = ACCEL_CONVERSION_INV as f64;
-        self.bonded *= C;
-        self.nonbonded_short_range *= C;
-        self.nonbonded_long_range *= C;
-        self.constraints *= C;
-    }
+    pub(crate) fn to_kcal_mol(&self) -> VirialKcalMol {
+        const C: f64 = NATIVE_TO_KCAL as f64;
 
-    pub(crate) fn total(&self) -> f64 {
-        self.bonded + self.nonbonded_short_range + self.nonbonded_long_range + self.constraints
+        VirialKcalMol {
+            bonded: self.bonded * C,
+            nonbonded_short_range: self.nonbonded_short_range * C,
+            nonbonded_long_range: self.nonbonded_long_range * C,
+            constraints: self.constraints * C,
+        }
     }
 }
 
@@ -223,7 +249,7 @@ impl Display for Virial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.3}",
+            "Virial, native. W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.3}",
             self.bonded, self.nonbonded_short_range, self.nonbonded_long_range, self.constraints,
         )
     }
@@ -347,7 +373,7 @@ impl Barostat {
 }
 
 impl MdState {
-    /// Computes total kinetic energy, in kcal/mol
+    /// Computes total kinetic energy, in native units.
     /// Includes all non-static atoms, including water.
     pub(crate) fn kinetic_energy(&self) -> f64 {
         let mut result = 0.0;
@@ -366,7 +392,7 @@ impl MdState {
         }
 
         // Add in the 0.5 factor, and convert from amu • (Å/ps)² to kcal/mol.
-        result * 0.5 * ACCEL_CONVERSION_INV as f64
+        result * 0.5 * NATIVE_TO_KCAL as f64
     }
 
     /// Instantaneous temperature [K]
@@ -501,20 +527,21 @@ impl MdState {
     }
 }
 
-/// Measure instantaneous pressure, in bar.
+/// Measure instantaneous pressure, in bar. Inputs have been converted from native units
+/// to kcal and kcal/mol.
 /// P = (2K + W) / (3V), in kcal/mol/Å³
 pub(crate) fn measure_pressure(
     kinetic_energy: f64, // kcal
     simbox: &SimBox,
-    virial_total: f64,
+    virial: &VirialKcalMol,
 ) -> f64 {
     let vol = simbox.volume() as f64; // Å³
 
-    // This is in kcal/mol/ Å³
-    let result_native_units = (2.0 * kinetic_energy + virial_total) / (3.0 * vol);
+    // This is in kcal/mol/Å³
+    let result = (2.0 * kinetic_energy + virial.total()) / (3.0 * vol);
 
-    // Convert from native units to bar
-    result_native_units * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED
+    // Convert from kcal/mol/Å³ to bar
+    result * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED
 }
 
 impl MdState {
@@ -534,7 +561,11 @@ impl MdState {
 
         {
             let p_kin_native = (2.0 * self.kinetic_energy) / (3.0 * cell_vol);
-            let p_vir_native = (self.barostat.virial.total()) / (3.0 * cell_vol);
+            let v = &self.barostat.virial;
+            let vir_total =
+                v.bonded + v.nonbonded_long_range + v.nonbonded_short_range + v.constraints;
+
+            let p_vir_native = (vir_total) / (3.0 * cell_vol);
 
             let p_kin_bar = p_kin_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
             let p_vir_bar = p_vir_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
@@ -557,7 +588,7 @@ impl MdState {
         println!(
             "Ke: {:.2} kcal/mol = {:.2} (Å/ps)²  DOF: {}",
             self.kinetic_energy,
-            self.kinetic_energy * ACCEL_CONVERSION as f64,
+            self.kinetic_energy * KCAL_TO_NATIVE as f64,
             self.thermo_dof
         );
 
@@ -569,7 +600,7 @@ impl MdState {
 
         println!("\nPressure: {pressure:.3} bar");
 
-        println!("Virial: {}", self.barostat.virial);
+        println!("Virial: {}", self.barostat.virial.to_kcal_mol());
 
         println!("------------------------");
     }

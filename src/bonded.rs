@@ -100,6 +100,7 @@ impl MdState {
 
             let virial =
                 a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2) + a_3.posit.dot(f_3);
+
             self.barostat.virial.bonded += virial as f64;
 
             self.potential_energy += energy as f64;
@@ -171,7 +172,7 @@ impl MdState {
             let rij = self.cell.min_image(rj_new - ri_new);
 
             // Pair virial contribution (scalar)
-            self.barostat.virial.constraints += (rij.dot(fi_c)) as f64;
+            self.barostat.virial.constraints += rij.dot(fi_c) as f64;
         }
     }
 

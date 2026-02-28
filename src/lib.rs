@@ -168,12 +168,12 @@ const PTX: &str = include_str!("../dynamics.ptx");
 
 // Multiply by this to convert from kcal/mol to amu • (Å/ps)²  Multiply all accelerations by this.
 // Converts *into* our internal units.
-const ACCEL_CONVERSION: f32 = 418.4;
+const KCAL_TO_NATIVE: f32 = 418.4;
 
 // Multiply by this to convert from amu • (Å/ps)² to kcal/mol.  We use this when accumulating kinetic
 // energy, for example. This, in practice, is for temperature and pressure computations.
 // Converts *out of * our internal units.
-const ACCEL_CONVERSION_INV: f32 = 1. / ACCEL_CONVERSION;
+const NATIVE_TO_KCAL: f32 = 1. / KCAL_TO_NATIVE;
 
 // Every this many steps, re-center the sim (solvent) box.
 const CENTER_SIMBOX_RATIO: usize = 30;
@@ -868,7 +868,7 @@ impl MdState {
         // Assign mass, LJ params, etc.
         for (i, atom) in atoms_md.iter_mut().enumerate() {
             atom.assign_data_from_params(&force_field_params, i);
-            mass_accel_factor.push(ACCEL_CONVERSION / atom.mass);
+            mass_accel_factor.push(KCAL_TO_NATIVE / atom.mass);
         }
 
         let cell = SimBox::new(&atoms_md, &cfg.sim_box);
@@ -975,11 +975,11 @@ impl MdState {
         self.computation_time.time_per_step(self.step_count)
     }
 
-    /// Reset acceleration, potential energy, and virial pair. Do this each step after the first half-step and drift, and
+    /// Reset acceleration, force, potential energy, and virial. Do this each step after the first half-step and drift, and
     /// shaking the fixed hydrogens.
     /// We must reset the virial pair prior to accumulating it, which we do when calculating non-bonded
     /// forces. Also reset forces on water.
-    fn reset_accel_pe_virial(&mut self) {
+    fn reset_f_acc_pe_virial(&mut self) {
         for a in &mut self.atoms {
             a.accel = Vec3::new_zero();
             a.force = Vec3::new_zero();
