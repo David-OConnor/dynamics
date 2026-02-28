@@ -3,6 +3,8 @@
 //! among four atoms in a hub configuration (Improper dihedrals). Bonds to hydrogen are treated
 //! differently: They have rigid lengths, which is good enough, and allows for a larger timestep.
 
+use lin_alg::f32::Vec3;
+
 use crate::{MdState, bonded_forces, split2_mut, split3_mut, split4_mut};
 
 const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
@@ -109,7 +111,15 @@ impl MdState {
 
     /// This makes the position constraint difference 0; run after drifting positions.
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub(crate) fn shake_hydrogens(&mut self) {
+    pub(crate) fn shake_hydrogens(&mut self, dt: f32) {
+        // For computing the virial. Store unconstrained positions for atoms involved in constraints
+        // (For performance in production, you might want to cache this vector in MdState)
+        let mut unconstrained_pos = vec![Vec3::new_zero(); self.atoms.len()];
+        for (indices, _) in &self.force_field_params.bond_rigid_constraints {
+            unconstrained_pos[indices.0] = self.atoms[indices.0].posit;
+            unconstrained_pos[indices.1] = self.atoms[indices.1].posit;
+        }
+
         for _ in 0..SHAKE_MAX_IT {
             let mut max_corr: f32 = 0.0;
 
@@ -139,6 +149,26 @@ impl MdState {
                 break;
             }
         }
+
+        // 3. Calculate constraint virial from the total displacement
+        let mut virial_c: f64 = 0.0;
+        let inv_dt2 = 1.0 / (dt * dt);
+
+        for (indices, _) in &self.force_field_params.bond_rigid_constraints {
+            let ai = &self.atoms[indices.0];
+            let aj = &self.atoms[indices.1];
+
+            if !ai.static_ {
+                let dr_i = ai.posit - unconstrained_pos[indices.0];
+                virial_c += (ai.posit.dot(dr_i) * ai.mass * inv_dt2) as f64;
+            }
+            if !aj.static_ {
+                let dr_j = aj.posit - unconstrained_pos[indices.1];
+                virial_c += (aj.posit.dot(dr_j) * aj.mass * inv_dt2) as f64;
+            }
+        }
+
+        self.barostat.virial_constraints += virial_c;
     }
 
     /// This makes the velocity constraint difference 0; run after updating velocities.
@@ -158,11 +188,6 @@ impl MdState {
 
             ai.vel += corr_v / ai.mass;
             aj.vel -= corr_v / aj.mass;
-
-            // ---- Constraint virial (kcal/mol) ----
-            // W_c = -(r^2 * lambda_p / dt_ps) * S
-            let virial = -r_sq * lambda_p / dt;
-            self.barostat.virial_constraints += virial as f64;
         }
     }
 }

@@ -14,8 +14,7 @@ use crate::{
     ACCEL_CONVERSION_INV, CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice,
     HydrogenConstraint, MdState,
     ambient::{
-        LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT,
-        measure_instantaneous_pressure,
+        LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT, measure_pressure,
     },
     water::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
@@ -156,13 +155,9 @@ impl MdState {
                 self.reset_accel_pe_virial();
                 self.apply_all_forces(dev, &external_force);
 
-                // todo: QC
-                self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
-                self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
-                self.barostat.virial_nonbonded_long_range *= ACCEL_CONVERSION_INV as f64;
-                self.barostat.virial_constraints *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.convert_virial_units_kcal_mol();
 
-                let pressure = measure_instantaneous_pressure(
+                let pressure = measure_pressure(
                     self.kinetic_energy,
                     &self.cell,
                     self.barostat.virial_total(),
@@ -216,16 +211,13 @@ impl MdState {
                 self.reset_accel_pe_virial();
                 self.apply_all_forces(dev, &external_force);
 
-                self.barostat.virial_bonded *= ACCEL_CONVERSION_INV as f64;
-                self.barostat.virial_nonbonded_short_range *= ACCEL_CONVERSION_INV as f64;
-                self.barostat.virial_nonbonded_long_range *= ACCEL_CONVERSION_INV as f64;
-                self.barostat.virial_constraints *= ACCEL_CONVERSION_INV as f64;
+                self.barostat.convert_virial_units_kcal_mol();
 
                 if log_time {
                     start = Instant::now();
                 }
 
-                let pressure = measure_instantaneous_pressure(
+                let pressure = measure_pressure(
                     self.kinetic_energy,
                     &self.cell,
                     self.barostat.virial_total(),
@@ -330,9 +322,9 @@ impl MdState {
         }
 
         if !self.water_only_sim_at_init {
-            // if self.step_count.is_multiple_of(500) {
-            //     self.print_ambient_data(pressure);
-            // }
+            if self.step_count.is_multiple_of(200) {
+                self.print_ambient_data(pressure);
+            }
 
             let start = Instant::now(); // Not sure how else to handle. (Option would work)
             self.take_snapshot_if_required(pressure);
@@ -382,7 +374,7 @@ impl MdState {
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-            self.shake_hydrogens();
+            self.shake_hydrogens(dt_kick);
             self.rattle_hydrogens(dt_kick);
         }
 
@@ -444,9 +436,6 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            // integrate_rigid_water(
-            // settle_drift(
-            // settle_analytic(
             integrate_rigid_water(
                 w,
                 dt,
@@ -456,7 +445,7 @@ impl MdState {
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-            self.shake_hydrogens();
+            self.shake_hydrogens(dt);
         }
     }
 }

@@ -207,9 +207,8 @@ pub struct Barostat {
     pub tau_pressure: f64,
     /// bar‑1 (≈4.5×10⁻⁵ for water at 300K, 1bar)
     pub kappa_t: f64,
-    /// Virials, in kcal. We split these up to make debugging easier.
+    /// Virials, in kcal / mol. We split these up to make debugging easier.
     pub virial_nonbonded_short_range: f64,
-    // pub virial_lj: f64,
     pub virial_bonded: f64,
     pub virial_constraints: f64,
     /// I.e. SPME recip
@@ -226,9 +225,8 @@ impl Default for Barostat {
             tau_pressure: 1.,
             // Isothermal compressibility of water at 298 K.
             kappa_t: 4.5e-5,
-            //These virials init to 0 here, and at the start of each integrator step.
+            // These virials init to 0 here, and at the start of each integrator step.
             virial_nonbonded_short_range: 0.0,
-            // virial_lj: 0.0,
             virial_bonded: 0.0,
             virial_constraints: 0.0,
             virial_nonbonded_long_range: 0.0,
@@ -269,6 +267,9 @@ impl Barostat {
         atoms_dyn: &mut [AtomDynamics],
         waters: &mut [WaterMol],
     ) {
+        // todo: Temporarily disabled  barostat, until pressure measurements are fixed
+        return;
+
         let vol_a3 = simbox.volume() as f64;
         let lam = self.scale_factor(p_inst_bar, dt_ps, temp_k, vol_a3); // λ for lengths (not volume)
 
@@ -314,8 +315,19 @@ impl Barostat {
         }
     }
 
+    /// Convert from  our internal units to the ones used in common practice.
+    /// From amu • (Å/ps)² to kcal/mol.
+    /// This constant we  multiply by is ~0.0024
+    pub(crate) fn convert_virial_units_kcal_mol(&mut self) {
+        const C: f64 = ACCEL_CONVERSION_INV as f64;
+
+        self.virial_bonded *= C;
+        self.virial_nonbonded_short_range *= C;
+        self.virial_nonbonded_long_range *= C;
+        self.virial_constraints *= C;
+    }
+
     pub(crate) fn virial_total(&self) -> f64 {
-        // + self.virial_lj
         self.virial_bonded
             + self.virial_constraints
             + self.virial_nonbonded_short_range
@@ -480,7 +492,7 @@ impl MdState {
 
 /// Measure instantaneous pressure, in bar.
 /// P = (2K + W) / (3V), in kcal/mol/Å³
-pub(crate) fn measure_instantaneous_pressure(
+pub(crate) fn measure_pressure(
     kinetic_energy: f64, // kcal
     simbox: &SimBox,
     virial_total: f64,
