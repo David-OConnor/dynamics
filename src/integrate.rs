@@ -169,15 +169,17 @@ impl MdState {
                 );
 
                 if !self.cfg.overrides.baro_disabled {
-                    // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
-                    // todo is showing *much* to high.
-                    // self.barostat.apply_isotropic(
-                    //     dt as f64,
-                    //     p_inst_bar,
-                    //     &mut self.cell,
-                    //     &mut self.atoms,
-                    //     &mut self.water,
-                    // );
+                    self.barostat.apply_isotropic(
+                        dt as f64,
+                        pressure,
+                        self.cfg.temp_target as f64,
+                        &mut self.cell,
+                        &mut self.atoms,
+                        &mut self.water,
+                    );
+                    // The box dimensions changed; update PME so the next force computation
+                    // uses the correct reciprocal lattice vectors.
+                    self.regen_pme(dev);
                 }
 
                 if log_time {
@@ -229,19 +231,6 @@ impl MdState {
                     self.barostat.virial_total(),
                 );
 
-                if !self.cfg.overrides.baro_disabled {
-                    // todo: Troubleshooting. causes systme to blow up. Note that the pressure reading
-                    // todo is showing *much* to high.
-
-                    // self.barostat.apply_isotropic(
-                    //     dt as f64,
-                    //     p_inst_bar,
-                    //     &mut self.cell,
-                    //     &mut self.atoms,
-                    //     &mut self.water,
-                    // );
-                }
-
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
                     self.computation_time.ambient_sum += elapsed;
@@ -281,6 +270,23 @@ impl MdState {
                         TAU_TEMP_WATER_INIT,
                         self.cfg.temp_target as f64,
                     );
+                }
+
+                // Barostat runs last in VV: velocities are fully updated and the thermostat has
+                // already set the correct KE, so the box/coordinate scaling happens cleanly.
+                // Scaled positions feed into the next step's force computation.
+                if !self.cfg.overrides.baro_disabled {
+                    self.barostat.apply_isotropic(
+                        dt as f64,
+                        pressure,
+                        self.cfg.temp_target as f64,
+                        &mut self.cell,
+                        &mut self.atoms,
+                        &mut self.water,
+                    );
+                    // The box dimensions changed; update PME so the next force computation
+                    // uses the correct reciprocal lattice vectors.
+                    self.regen_pme(dev);
                 }
 
                 if log_time {

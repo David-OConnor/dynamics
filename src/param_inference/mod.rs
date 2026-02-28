@@ -209,6 +209,11 @@ fn build_env(atoms: &[AtomGeneric], bonds: &[BondGeneric], adj: &[Vec<usize>]) -
     let mut has_double_to_hetero = vec![false; atoms.len()];
 
     for bond in bonds {
+        if bond.atom_0_sn == 0 || bond.atom_1_sn == 0 {
+            eprintln!("Error: Invalid (0) bond SN when building env. Aborting");
+            return Vec::new();
+        }
+
         let i = bond.atom_0_sn as usize - 1;
         let j = bond.atom_1_sn as usize - 1;
 

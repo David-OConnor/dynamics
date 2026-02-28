@@ -81,10 +81,11 @@ This library uses a traditional MD workflow. We use the following components:
 
 ### Integrators, thermostats, barostats
 
-We provide a Velocity-Verlet integrator. It can be used with a Berendsen barostat, and either
-a  [CSVR](https://arxiv.org/pdf/0803.4060), or Langevin Middle thermostat. Or, use the Velocity Verlet integrator
-without a thermostat. These continuously update atom velocities (for molecules and solvents) to match target pressure
-and temperatures. You can select the target temperature to the right of the integrator selector.
+We provide a Velocity-Verlet integrator. It can be used with a stochastic cell rescaling barostat (Similar to GROMACS'
+`pcoupl = C-rescale`, and either a [CSVR](https://arxiv.org/pdf/0803.4060), or Langevin Middle thermostat. Or, use the
+Velocity Verlet integrator without a thermostat. These continuously update atom velocities (for molecules and solvents)
+to match target pressure and temperatures. You can select the target temperature to the right of the integrator
+selector.
 
 The Verlet Velocity integrator can be either used with CSVR thermostat, or without; this is selected using the
 *thermostat* checkbox next to the integrator selector. At this time, the thermostat temperature constant, τ, is

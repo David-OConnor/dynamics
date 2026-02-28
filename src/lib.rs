@@ -151,7 +151,7 @@ use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 #[cfg(feature = "cuda")]
 use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
 use crate::{
-    ambient::BerendsenBarostat,
+    ambient::Barostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
@@ -644,7 +644,7 @@ pub struct MdState {
     nb_pairs: Vec<NonBondedPair>,
     // max_disp_sq: f64,           // track atom displacements²
     /// K
-    barostat: BerendsenBarostat,
+    barostat: Barostat,
     /// Exclusions of non-bonded forces for atoms connected by 1, or 2 covalent bonds.
     /// I can't find this in the RM, but ChatGPT is confident of it, and references an Amber file
     /// called 'prmtop', which I can't find. Fishy, but we're going with it.

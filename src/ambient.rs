@@ -186,8 +186,21 @@ impl SimBox {
     }
 }
 
-/// Isotropic Berendsen barostat (τ=relaxation time, κT=isothermal compressibility)
-pub struct BerendsenBarostat {
+/// Boltzmann constant in bar·Å³·K⁻¹ (= 1.380649×10⁻²³ J/K × 10⁻⁵ bar/Pa × 10³⁰ Å³/m³).
+/// Used for the stochastic term in the C-rescale barostat.
+const KB_BAR_A3_PER_K: f64 = 138.064_9;
+
+/// Isotropic C-rescale (stochastic cell rescaling) barostat — GROMACS `pcoupl = C-rescale`.
+///
+/// Reference: Bernetti & Bussi, J. Chem. Phys. 153, 114107 (2020).
+///
+/// The volume update is:
+///   ΔlnV = (κT/τp)(P_inst − P₀)dt  +  √(2κT·kB·T·dt / (τp·V)) · ξ,  ξ ~ N(0,1)
+///   μ = exp(ΔlnV/3)   (isotropic length scale factor)
+///
+/// The deterministic part is identical to Berendsen; the stochastic term restores the
+/// correct NpT fluctuations that Berendsen suppresses.
+pub struct Barostat {
     /// bar (kPa / 100)
     pub pressure_target: f64,
     /// picoseconds
@@ -204,7 +217,7 @@ pub struct BerendsenBarostat {
     pub rng: ThreadRng,
 }
 
-impl Default for BerendsenBarostat {
+impl Default for Barostat {
     fn default() -> Self {
         Self {
             // Standard atmospheric pressure.
@@ -224,28 +237,40 @@ impl Default for BerendsenBarostat {
     }
 }
 
-impl BerendsenBarostat {
-    pub fn scale_factor(&self, p_inst: f64, dt: f64) -> f64 {
-        // Δln V = (κ_T/τ_p) (P - P0) dt
-        let mut dlnv = (self.kappa_t / self.tau_pressure) * (p_inst - self.pressure_target) * dt;
+impl Barostat {
+    /// Compute the isotropic length scale factor μ using the C-rescale algorithm.
+    ///
+    /// `temp_k` should be the reference (target) temperature in K.
+    /// `vol_a3` is the current simulation-box volume in Å³.
+    pub fn scale_factor(&mut self, p_inst: f64, dt: f64, temp_k: f64, vol_a3: f64) -> f64 {
+        // Deterministic term: ΔlnV_det = (κT/τp)(P_inst − P₀)dt
+        let dlnv_det = (self.kappa_t / self.tau_pressure) * (p_inst - self.pressure_target) * dt;
 
-        // Cap per-step volume change (e.g., ≤10%)
+        // Stochastic term: σ = √(2κT·kB·T·dt / (τp·V))
+        let sigma_lnv = (2.0 * self.kappa_t * KB_BAR_A3_PER_K * temp_k * dt
+            / (self.tau_pressure * vol_a3))
+            .sqrt();
+        let xi: f64 = StandardNormal.sample(&mut self.rng);
+
+        // Cap per-step volume change (≤10%) before computing λ
         const MAX_DLNV: f64 = 0.10;
-        dlnv = dlnv.clamp(-MAX_DLNV, MAX_DLNV);
+        let dlnv = (dlnv_det + sigma_lnv * xi).clamp(-MAX_DLNV, MAX_DLNV);
 
-        // λ = exp(ΔlnV/3) — strictly positive and well-behaved
+        // λ = exp(ΔlnV/3) — isotropic length scale, strictly positive and well-behaved
         (dlnv / 3.0).exp()
     }
 
     pub(crate) fn apply_isotropic(
-        &self,
+        &mut self,
         dt_ps: f64,
         p_inst_bar: f64,
+        temp_k: f64,
         simbox: &mut SimBox,
         atoms_dyn: &mut [AtomDynamics],
         waters: &mut [WaterMol],
     ) {
-        let lam = self.scale_factor(p_inst_bar, dt_ps); // λ for **lengths** (not volume)
+        let vol_a3 = simbox.volume() as f64;
+        let lam = self.scale_factor(p_inst_bar, dt_ps, temp_k, vol_a3); // λ for lengths (not volume)
 
         if !(lam.is_finite() && lam > 0.0) || (lam - 1.0).abs() < 1e-12 {
             return; // no-op
@@ -271,22 +296,18 @@ impl BerendsenBarostat {
             scale_pos(&mut w.o.posit, c, lc);
             scale_pos(&mut w.h0.posit, c, lc);
             scale_pos(&mut w.h1.posit, c, lc);
-            // If you store relative geometry for rigid bodies, keep it consistent (here we keep absolute).
         }
 
-        // 3) (Optional but recommended) Affine velocity scaling due to box dilation rate.
-        // For simple Berendsen, many codes rescale velocities by λ as well; the thermostat will re-set T.
-        // If you prefer, omit this and let the thermostat handle KE. Either way is acceptable for Berendsen.
-        let lv = lc; // or comment out this block to leave velocities unchanged
+        // Affine velocity scaling; the thermostat will correct kinetic energy.
         for a in atoms_dyn.iter_mut() {
             if !a.static_ {
-                a.vel *= lv;
+                a.vel *= lc;
             }
         }
         for w in waters.iter_mut() {
-            w.o.vel *= lv;
-            w.h0.vel *= lv;
-            w.h1.vel *= lv;
+            w.o.vel *= lc;
+            w.h0.vel *= lc;
+            w.h1.vel *= lc;
 
             // We moved O and Hs above; update EP.
             w.update_virtual_site();
