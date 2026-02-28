@@ -155,12 +155,12 @@ impl MdState {
                 self.reset_accel_pe_virial();
                 self.apply_all_forces(dev, &external_force);
 
-                self.barostat.convert_virial_units_kcal_mol();
+                self.barostat.virial.convert_kcal_mol();
 
                 let pressure = measure_pressure(
                     self.kinetic_energy,
                     &self.cell,
-                    self.barostat.virial_total(),
+                    self.barostat.virial.total(),
                 );
 
                 if !self.cfg.overrides.baro_disabled {
@@ -211,7 +211,7 @@ impl MdState {
                 self.reset_accel_pe_virial();
                 self.apply_all_forces(dev, &external_force);
 
-                self.barostat.convert_virial_units_kcal_mol();
+                self.barostat.virial.convert_kcal_mol();
 
                 if log_time {
                     start = Instant::now();
@@ -220,7 +220,7 @@ impl MdState {
                 let pressure = measure_pressure(
                     self.kinetic_energy,
                     &self.cell,
-                    self.barostat.virial_total(),
+                    self.barostat.virial.total(),
                 );
 
                 if log_time {
@@ -369,7 +369,7 @@ impl MdState {
                 w,
                 dt_drift,
                 &self.cell,
-                &mut self.barostat.virial_constraints,
+                &mut self.barostat.virial.constraints,
             );
         }
 
@@ -436,7 +436,7 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            integrate_rigid_water(w, dt, &self.cell, &mut self.barostat.virial_constraints);
+            integrate_rigid_water(w, dt, &self.cell, &mut self.barostat.virial.constraints);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {

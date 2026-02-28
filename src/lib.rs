@@ -996,10 +996,7 @@ impl MdState {
             mol.h1.force = Vec3::new_zero();
         }
 
-        self.barostat.virial_bonded = 0.0;
-        self.barostat.virial_constraints = 0.0;
-        self.barostat.virial_nonbonded_short_range = 0.0;
-        self.barostat.virial_nonbonded_long_range = 0.0;
+        self.barostat.virial = Default::default();
 
         self.potential_energy = 0.;
         self.potential_energy_nonbonded = 0.;
@@ -1084,7 +1081,7 @@ impl MdState {
                         self.potential_energy += potential_e;
                         self.potential_energy_nonbonded += potential_e;
 
-                        self.barostat.virial_nonbonded_long_range += virial_e;
+                        self.barostat.virial.nonbonded_long_range += virial_e;
                     }
                     None => {
                         eprintln!(

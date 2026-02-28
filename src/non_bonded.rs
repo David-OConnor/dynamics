@@ -466,7 +466,7 @@ impl MdState {
             tgt.h1.force += f_h1;
         }
 
-        self.barostat.virial_nonbonded_short_range += virial;
+        self.barostat.virial.nonbonded_short_range += virial;
         self.potential_energy += energy;
         self.potential_energy_nonbonded += energy;
 
@@ -667,7 +667,7 @@ impl MdState {
             virial_lr_recip += (dir * r).dot(df) as f64; // r·F
         }
 
-        self.barostat.virial_nonbonded_long_range += virial_lr_recip;
+        self.barostat.virial.nonbonded_long_range += virial_lr_recip;
 
         (f_recip, e_recip as f64, virial_lr_recip)
     }

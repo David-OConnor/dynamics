@@ -11,6 +11,7 @@ use lin_alg::f32::Vec3;
 use na_seq::Element;
 use rand::{Rng, prelude::ThreadRng};
 use rand_distr::{ChiSquared, Distribution, StandardNormal};
+use std::fmt::Display;
 
 use crate::{
     ACCEL_CONVERSION, ACCEL_CONVERSION_INV, AtomDynamics, HydrogenConstraint, MdState, SimBoxInit,
@@ -190,6 +191,44 @@ impl SimBox {
 /// Used for the stochastic term in the C-rescale barostat.
 const KB_BAR_A3_PER_K: f64 = 138.064_9;
 
+/// Acumulated during force computations. Used to measure pressure.
+/// Kcal/mol.
+/// We split this into components to make validating and debugging easier.
+#[derive(Debug, Default)]
+pub struct Virial {
+    pub bonded: f64,
+    pub nonbonded_short_range: f64,
+    pub nonbonded_long_range: f64,
+    pub constraints: f64,
+}
+
+impl Virial {
+    /// Convert from  our internal units to the ones used in common practice.
+    /// From amu • (Å/ps)² to kcal/mol.
+    /// This constant we  multiply by is ~0.0024
+    pub(crate) fn convert_kcal_mol(&mut self) {
+        const C: f64 = ACCEL_CONVERSION_INV as f64;
+        self.bonded *= C;
+        self.nonbonded_short_range *= C;
+        self.nonbonded_long_range *= C;
+        self.constraints *= C;
+    }
+
+    pub(crate) fn total(&self) -> f64 {
+        self.bonded + self.nonbonded_short_range + self.nonbonded_long_range + self.constraints
+    }
+}
+
+impl Display for Virial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.3}",
+            self.bonded, self.nonbonded_short_range, self.nonbonded_long_range, self.constraints,
+        )
+    }
+}
+
 /// Isotropic C-rescale (stochastic cell rescaling) barostat — GROMACS `pcoupl = C-rescale`.
 ///
 /// Reference: Bernetti & Bussi, J. Chem. Phys. 153, 114107 (2020).
@@ -207,12 +246,7 @@ pub struct Barostat {
     pub tau_pressure: f64,
     /// bar‑1 (≈4.5×10⁻⁵ for water at 300K, 1bar)
     pub kappa_t: f64,
-    /// Virials, in kcal / mol. We split these up to make debugging easier.
-    pub virial_nonbonded_short_range: f64,
-    pub virial_bonded: f64,
-    pub virial_constraints: f64,
-    /// I.e. SPME recip
-    pub virial_nonbonded_long_range: f64,
+    pub virial: Virial,
     pub rng: ThreadRng,
 }
 
@@ -225,11 +259,7 @@ impl Default for Barostat {
             tau_pressure: 1.,
             // Isothermal compressibility of water at 298 K.
             kappa_t: 4.5e-5,
-            // These virials init to 0 here, and at the start of each integrator step.
-            virial_nonbonded_short_range: 0.0,
-            virial_bonded: 0.0,
-            virial_constraints: 0.0,
-            virial_nonbonded_long_range: 0.0,
+            virial: Default::default(),
             rng: rand::rng(),
         }
     }
@@ -313,25 +343,6 @@ impl Barostat {
             // We moved O and Hs above; update EP.
             w.update_virtual_site();
         }
-    }
-
-    /// Convert from  our internal units to the ones used in common practice.
-    /// From amu • (Å/ps)² to kcal/mol.
-    /// This constant we  multiply by is ~0.0024
-    pub(crate) fn convert_virial_units_kcal_mol(&mut self) {
-        const C: f64 = ACCEL_CONVERSION_INV as f64;
-
-        self.virial_bonded *= C;
-        self.virial_nonbonded_short_range *= C;
-        self.virial_nonbonded_long_range *= C;
-        self.virial_constraints *= C;
-    }
-
-    pub(crate) fn virial_total(&self) -> f64 {
-        self.virial_bonded
-            + self.virial_constraints
-            + self.virial_nonbonded_short_range
-            + self.virial_nonbonded_long_range
     }
 }
 
@@ -523,7 +534,7 @@ impl MdState {
 
         {
             let p_kin_native = (2.0 * self.kinetic_energy) / (3.0 * cell_vol);
-            let p_vir_native = (self.barostat.virial_total()) / (3.0 * cell_vol);
+            let p_vir_native = (self.barostat.virial.total()) / (3.0 * cell_vol);
 
             let p_kin_bar = p_kin_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
             let p_vir_bar = p_vir_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
@@ -558,13 +569,7 @@ impl MdState {
 
         println!("\nPressure: {pressure:.3} bar");
 
-        eprintln!(
-            "W_bonded: {:.3} kcal/mol  W Short range={:.3}  W long range: {:.3}  W_constraint: {:.5}",
-            self.barostat.virial_bonded,
-            self.barostat.virial_nonbonded_short_range,
-            self.barostat.virial_nonbonded_long_range,
-            self.barostat.virial_constraints,
-        );
+        println!("Virial: {}", self.barostat.virial);
 
         println!("------------------------");
     }
