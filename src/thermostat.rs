@@ -85,11 +85,19 @@ impl MdState {
     /// A canonical velocity-rescale algorithm.
     /// Cheap with gentle coupling, but doesn't imitate solvent drag.
     pub(crate) fn apply_thermostat_csvr(&mut self, dt: f64, tau: f64, t_target: f64) {
+        if tau <= 0.0 {
+            return;
+        }
+
         // This value is cached at init.
         let dof = self.thermo_dof.max(2) as f64;
 
         // Cached during the kick-and-drift step.
         let ke = self.kinetic_energy; // In kcal/mol
+
+        if ke < 1e-20 {
+            return;
+        }
 
         let c = (-dt / tau).exp();
 
@@ -107,6 +115,7 @@ impl MdState {
             + ke_target * (1.0 - c) * ((chi + r * r) / dof)
             + 2.0 * r * ((c * (1.0 - c) * ke * ke_target / dof).sqrt());
 
+        let k_prime = k_prime.max(1e-20);
         let lam = (k_prime / ke).sqrt() as f32;
 
         for a in &mut self.atoms {
@@ -125,7 +134,6 @@ impl MdState {
 
     /// A thermostat that integrates the stochastic Langevin equation. Good temperature control
     /// and ergodicity, but the friction parameter damps real dynamics as it grows. This applies an OU update.
-    /// todo: Should this be based on f64?
     pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma: f32, temp_tgt_k: f32) {
         let c = (-gamma * dt).exp();
         let s2 = (1.0 - c * c).max(0.0); // numerical guard
@@ -152,22 +160,33 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            // per-component σ for velocity noise
-            let nx: f32 = self.barostat.rng.sample(StandardNormal);
-            let ny: f32 = self.barostat.rng.sample(StandardNormal);
-            let nz: f32 = self.barostat.rng.sample(StandardNormal);
+            let (ox, oy, oz): (f32, f32, f32) = (
+                self.barostat.rng.sample(StandardNormal),
+                self.barostat.rng.sample(StandardNormal),
+                self.barostat.rng.sample(StandardNormal),
+            );
+            let (h0x, h0y, h0z): (f32, f32, f32) = (
+                self.barostat.rng.sample(StandardNormal),
+                self.barostat.rng.sample(StandardNormal),
+                self.barostat.rng.sample(StandardNormal),
+            );
+            let (h1x, h1y, h1z): (f32, f32, f32) = (
+                self.barostat.rng.sample(StandardNormal),
+                self.barostat.rng.sample(StandardNormal),
+                self.barostat.rng.sample(StandardNormal),
+            );
 
-            w.o.vel.x = c * w.o.vel.x + sigma_o * nx;
-            w.o.vel.y = c * w.o.vel.y + sigma_o * ny;
-            w.o.vel.z = c * w.o.vel.z + sigma_o * nz;
+            w.o.vel.x = c * w.o.vel.x + sigma_o * ox;
+            w.o.vel.y = c * w.o.vel.y + sigma_o * oy;
+            w.o.vel.z = c * w.o.vel.z + sigma_o * oz;
 
-            w.h0.vel.x = c * w.h0.vel.x + sigma_h * nx;
-            w.h0.vel.y = c * w.h0.vel.y + sigma_h * ny;
-            w.h0.vel.z = c * w.h0.vel.z + sigma_h * nz;
+            w.h0.vel.x = c * w.h0.vel.x + sigma_h * h0x;
+            w.h0.vel.y = c * w.h0.vel.y + sigma_h * h0y;
+            w.h0.vel.z = c * w.h0.vel.z + sigma_h * h0z;
 
-            w.h1.vel.x = c * w.h1.vel.x + sigma_h * nx;
-            w.h1.vel.y = c * w.h1.vel.y + sigma_h * ny;
-            w.h1.vel.z = c * w.h1.vel.z + sigma_h * nz;
+            w.h1.vel.x = c * w.h1.vel.x + sigma_h * h1x;
+            w.h1.vel.y = c * w.h1.vel.y + sigma_h * h1y;
+            w.h1.vel.z = c * w.h1.vel.z + sigma_h * h1z;
         }
     }
 }

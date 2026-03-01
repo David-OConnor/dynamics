@@ -267,12 +267,14 @@ impl MdState {
                     && !self.water_only_sim_at_init
                 {
                     self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
+                    self.kinetic_energy = self.kinetic_energy();
                 } else if self.water_only_sim_at_init {
                     self.apply_thermostat_csvr(
                         dt as f64,
                         TAU_TEMP_WATER_INIT,
                         self.cfg.temp_target as f64,
                     );
+                    self.kinetic_energy = self.kinetic_energy();
                 }
 
                 // Barostat runs last in VV: velocities are fully updated and the thermostat has
