@@ -28,6 +28,10 @@ pub(crate) const GAS_CONST_R: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Am
 pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 
+/// Boltzmann constant in bar·Å³·K⁻¹ (= 1.380649×10⁻²³ J/K × 10⁻⁵ bar/Pa × 10³⁰ Å³/m³).
+/// Used for the stochastic term in the C-rescale barostat.
+const KB_BAR_A3_PER_K: f64 = 138.064_9;
+
 // TAU is for the CSVR thermostat. In ps. Lower means more sensitive.
 // We set an aggressive thermostat during water initialization, then a more relaxed one at runtime.
 // This is for the VV/CVSR themostat only.
@@ -187,10 +191,6 @@ impl SimBox {
             || posit.z > self.bounds_high.z)
     }
 }
-
-/// Boltzmann constant in bar·Å³·K⁻¹ (= 1.380649×10⁻²³ J/K × 10⁻⁵ bar/Pa × 10³⁰ Å³/m³).
-/// Used for the stochastic term in the C-rescale barostat.
-const KB_BAR_A3_PER_K: f64 = 138.064_9;
 
 /// The virial, in Kcal/Mol. Converted from our native units. We use a
 /// separate type to help ensure we are using the correct units.
@@ -560,15 +560,11 @@ impl MdState {
         );
 
         {
-            let p_kin_native = (2.0 * self.kinetic_energy) / (3.0 * cell_vol);
-            let v = &self.barostat.virial;
-            let vir_total =
-                v.bonded + v.nonbonded_long_range + v.nonbonded_short_range + v.constraints;
+            let p_kin_bar =
+                (2.0 * self.kinetic_energy) / (3.0 * cell_vol) * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
 
-            let p_vir_native = (vir_total) / (3.0 * cell_vol);
-
-            let p_kin_bar = p_kin_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
-            let p_vir_bar = p_vir_native * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
+            let vir_total_kcal = self.barostat.virial.to_kcal_mol().total();
+            let p_vir_bar = vir_total_kcal / (3.0 * cell_vol) * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
 
             println!("P_kin: {p_kin_bar:.3} bar  P_vir: {p_vir_bar:.3} bar");
         }

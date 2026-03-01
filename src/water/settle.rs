@@ -11,7 +11,6 @@
 use lin_alg::f32::Vec3;
 
 use crate::{
-    NATIVE_TO_KCAL,
     ambient::{SimBox, Virial},
     water::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMol},
 };
@@ -110,6 +109,16 @@ pub(crate) fn integrate_rigid_water(
     cell: &SimBox,
     virial: &mut Virial,
 ) {
+    // These ...0 values are for use in computing the constraint virial.
+    // todo: QC!!
+    let o_pos0 = mol.o.posit;
+    let h0_pos0 = mol.h0.posit;
+    let h1_pos0 = mol.h1.posit;
+
+    let o_vel0 = mol.o.vel;
+    let h0_vel0 = mol.h0.vel;
+    let h1_vel0 = mol.h1.vel;
+
     let o_pos = mol.o.posit;
     let h0_pos_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
     let h1_pos_local = o_pos + cell.min_image(mol.h1.posit - o_pos);
@@ -178,27 +187,63 @@ pub(crate) fn integrate_rigid_water(
     let vH02 = ω.cross(rH02);
     let vH12 = ω.cross(rH12);
 
-    let dvO = vO2 - vO;
-    let dvH0 = vH02 - vH0;
-    let dvH1 = vH12 - vH1;
+    let dv_o = vO2 - vO;
+    let dv_h0 = vH02 - vH0;
+    let dv_h1 = vH12 - vH1;
 
     // Average constraint force over the drift interval (amu·Å/ps²)
-    let fO_amu = dvO * O_MASS / dt;
-    let fH0_amu = dvH0 * H_MASS / dt;
-    let fH1_amu = dvH1 * H_MASS / dt;
+    let f_o = dv_o * O_MASS / dt;
+    let f_h0 = dv_h0 * H_MASS / dt;
+    let f_h1 = dv_h1 * H_MASS / dt;
 
     // Midpoint COM-frame positions
-    let rO_mid = (rO + rO2) * 0.5;
-    let rH0_mid = (rH0 + rH02) * 0.5;
-    let rH1_mid = (rH1 + rH12) * 0.5;
+    let r_o_mid = (rO + rO2) * 0.5;
+    let r_h0_mid = (rH0 + rH02) * 0.5;
+    let r_h1_mid = (rH1 + rH12) * 0.5;
 
-    virial.constraints += (rO_mid.dot(fO_amu) + rH0_mid.dot(fH0_amu) + rH1_mid.dot(fH1_amu)) as f64;
+    // let a = (rO_mid.dot(f_o) + rH0_mid.dot(f_h0) + rH1_mid.dot(f_h1)) as f64;
+    // println!("TEMP virial: {:?}", a);
+
+    // virial.constraints += (r_o_mid.dot(f_o) + r_h0_mid.dot(f_h0) + r_h1_mid.dot(f_h1)) as f64;
     // ---------------------------------------------------------
 
     // Final absolute velocities
     mol.o.vel = v_com + vO2;
     mol.h0.vel = v_com + vH02;
     mol.h1.vel = v_com + vH12;
+
+    // Compute the constraint virial.
+    {
+        // Lab-frame velocity changes due to enforcing rigidity
+        let dv_o = mol.o.vel - o_vel0;
+        let dv_h0 = mol.h0.vel - h0_vel0;
+        let dv_h1 = mol.h1.vel - h1_vel0;
+
+        // Average constraint forces over dt (amu·Å/ps²)
+        let f_o = dv_o * O_MASS / dt;
+        let f_h0 = dv_h0 * H_MASS / dt;
+        let f_h1 = dv_h1 * H_MASS / dt;
+
+        // Midpoint positions in the lab frame.
+        // Use min_image so H midpoint is consistent across PBC relative to O.
+        let o_pos1 = mol.o.posit;
+        let h0_pos1 = mol.h0.posit;
+        let h1_pos1 = mol.h1.posit;
+
+        let o_mid = (o_pos0 + o_pos1) * 0.5;
+
+        let h0_1_local = o_pos1 + cell.min_image(h0_pos1 - o_pos1);
+        let h1_1_local = o_pos1 + cell.min_image(h1_pos1 - o_pos1);
+
+        let h0_0_local = o_pos0 + cell.min_image(h0_pos0 - o_pos0);
+        let h1_0_local = o_pos0 + cell.min_image(h1_pos0 - o_pos0);
+
+        let h0_mid = (h0_0_local + h0_1_local) * 0.5;
+        let h1_mid = (h1_0_local + h1_1_local) * 0.5;
+
+        // Constraint virial contribution (native units: amu·Å²/ps²)
+        virial.constraints += (o_mid.dot(f_o) + h0_mid.dot(f_h0) + h1_mid.dot(f_h1)) as f64;
+    }
 
     // Place EP on the HOH bisector
     {
@@ -331,10 +376,18 @@ pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial
     let fc_h0 = (final_h0 - r_h0) * (H_MASS * dt_inv * dt_inv);
     let fc_h1 = (final_h1 - r_h1) * (H_MASS * dt_inv * dt_inv);
 
-    // Be sure your virial_constr expects energy units consistent with this.
-    // This calculation is in (Mass * Length^2 / Time^2) -> Energy.
-    // Usually no conversion needed if mass/time/length are internal units.
-    virial.constraints += (final_o.dot(fc_o) + final_h0.dot(fc_h0) + final_h1.dot(fc_h1)) as f64;
+    let fc_h0 = (final_h0 - r_h0) * (H_MASS * dt_inv * dt_inv);
+    let fc_h1 = (final_h1 - r_h1) * (H_MASS * dt_inv * dt_inv);
+
+    // To avoid floating-point loss and PBC issues, we calculate the virial
+    // relative to the Oxygen atom. Since the net constraint force is 0,
+    // the Oxygen force drops out of the equation!
+    let r_o_h0 = final_h0 - final_o;
+    let r_o_h1 = final_h1 - final_o;
+
+    // This formulation is mathematically exact, requires fewer dot products,
+    // and is numerically safe.
+    virial.constraints += (r_o_h0.dot(fc_h0) + r_o_h1.dot(fc_h1)) as f64;
 
     // 8. Update Virtual Site
     mol.update_virtual_site();

@@ -399,7 +399,7 @@ impl MdState {
     /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
     /// applies forces from non-water, and water sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
-        let (f_on_std, f_on_water, virial, energy, energy_between_mols) = match dev {
+        let (f_on_non_water, f_on_water, virial, energy, energy_between_mols) = match dev {
             ComputationDevice::Cpu => {
                 if is_x86_feature_detected!("avx512f") {
                     // calc_force_x16(
@@ -445,11 +445,11 @@ impl MdState {
             ),
         };
 
-        // println!("\nF short-range: {}", f_on_std[0]);
+        // println!("\nF short-range: {}", f_on_non_water[0]);
 
         // `.into()` below converts accumulated forces to f32.
         for (i, tgt) in self.atoms.iter_mut().enumerate() {
-            let f: Vec3 = f_on_std[i].into();
+            let f: Vec3 = f_on_non_water[i].into();
             tgt.force += f;
         }
 

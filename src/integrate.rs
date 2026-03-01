@@ -101,7 +101,12 @@ impl MdState {
                     start = Instant::now();
                 }
 
+                self.barostat.virial.constraints = 0.; // todo: Re-evaluate how you handle this.
+
                 self.kick_and_drift(dt_half, dt_half);
+
+                // We carry this over the reset.
+                let virial_constr = self.barostat.virial.constraints;
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -154,6 +159,9 @@ impl MdState {
                 self.reset_f_acc_pe_virial();
                 self.apply_all_forces(dev, &external_force);
 
+                // Applying from our pre-reset calcs.
+                self.barostat.virial.constraints = virial_constr;
+
                 let pressure = measure_pressure(
                     self.kinetic_energy,
                     &self.cell,
@@ -198,7 +206,12 @@ impl MdState {
                     start = Instant::now();
                 }
 
+                self.barostat.virial.constraints = 0.;
+
                 self.kick_and_drift(dt_half, dt);
+
+                // We carry this over the reset.
+                let virial_constr = self.barostat.virial.constraints;
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -211,6 +224,9 @@ impl MdState {
                 if log_time {
                     start = Instant::now();
                 }
+
+                // Applying from our pre-reset calcs.
+                self.barostat.virial.constraints = virial_constr;
 
                 let pressure = measure_pressure(
                     self.kinetic_energy,
