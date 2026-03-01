@@ -162,8 +162,10 @@ impl MdState {
                 // Applying from our pre-reset calcs.
                 self.barostat.virial.constraints = virial_constr;
 
+                // Molecular virial theorem: use COM-only KE for water (rigid molecules
+                // contribute no rotational KE to pressure; no SETTLE constraint virial needed).
                 let pressure = measure_pressure(
-                    self.kinetic_energy,
+                    self.kinetic_energy_translational(),
                     &self.cell,
                     &self.barostat.virial.to_kcal_mol(),
                 );
@@ -228,8 +230,9 @@ impl MdState {
                 // Applying from our pre-reset calcs.
                 self.barostat.virial.constraints = virial_constr;
 
+                // Molecular virial theorem: COM-only KE for water (no SETTLE constraint virial).
                 let pressure = measure_pressure(
-                    self.kinetic_energy,
+                    self.kinetic_energy_translational(),
                     &self.cell,
                     &self.barostat.virial.to_kcal_mol(),
                 );
@@ -378,7 +381,7 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt_kick;
             w.h1.vel += w.h1.accel * dt_kick;
 
-            integrate_rigid_water(w, dt_drift, &self.cell);
+            let _ = integrate_rigid_water(w, dt_drift, &self.cell);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -444,7 +447,7 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            integrate_rigid_water(w, dt, &self.cell);
+            let _ = integrate_rigid_water(w, dt, &self.cell);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {

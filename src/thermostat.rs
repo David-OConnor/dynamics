@@ -6,7 +6,7 @@ use rand_distr::{ChiSquared, StandardNormal};
 
 use crate::{
     HydrogenConstraint, MdState, NATIVE_TO_KCAL,
-    water::{H_MASS, O_MASS},
+    water::{H_MASS, MASS_WATER_MOL, O_MASS},
 };
 
 // Per-molecule Boltzmann, in kcal/mol/K.
@@ -37,6 +37,27 @@ impl MdState {
         }
 
         // Add in the 0.5 factor, and convert from amu • (Å/ps)² to kcal/mol.
+        result * 0.5 * NATIVE_TO_KCAL as f64
+    }
+
+    /// COM-only kinetic energy for water + full atomic KE for non-water atoms, in kcal/mol.
+    /// Used for pressure via the molecular virial theorem: rigid water molecules contribute
+    /// only their translational (COM) KE, so no SETTLE constraint virial is needed.
+    pub(crate) fn kinetic_energy_translational(&self) -> f64 {
+        let mut result = 0.0;
+
+        for a in &self.atoms {
+            if !a.static_ {
+                result += (a.mass * a.vel.magnitude_squared()) as f64;
+            }
+        }
+
+        for w in &self.water {
+            let v_com = (w.o.vel * O_MASS + w.h0.vel * H_MASS + w.h1.vel * H_MASS)
+                / MASS_WATER_MOL;
+            result += (MASS_WATER_MOL * v_com.magnitude_squared()) as f64;
+        }
+
         result * 0.5 * NATIVE_TO_KCAL as f64
     }
 

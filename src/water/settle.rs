@@ -103,22 +103,8 @@ fn solve_symmetric3(ixx: f32, iyy: f32, izz: f32, ixy: f32, ixz: f32, iyz: f32, 
 /// This is handles the Verlet "drift" for a rigid molecule. It is the equivalent
 /// of updating position by adding velocity x dt, but also maintains the rigid
 /// geometry of 3-atom molecules.
-pub(crate) fn integrate_rigid_water(
-    mol: &mut WaterMol,
-    dt: f32,
-    cell: &SimBox,
-    // virial: &mut Virial,
-) {
-    // These ...0 values are for use in computing the constraint virial.
-    // todo: QC!!
-    let o_pos0 = mol.o.posit;
-    let h0_pos0 = mol.h0.posit;
-    let h1_pos0 = mol.h1.posit;
-
-    let o_vel0 = mol.o.vel;
-    let h0_vel0 = mol.h0.vel;
-    let h1_vel0 = mol.h1.vel;
-
+/// Returns the constraint virial contribution for this molecule, in native units (amu·Å²/ps²).
+pub(crate) fn integrate_rigid_water(mol: &mut WaterMol, dt: f32, cell: &SimBox) -> f64 {
     let o_pos = mol.o.posit;
     let h0_pos_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
     let h1_pos_local = o_pos + cell.min_image(mol.h1.posit - o_pos);
@@ -187,23 +173,6 @@ pub(crate) fn integrate_rigid_water(
     let vH02 = ω.cross(rH02);
     let vH12 = ω.cross(rH12);
 
-    // let dv_o = vO2 - vO;
-    // let dv_h0 = vH02 - vH0;
-    // let dv_h1 = vH12 - vH1;
-
-    // // Average constraint force over the drift interval (amu·Å/ps²)
-    // let f_o = dv_o * O_MASS / dt;
-    // let f_h0 = dv_h0 * H_MASS / dt;
-    // let f_h1 = dv_h1 * H_MASS / dt;
-    //
-    // // Midpoint COM-frame positions
-    // let r_o_mid = (rO + rO2) * 0.5;
-    // let r_h0_mid = (rH0 + rH02) * 0.5;
-    // let r_h1_mid = (rH1 + rH12) * 0.5;
-
-    // virial.constraints += (r_o_mid.dot(f_o) + r_h0_mid.dot(f_h0) + r_h1_mid.dot(f_h1)) as f64;
-    // ---------------------------------------------------------
-
     // Final absolute velocities
     mol.o.vel = v_com + vO2;
     mol.h0.vel = v_com + vH02;
@@ -215,6 +184,17 @@ pub(crate) fn integrate_rigid_water(
         mol.m.posit = mol.o.posit + bisector.to_normalized() * O_EP_R;
         mol.m.vel = (mol.h0.vel + mol.h1.vel) * 0.5;
     }
+
+    // Constraint virial — GROMACS settle.cpp style:
+    // Use O-relative bond vectors at final positions (dist21/dist31 in GROMACS).
+    // The O term drops out because SETTLE conserves COM (m_O·Δv_O + m_H·Δv_H0 + m_H·Δv_H1 = 0).
+    // Δv_Hi = v_constrained − v_unconstrained (COM-frame, = absolute Δv).
+    // Units: Å · (amu · Å/ps) / ps = amu·Å²/ps² (native).
+    let dv_h0 = vH02 - vH0;
+    let dv_h1 = vH12 - vH1;
+    let r_oh0 = rH02 - rO2; // O→H0 bond vector (final, COM frame = absolute bond)
+    let r_oh1 = rH12 - rO2; // O→H1 bond vector (final)
+    (r_oh0.dot(dv_h0 * (H_MASS / dt)) + r_oh1.dot(dv_h1 * (H_MASS / dt))) as f64
 }
 
 /// The canonical Miyamoto & Kollman (1992) SETTLE algorithm.
