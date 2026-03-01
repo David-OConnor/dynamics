@@ -12,11 +12,11 @@ use lin_alg::f32::Vec3;
 
 use crate::{
     CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
-    ambient::{
+    barostat::{
         LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT, measure_pressure,
     },
     water::{
-        ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
+        ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O, MASS_WATER_MOL,
         settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
     },
 };
@@ -376,7 +376,7 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt_kick;
             w.h1.vel += w.h1.accel * dt_kick;
 
-            integrate_rigid_water(w, dt_drift, &self.cell, &mut self.barostat.virial);
+            integrate_rigid_water(w, dt_drift, &self.cell);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
@@ -442,7 +442,7 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            integrate_rigid_water(w, dt, &self.cell, &mut self.barostat.virial);
+            integrate_rigid_water(w, dt, &self.cell);
         }
 
         if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {

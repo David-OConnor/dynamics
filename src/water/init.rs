@@ -13,9 +13,10 @@ use rand_distr::{Distribution, Normal};
 
 use crate::{
     AtomDynamics, ComputationDevice, MdState, NATIVE_TO_KCAL,
-    ambient::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU, SimBox},
+    barostat::SimBox,
     partial_charge_inference::{files::load_from_bytes, save},
     sa_surface,
+    thermostat::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU},
     water::WaterMol,
 };
 

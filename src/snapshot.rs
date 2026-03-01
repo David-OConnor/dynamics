@@ -14,7 +14,7 @@ use bio_files::{
 };
 use lin_alg::f32::Vec3;
 
-use crate::{AtomDynamics, ambient::SimBox};
+use crate::{AtomDynamics, barostat::SimBox};
 
 // // Append to any snapshot-saving files every this number of snapshots.
 // // todo:  Update A/R. Likely higher.

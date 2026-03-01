@@ -1,0 +1,173 @@
+//! Note: We keep most thermostat and barostat code as f64, although we use f32 in most sections.
+
+use na_seq::Element;
+use rand::{Rng, distr::Distribution};
+use rand_distr::{ChiSquared, StandardNormal};
+
+use crate::{
+    HydrogenConstraint, MdState, NATIVE_TO_KCAL,
+    water::{H_MASS, O_MASS},
+};
+
+// Per-molecule Boltzmann, in kcal/mol/K.
+// For assigning velocities from temperature, and other thermostat/barostat use.
+pub(crate) const GAS_CONST_R: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Amber-style units)
+
+// Boltzmann constant in (amu · Å²/ps²) K⁻¹
+// We use this for the Langevin and Anderson thermostat, where we need per-particle Gaussian noise or variance.
+pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
+
+impl MdState {
+    /// Computes total kinetic energy, in native units.
+    /// Includes all non-static atoms, including water.
+    pub(crate) fn kinetic_energy(&self) -> f64 {
+        let mut result = 0.0;
+
+        for a in &self.atoms {
+            if !a.static_ {
+                result += (a.mass * a.vel.magnitude_squared()) as f64;
+            }
+        }
+
+        // Do not include the M/EP site.
+        for w in &self.water {
+            result += (w.o.mass * w.o.vel.magnitude_squared()) as f64;
+            result += (w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
+            result += (w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
+        }
+
+        // Add in the 0.5 factor, and convert from amu • (Å/ps)² to kcal/mol.
+        result * 0.5 * NATIVE_TO_KCAL as f64
+    }
+
+    /// Instantaneous temperature [K]
+    pub(crate) fn temperature(&self) -> f64 {
+        (2.0 * self.kinetic_energy) / (self.thermo_dof as f64 * GAS_CONST_R)
+    }
+
+    /// Used in temperature computation. Constraints tracked are Hydrogen if constrained, COM drift removal,
+    /// and static atoms.
+    /// We cache this at init. Used for kinetic energy and temperature computations.
+    pub(crate) fn dof_for_thermo(&self) -> usize {
+        // 3 positional + 3 rotational for each water mol.
+        let mut result = 6 * self.water.len();
+
+        if !self.water_only_sim_at_init {
+            result += 3 * self.atoms.iter().filter(|a| !a.static_).count();
+        }
+
+        let num_constraints = {
+            let mut c = 0;
+
+            if !self.water_only_sim_at_init {
+                for atom in &self.atoms {
+                    if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained
+                        && atom.element == Element::Hydrogen
+                        && !atom.static_
+                    {
+                        c += 1;
+                    }
+                }
+            }
+
+            if self.cfg.zero_com_drift {
+                c += 6;
+            }
+            c
+        };
+
+        result.saturating_sub(num_constraints)
+    }
+
+    /// Canonical Sampling through Velocities Rescaling thermostat. (Also known as Bussi, its
+    /// primary author)
+    /// [CSVR thermostat](https://arxiv.org/pdf/0803.4060)
+    /// A canonical velocity-rescale algorithm.
+    /// Cheap with gentle coupling, but doesn't imitate solvent drag.
+    pub(crate) fn apply_thermostat_csvr(&mut self, dt: f64, tau: f64, t_target: f64) {
+        // This value is cached at init.
+        let dof = self.thermo_dof.max(2) as f64;
+
+        // Cached during the kick-and-drift step.
+        let ke = self.kinetic_energy; // In kcal/mol
+
+        let c = (-dt / tau).exp();
+
+        // Draw the two random variates used in the exact CSVR update:
+        let r: f64 = StandardNormal.sample(&mut self.barostat.rng); // N(0,1)
+        let chi = ChiSquared::new(dof - 1.0)
+            .unwrap()
+            .sample(&mut self.barostat.rng); // χ²_{dof-1}
+
+        let ke_target = 0.5 * dof * GAS_CONST_R * t_target;
+
+        // Discrete-time exact solution for the OU process in K (from Bussi 2007):
+        // K' = K*c + ke_bar*(1.0 - c) * [ (chi + r*r)/dof ] + 2.0*r*sqrt(c*(1.0-c)*K*ke_bar/dof)
+        let k_prime = ke * c
+            + ke_target * (1.0 - c) * ((chi + r * r) / dof)
+            + 2.0 * r * ((c * (1.0 - c) * ke * ke_target / dof).sqrt());
+
+        let lam = (k_prime / ke).sqrt() as f32;
+
+        for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
+
+            a.vel *= lam;
+        }
+        for w in &mut self.water {
+            w.o.vel *= lam;
+            w.h0.vel *= lam;
+            w.h1.vel *= lam;
+        }
+    }
+
+    /// A thermostat that integrates the stochastic Langevin equation. Good temperature control
+    /// and ergodicity, but the friction parameter damps real dynamics as it grows. This applies an OU update.
+    /// todo: Should this be based on f64?
+    pub(crate) fn apply_langevin_thermostat(&mut self, dt: f32, gamma: f32, temp_tgt_k: f32) {
+        let c = (-gamma * dt).exp();
+        let s2 = (1.0 - c * c).max(0.0); // numerical guard
+
+        let sigma_num = KB_A2_PS2_PER_K_PER_AMU * temp_tgt_k * s2;
+        let sigma_o = (sigma_num / O_MASS).sqrt();
+        let sigma_h = (sigma_num / H_MASS).sqrt();
+
+        for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
+
+            // per-component σ for velocity noise
+            let sigma = (sigma_num / a.mass).sqrt();
+
+            let nx: f32 = self.barostat.rng.sample(StandardNormal);
+            let ny: f32 = self.barostat.rng.sample(StandardNormal);
+            let nz: f32 = self.barostat.rng.sample(StandardNormal);
+
+            a.vel.x = c * a.vel.x + sigma * nx;
+            a.vel.y = c * a.vel.y + sigma * ny;
+            a.vel.z = c * a.vel.z + sigma * nz;
+        }
+
+        for w in &mut self.water {
+            // per-component σ for velocity noise
+            let nx: f32 = self.barostat.rng.sample(StandardNormal);
+            let ny: f32 = self.barostat.rng.sample(StandardNormal);
+            let nz: f32 = self.barostat.rng.sample(StandardNormal);
+
+            w.o.vel.x = c * w.o.vel.x + sigma_o * nx;
+            w.o.vel.y = c * w.o.vel.y + sigma_o * ny;
+            w.o.vel.z = c * w.o.vel.z + sigma_o * nz;
+
+            w.h0.vel.x = c * w.h0.vel.x + sigma_h * nx;
+            w.h0.vel.y = c * w.h0.vel.y + sigma_h * ny;
+            w.h0.vel.z = c * w.h0.vel.z + sigma_h * nz;
+
+            w.h1.vel.x = c * w.h1.vel.x + sigma_h * nx;
+            w.h1.vel.y = c * w.h1.vel.y + sigma_h * ny;
+            w.h1.vel.z = c * w.h1.vel.z + sigma_h * nz;
+        }
+    }
+}

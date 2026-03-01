@@ -34,8 +34,10 @@ impl MdState {
             a_0.force += f;
             a_1.force -= f;
 
-            // Local virial: Σ r_i · F_i
-            let virial = a_0.posit.dot(f) + a_1.posit.dot(-f);
+            // todo: Min image for the actual bond stretching forces computation?
+            // Local virial: Σ r_i · F_i.
+            let r_virial = self.cell.min_image(a_1.posit - a_0.posit);
+            let virial = r_virial.dot(f); // f is force on atom 0 due to atom 1
             self.barostat.virial.bonded += virial as f64;
 
             self.potential_energy += energy as f64;
@@ -63,7 +65,15 @@ impl MdState {
             a_1.force += f_1;
             a_2.force += f_2;
 
-            let virial = a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2);
+            // Use the middle atom (a_1) as the reference.
+            // Compute minimum-image displacement vectors for the two bonds in the angle.
+            let r10 = self.cell.min_image(a_0.posit - a_1.posit); // vector from 1 -> 0
+            let r12 = self.cell.min_image(a_2.posit - a_1.posit); // vector from 1 -> 2
+
+            // Local virial for this 3-body term, using relative coordinates to atom 1.
+            let virial = r10.dot(f_0) + r12.dot(f_2);
+            // (the a_1 term would be 0 * f_1, so it's omitted)
+
             self.barostat.virial.bonded += virial as f64;
 
             self.potential_energy += energy as f64;
@@ -98,8 +108,17 @@ impl MdState {
             a_2.force += f_2;
             a_3.force += f_3;
 
-            let virial =
-                a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2) + a_3.posit.dot(f_3);
+            // let virial =
+            //     a_0.posit.dot(f_0) + a_1.posit.dot(f_1) + a_2.posit.dot(f_2) + a_3.posit.dot(f_3);
+            //
+            // self.barostat.virial.bonded += virial as f64;
+
+            // Reference atom: a_1
+            let r10 = self.cell.min_image(a_0.posit - a_1.posit);
+            let r12 = self.cell.min_image(a_2.posit - a_1.posit);
+            let r13 = self.cell.min_image(a_3.posit - a_1.posit);
+
+            let virial = r10.dot(f_0) + r12.dot(f_2) + r13.dot(f_3);
 
             self.barostat.virial.bonded += virial as f64;
 
@@ -151,6 +170,7 @@ impl MdState {
             }
         }
 
+        // todo: Re-evaluate this once the baro and virial work correctly with flexible hydrogens.
         // Calculate constraint virial from the total displacement
         let inv_dt2 = 1.0 / (dt * dt);
 

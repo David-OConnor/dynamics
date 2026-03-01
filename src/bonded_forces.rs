@@ -11,6 +11,7 @@ pub fn f_bond_stretching(
     posit_1: Vec3,
     params: &BondStretchingParams,
 ) -> (Vec3, f32) {
+    // todo: Cell min image?
     let diff = posit_1 - posit_0;
     let r_meas = diff.magnitude();
 

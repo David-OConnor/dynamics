@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
     AtomDynamics, ComputationDevice, MdOverrides, MdState,
-    ambient::SimBox,
+    barostat::SimBox,
     forces::force_e_lj,
     water::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };

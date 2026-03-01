@@ -32,7 +32,7 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{AtomDynamics, KCAL_TO_NATIVE, ambient::SimBox, non_bonded::CHARGE_UNIT_SCALER};
+use crate::{AtomDynamics, KCAL_TO_NATIVE, barostat::SimBox, non_bonded::CHARGE_UNIT_SCALER};
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};

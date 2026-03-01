@@ -11,7 +11,7 @@
 use lin_alg::f32::Vec3;
 
 use crate::{
-    ambient::{SimBox, Virial},
+    barostat::{SimBox, Virial},
     water::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMol},
 };
 
@@ -107,7 +107,7 @@ pub(crate) fn integrate_rigid_water(
     mol: &mut WaterMol,
     dt: f32,
     cell: &SimBox,
-    virial: &mut Virial,
+    // virial: &mut Virial,
 ) {
     // These ...0 values are for use in computing the constraint virial.
     // todo: QC!!
@@ -187,22 +187,19 @@ pub(crate) fn integrate_rigid_water(
     let vH02 = ω.cross(rH02);
     let vH12 = ω.cross(rH12);
 
-    let dv_o = vO2 - vO;
-    let dv_h0 = vH02 - vH0;
-    let dv_h1 = vH12 - vH1;
+    // let dv_o = vO2 - vO;
+    // let dv_h0 = vH02 - vH0;
+    // let dv_h1 = vH12 - vH1;
 
-    // Average constraint force over the drift interval (amu·Å/ps²)
-    let f_o = dv_o * O_MASS / dt;
-    let f_h0 = dv_h0 * H_MASS / dt;
-    let f_h1 = dv_h1 * H_MASS / dt;
-
-    // Midpoint COM-frame positions
-    let r_o_mid = (rO + rO2) * 0.5;
-    let r_h0_mid = (rH0 + rH02) * 0.5;
-    let r_h1_mid = (rH1 + rH12) * 0.5;
-
-    // let a = (rO_mid.dot(f_o) + rH0_mid.dot(f_h0) + rH1_mid.dot(f_h1)) as f64;
-    // println!("TEMP virial: {:?}", a);
+    // // Average constraint force over the drift interval (amu·Å/ps²)
+    // let f_o = dv_o * O_MASS / dt;
+    // let f_h0 = dv_h0 * H_MASS / dt;
+    // let f_h1 = dv_h1 * H_MASS / dt;
+    //
+    // // Midpoint COM-frame positions
+    // let r_o_mid = (rO + rO2) * 0.5;
+    // let r_h0_mid = (rH0 + rH02) * 0.5;
+    // let r_h1_mid = (rH1 + rH12) * 0.5;
 
     // virial.constraints += (r_o_mid.dot(f_o) + r_h0_mid.dot(f_h0) + r_h1_mid.dot(f_h1)) as f64;
     // ---------------------------------------------------------
@@ -211,39 +208,6 @@ pub(crate) fn integrate_rigid_water(
     mol.o.vel = v_com + vO2;
     mol.h0.vel = v_com + vH02;
     mol.h1.vel = v_com + vH12;
-
-    // Compute the constraint virial.
-    {
-        // Lab-frame velocity changes due to enforcing rigidity
-        let dv_o = mol.o.vel - o_vel0;
-        let dv_h0 = mol.h0.vel - h0_vel0;
-        let dv_h1 = mol.h1.vel - h1_vel0;
-
-        // Average constraint forces over dt (amu·Å/ps²)
-        let f_o = dv_o * O_MASS / dt;
-        let f_h0 = dv_h0 * H_MASS / dt;
-        let f_h1 = dv_h1 * H_MASS / dt;
-
-        // Midpoint positions in the lab frame.
-        // Use min_image so H midpoint is consistent across PBC relative to O.
-        let o_pos1 = mol.o.posit;
-        let h0_pos1 = mol.h0.posit;
-        let h1_pos1 = mol.h1.posit;
-
-        let o_mid = (o_pos0 + o_pos1) * 0.5;
-
-        let h0_1_local = o_pos1 + cell.min_image(h0_pos1 - o_pos1);
-        let h1_1_local = o_pos1 + cell.min_image(h1_pos1 - o_pos1);
-
-        let h0_0_local = o_pos0 + cell.min_image(h0_pos0 - o_pos0);
-        let h1_0_local = o_pos0 + cell.min_image(h1_pos0 - o_pos0);
-
-        let h0_mid = (h0_0_local + h0_1_local) * 0.5;
-        let h1_mid = (h1_0_local + h1_1_local) * 0.5;
-
-        // Constraint virial contribution (native units: amu·Å²/ps²)
-        virial.constraints += (o_mid.dot(f_o) + h0_mid.dot(f_h0) + h1_mid.dot(f_h1)) as f64;
-    }
 
     // Place EP on the HOH bisector
     {

@@ -78,7 +78,7 @@
 // todo forth each time. If practical.
 
 mod add_hydrogens;
-mod ambient;
+mod barostat;
 mod bonded;
 mod bonded_forces;
 // mod dcd;
@@ -92,6 +92,7 @@ mod prep;
 #[cfg(target_arch = "x86_64")]
 mod simd;
 pub mod snapshot;
+mod thermostat;
 mod util;
 mod water;
 
@@ -122,7 +123,7 @@ pub use add_hydrogens::{
     bond_vecs::{find_planar_posit, find_tetra_posit_final, find_tetra_posits},
     populate_hydrogens_dihedrals,
 };
-use ambient::SimBox;
+use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::{
@@ -145,13 +146,13 @@ use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use water::{ForcesOnWaterMol, init::WaterInitTemplate};
 
-pub use crate::ambient::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
+pub use crate::barostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 #[cfg(feature = "cuda")]
 use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
 use crate::{
-    ambient::Barostat,
+    barostat::Barostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
