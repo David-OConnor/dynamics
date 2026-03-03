@@ -54,6 +54,12 @@ pub struct Snapshot {
     // todo: You will need to store this by molecule, when we support that.
     pub atom_posits: Vec<Vec3>,
     pub atom_velocities: Vec<Vec3>,
+    // /// Posits and velocities by mol: Outer index is the molecule index, corresponding to molecules
+    // /// in `MdState`
+    // // todo: Experimenting with storing snaps as per-mol. This may replace the flat per-atom approach,
+    // // todo: but we're leaving per-atom fields in for now. This may effectively double the non-water
+    // // todo size of the snapshot.
+    // pub atom_posits_by_mol: Vec<Vec<Vec3>>,
     pub water_o_posits: Vec<Vec3>,
     pub water_h0_posits: Vec<Vec3>,
     pub water_h1_posits: Vec<Vec3>,
@@ -78,6 +84,42 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Unflatten positions and velocities into a per-molecule basis. `mol_start_indices` may be
+    /// taken directly from `MdState`. Inner: (Posit, Vel). Does not unflatten the solvent, which is placed
+    /// after all non-solvent molecules in the flat arrays.
+    pub fn unflatten(&self, mol_start_indices: &[usize]) -> io::Result<Vec<Vec<(Vec3, Vec3)>>> {
+        let n_atoms = self.atom_posits.len();
+        let mut per_mol = Vec::with_capacity(mol_start_indices.len());
+
+        for (i, &start) in mol_start_indices.iter().enumerate() {
+            let end = if i + 1 < mol_start_indices.len() {
+                mol_start_indices[i + 1]
+            } else {
+                n_atoms
+            };
+
+            if end >= self.atom_posits.len() {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "Snapshot atom position out of range. posit: {end} Len: {}",
+                        self.atom_posits.len()
+                    ),
+                ));
+            }
+
+            let atoms = self.atom_posits[start..end]
+                .iter()
+                .zip(&self.atom_velocities[start..end])
+                .map(|(&p, &v)| (p, v))
+                .collect();
+
+            per_mol.push(atoms);
+        }
+
+        Ok(per_mol)
+    }
+
     /// The element indices must match the atom posits.
     pub fn populate_hydrogen_bonds(&mut self, _atoms: &[AtomDynamics]) {
         // let result = create_hydrogen_bonds(&atoms, &self.atom_posits, &self.water_o_posits, &self.bonds);

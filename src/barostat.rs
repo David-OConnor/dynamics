@@ -395,8 +395,8 @@ impl MdState {
         );
 
         {
-            let p_kin_bar =
-                (2.0 * self.kinetic_energy) / (3.0 * cell_vol) * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
+            let p_kin_bar = (2.0 * self.kinetic_energy_translational()) / (3.0 * cell_vol)
+                * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
 
             let vir_total_kcal = self.barostat.virial.to_kcal_mol().total();
             let p_vir_bar = vir_total_kcal / (3.0 * cell_vol) * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;

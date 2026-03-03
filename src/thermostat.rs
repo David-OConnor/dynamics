@@ -53,8 +53,7 @@ impl MdState {
         }
 
         for w in &self.water {
-            let v_com = (w.o.vel * O_MASS + w.h0.vel * H_MASS + w.h1.vel * H_MASS)
-                / MASS_WATER_MOL;
+            let v_com = (w.o.vel * O_MASS + w.h0.vel * H_MASS + w.h1.vel * H_MASS) / MASS_WATER_MOL;
             result += (MASS_WATER_MOL * v_com.magnitude_squared()) as f64;
         }
 

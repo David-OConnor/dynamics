@@ -516,6 +516,14 @@ pub enum SimBoxInit {
     Fixed((Vec3, Vec3)),
 }
 
+impl SimBoxInit {
+    /// Centered at the origin.
+    pub fn new_cube(side_len: f32) -> Self {
+        let l = side_len / 2.;
+        Self::Fixed((Vec3::new(-l, -l, -l), Vec3::new(l, l, l)))
+    }
+}
+
 impl Default for SimBoxInit {
     fn default() -> Self {
         Self::Pad(12.)
@@ -545,6 +553,8 @@ pub struct MdOverrides {
     pub snapshots_during_energy_min: bool,
 }
 
+/// This is the primary way of configurating an MD run. It's passed at init, along with the
+/// molecule list and FF params.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MdConfig {
@@ -695,6 +705,7 @@ pub struct MdState {
     // todo: Sub-struct for ambient cache like num_static atoms and thermo_dof
     /// Degrees of freedom, used in temperature and kinetic energy calculations.
     thermo_dof: usize,
+    // todo: Deprecate this if you deprecate per-atom posits and vels in snapshots?
     /// Used to track which molecule each atom is associated with in our flattened structures.
     pub mol_start_indices: Vec<usize>,
     /// A flag we set to disable certain things like snapshots during this MD phase.

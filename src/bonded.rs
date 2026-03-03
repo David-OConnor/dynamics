@@ -28,14 +28,16 @@ impl MdState {
         for (indices, params) in &self.force_field_params.bond_stretching {
             let (a_0, a_1) = split2_mut(&mut self.atoms, indices.0, indices.1);
 
-            let (f, energy) = bonded_forces::f_bond_stretching(a_0.posit, a_1.posit, params);
+            let (f, energy) =
+                bonded_forces::f_bond_stretching(a_0.posit, a_1.posit, params, &self.cell);
 
             // We divide by mass in `step`.
             a_0.force += f;
             a_1.force -= f;
 
-            // todo: Min image for the actual bond stretching forces computation?
             // Local virial: Σ r_i · F_i.
+
+            // todo: You already calc min_image and the diff in bonded_forces; consolidate.
             let r_virial = self.cell.min_image(a_1.posit - a_0.posit);
             let virial = r_virial.dot(f); // f is force on atom 0 due to atom 1
             self.barostat.virial.bonded += virial as f64;
@@ -58,13 +60,14 @@ impl MdState {
             let (a_0, a_1, a_2) = split3_mut(&mut self.atoms, indices.0, indices.1, indices.2);
 
             let ((f_0, f_1, f_2), energy) =
-                bonded_forces::f_angle_bending(a_0.posit, a_1.posit, a_2.posit, params);
+                bonded_forces::f_angle_bending(a_0.posit, a_1.posit, a_2.posit, params, &self.cell);
 
             // We divide by mass in `step`.
             a_0.force += f_0;
             a_1.force += f_1;
             a_2.force += f_2;
 
+            // todo: As above, we already calculate this min-image diffs in the force fn above.
             // Use the middle atom (a_1) as the reference.
             // Compute minimum-image displacement vectors for the two bonds in the angle.
             let r10 = self.cell.min_image(a_0.posit - a_1.posit); // vector from 1 -> 0
@@ -99,8 +102,9 @@ impl MdState {
             let (a_0, a_1, a_2, a_3) =
                 split4_mut(&mut self.atoms, indices.0, indices.1, indices.2, indices.3);
 
-            let ((f_0, f_1, f_2, f_3), energy) =
-                bonded_forces::f_dihedral(a_0.posit, a_1.posit, a_2.posit, a_3.posit, params);
+            let ((f_0, f_1, f_2, f_3), energy) = bonded_forces::f_dihedral(
+                a_0.posit, a_1.posit, a_2.posit, a_3.posit, params, &self.cell,
+            );
 
             // We divide by mass in `step`.
             a_0.force += f_0;

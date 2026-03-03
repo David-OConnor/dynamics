@@ -265,7 +265,6 @@ fn calc_force_cpu(
 
     // Map flattened atom index -> molecule index. We use this for assigning per-molecule-pair
     // potential energy.
-    // Assumes mol_start_indices is sorted ascending, e.g. [0, 120, 240, ...].
     let find_mol_idx = |atom_idx: usize, starts: &[usize]| -> usize {
         starts
             .binary_search(&atom_idx)

@@ -1,6 +1,8 @@
 use bio_files::md_params::{AngleBendingParams, BondStretchingParams, DihedralParams};
 use lin_alg::f32::{Vec3, calc_dihedral_angle_v2};
 
+use crate::barostat::SimBox;
+
 const EPS: f32 = 1e-8;
 
 /// Returns the force on the atom at position 0. Negate this for the force on posit 1.
@@ -10,9 +12,9 @@ pub fn f_bond_stretching(
     posit_0: Vec3,
     posit_1: Vec3,
     params: &BondStretchingParams,
+    cell: &SimBox,
 ) -> (Vec3, f32) {
-    // todo: Cell min image?
-    let diff = posit_1 - posit_0;
+    let diff = cell.min_image(posit_1 - posit_0);
     let r_meas = diff.magnitude();
 
     let r_delta = r_meas - params.r_0;
@@ -36,10 +38,11 @@ pub fn f_angle_bending(
     posit_1: Vec3,
     posit_2: Vec3,
     params: &AngleBendingParams,
+    cell: &SimBox,
 ) -> ((Vec3, Vec3, Vec3), f32) {
     // Bond vectors with atom 1 at the vertex.
-    let bond_vec_01 = posit_0 - posit_1;
-    let bond_vec_21 = posit_2 - posit_1;
+    let bond_vec_01 = cell.min_image(posit_0 - posit_1);
+    let bond_vec_21 = cell.min_image(posit_2 - posit_1);
 
     let b_vec_01_sq = bond_vec_01.magnitude_squared();
     let b_vec_21_sq = bond_vec_21.magnitude_squared();
@@ -85,10 +88,11 @@ pub fn f_dihedral(
     posit_3: Vec3,
     // There can be multiple terms.
     params: &[DihedralParams],
+    cell: &SimBox,
 ) -> ((Vec3, Vec3, Vec3, Vec3), f32) {
-    let b1 = posit_1 - posit_0; // r_ij
-    let b2 = posit_2 - posit_1; // r_kj
-    let b3 = posit_3 - posit_2; // r_lk
+    let b1 = cell.min_image(posit_1 - posit_0); // r_ij
+    let b2 = cell.min_image(posit_2 - posit_1); // r_kj
+    let b3 = cell.min_image(posit_3 - posit_2); // r_lk
 
     // Normal vectors to the two planes
     let n1 = b1.cross(b2);
@@ -113,6 +117,7 @@ pub fn f_dihedral(
         );
     }
 
+    // todo: This isn't taking into account cell wrapping.
     let dihe_measured = calc_dihedral_angle_v2(&(posit_0, posit_1, posit_2, posit_3));
 
     let mut energy = 0.;
