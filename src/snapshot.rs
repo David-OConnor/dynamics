@@ -98,7 +98,7 @@ impl Snapshot {
                 n_atoms
             };
 
-            if end >= self.atom_posits.len() {
+            if end > self.atom_posits.len() {
                 return Err(io::Error::new(
                     ErrorKind::InvalidData,
                     format!(
