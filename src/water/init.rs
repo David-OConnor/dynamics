@@ -333,7 +333,7 @@ pub fn make_water_mols(
                             iz as f32 * template_size.z,
                         );
 
-                    for i in 0..template.o_posits.len() {
+                    'mol: for i in 0..template.o_posits.len() {
                         let o_posit = template.o_posits[i] + tile_offset;
                         let h0_posit = template.h0_posits[i] + tile_offset;
                         let h1_posit = template.h1_posits[i] + tile_offset;
@@ -344,14 +344,17 @@ pub fn make_water_mols(
                             continue;
                         }
 
-                        // todo: Put in
-                        // if overlaps_solute_sites(o_posit, h0_posit, h1_posit, &atom_posits) {
-                        //     continue;
-                        // }
-                        //
-                        // if overlaps_water_sites(o_posit, h0_posit, h1_posit, &result) {
-                        //     continue;
-                        // }
+                        for atom_p in &atom_posits {
+                            if (*atom_p - o_posit).magnitude_squared() < MIN_NONWATER_DIST_SQ {
+                                continue 'mol;
+                            }
+                        }
+
+                        for w in &result {
+                            if (w.o.posit - o_posit).magnitude_squared() < MIN_WATER_O_O_DIST_SQ {
+                                continue 'mol;
+                            }
+                        }
 
                         let mut mol = WaterMol::new(
                             Vec3::new_zero(),

@@ -117,8 +117,12 @@ pub fn f_dihedral(
         );
     }
 
-    // todo: This isn't taking into account cell wrapping.
-    let dihe_measured = calc_dihedral_angle_v2(&(posit_0, posit_1, posit_2, posit_3));
+    // Reconstruct PBC-consistent positions from the already-wrapped bond vectors,
+    // so the measured angle is correct even if atoms straddle a periodic boundary.
+    let p1 = posit_0 + b1;
+    let p2 = p1 + b2;
+    let p3 = p2 + b3;
+    let dihe_measured = calc_dihedral_angle_v2(&(posit_0, p1, p2, p3));
 
     let mut energy = 0.;
     let mut dV_dφ = 0.; // Scalar torque magnitude

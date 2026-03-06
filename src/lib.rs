@@ -517,7 +517,7 @@ pub enum SimBoxInit {
 }
 
 impl SimBoxInit {
-    /// Centered at the origin.
+    /// Centered at the origin; can be moved after, e.g. to center on molecules.
     pub fn new_cube(side_len: f32) -> Self {
         let l = side_len / 2.;
         Self::Fixed((Vec3::new(-l, -l, -l), Vec3::new(l, l, l)))
@@ -903,6 +903,8 @@ impl MdState {
             potential_energy_between_mols,
             ..Default::default()
         };
+
+        result.cell.recenter(&result.atoms);
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.

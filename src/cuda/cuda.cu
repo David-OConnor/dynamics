@@ -123,9 +123,6 @@ void nonbonded_force_kernel(
     double e_acc = 0.0;
     double w_acc = 0.0;
 
-    // todo: When you apply this to water, you must use the unit cell
-    // todo to take a min image of the diff, vice using it directly.
-
     for (size_t i = index; i < N; i += stride) {
         const uint32_t it = tgt_is[i];
         const uint32_t is = src_is[i];
