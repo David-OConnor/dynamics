@@ -36,10 +36,6 @@ const N_A: f32 = 6.022_140_76e23;
 // Multiplying this by volume in Angstrom^3 gives us AMU g cm^-3 Å^3 mol^-1
 const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 
-// We use this to determine if we need to check for edge image conflicts when
-// adding molecules.
-const THRESH_NEAR_CELL_EDGE: f32 = 3.;
-
 // Don't generate water molecules that are too close to other atoms.
 // Vdw contact distance between water molecules and organic molecules is roughly 3.5 Å.
 // todo: Hmm. We could get lower, but there's some risk of an H atom being too close,
@@ -164,11 +160,13 @@ fn calc_n_mols(cell: &SimBox, atoms: &[AtomDynamics]) -> usize {
     (WATER_MOLS_PER_VOL * free_vol).round() as usize
 }
 
-/// Create water molecules from a template. If the target sim box is smaller than the template, we
-/// iterate from the center out. Otherwise, we tile. Tiling requires more intitialization steps
-/// due to conflicts at the touching faces.
+/// Create water molecules from a template, tiling it as many times as needed to fill the cell.
+/// Works for any cell size: smaller than, equal to, or larger than the template.
 ///
-/// Contains repetition with the deprecated latice-based approach.
+/// The template is always centered on the cell. For cells smaller than the template only tile
+/// (0,0,0) contributes; for larger cells neighbouring tiles fill in the rest.
+/// Water-water conflict detection uses min-image distances so molecules are never placed too
+/// close to a PBC image of an already-placed molecule.
 pub fn make_water_mols(
     cell: &SimBox,
     _temperature_tgt: f32,
@@ -181,7 +179,6 @@ pub fn make_water_mols(
     let template: WaterInitTemplate = load_from_bytes(INIT_TEMPLATE).unwrap();
 
     let n_mols = calc_n_mols(cell, atoms);
-
     let mut result = Vec::with_capacity(n_mols);
 
     if n_mols == 0 {
@@ -189,192 +186,77 @@ pub fn make_water_mols(
         return result;
     }
 
-    // Solute
     let atom_posits: Vec<_> = atoms.iter().map(|a| a.posit).collect();
 
-    // Prevents unbounded looping. A higher value means we're more likely to succeed,
-    // but the run time could be higher.
-    let fault_ratio = 4;
+    let template_size = template.bounds.1 - template.bounds.0;
+    let template_ctr = (template.bounds.0 + template.bounds.1) / 2.;
+    let cell_ctr = (cell.bounds_low + cell.bounds_high) / 2.;
 
-    let mut num_added = 0;
+    // Align tile (0,0,0) center to the cell center.
+    let base_offset = cell_ctr - template_ctr;
+
+    // Number of half-tiles needed to cover the cell in each direction (+1 for safety).
+    let cell_size = cell.bounds_high - cell.bounds_low;
+    let half_x = (cell_size.x / (2.0 * template_size.x)).ceil() as i32 + 1;
+    let half_y = (cell_size.y / (2.0 * template_size.y)).ceil() as i32 + 1;
+    let half_z = (cell_size.z / (2.0 * template_size.z)).ceil() as i32 + 1;
+
     let mut loops_used = 0;
 
-    let template_size = template.bounds.1 - template.bounds.0;
-    let cell_size = cell.bounds_high - cell.bounds_low;
+    'tiles: for ix in -half_x..=half_x {
+        for iy in -half_y..=half_y {
+            for iz in -half_z..=half_z {
+                let tile_offset = base_offset
+                    + Vec3::new(
+                        ix as f32 * template_size.x,
+                        iy as f32 * template_size.y,
+                        iz as f32 * template_size.z,
+                    );
 
-    let cell_fits_in_template = cell_size.x <= template_size.x
-        && cell_size.y <= template_size.y
-        && cell_size.z <= template_size.z;
+                'mol: for i in 0..template.o_posits.len() {
+                    let o_posit = template.o_posits[i] + tile_offset;
+                    let h0_posit = template.h0_posits[i] + tile_offset;
+                    let h1_posit = template.h1_posits[i] + tile_offset;
 
-    // todo: QC this offset
-    let mut offset = Vec3::new_zero();
-
-    // Iterate inside out using the template
-    if cell_fits_in_template {
-        // Align the template center to the cell center.
-        let template_ctr = (template.bounds.0 + template.bounds.1) / 2.;
-        let cell_ctr = (cell.bounds_low + cell.bounds_high) / 2.;
-        offset = cell_ctr - template_ctr;
-
-        // This loop requires the template to iterate inside-out.
-        'outer: for i in 0..n_mols * fault_ratio {
-            if i >= template.o_posits.len() {
-                eprintln!(
-                    "Can't make water; Template is too small for the cell size. i: {}, o posits len: {}",
-                    i,
-                    template.o_posits.len()
-                );
-                return Vec::new();
-            }
-
-            let o_posit = template.o_posits[i] + offset;
-            let h0_posit = template.h0_posits[i] + offset;
-            let h1_posit = template.h1_posits[i] + offset;
-
-            // If overlapping with a solute atom, don't place. We'll catch populate it towards the end.
-            for atom_p in &atom_posits {
-                let dist_sq = (*atom_p - o_posit).magnitude_squared();
-                if dist_sq < MIN_NONWATER_DIST_SQ {
                     loops_used += 1;
-                    continue 'outer;
-                }
-            }
 
-            // Check for an overlap with existing water molecules. This should only occur at the boundaries,
-            // either from tiling, or an image from the opposite side of the cell.
-            for w in &result {
-                // We only need to worry abou this conflict near the edges; this escape
-                // saves time.
-                if (o_posit.x - cell.bounds_low.x).abs() > THRESH_NEAR_CELL_EDGE
-                    && (o_posit.y - cell.bounds_low.y).abs() > THRESH_NEAR_CELL_EDGE
-                    && (o_posit.z - cell.bounds_low.z).abs() > THRESH_NEAR_CELL_EDGE
-                    && (o_posit.x - cell.bounds_high.x).abs() > THRESH_NEAR_CELL_EDGE
-                    && (o_posit.y - cell.bounds_high.y).abs() > THRESH_NEAR_CELL_EDGE
-                    && (o_posit.z - cell.bounds_high.z).abs() > THRESH_NEAR_CELL_EDGE
-                {
-                    continue;
-                }
+                    if !cell.contains(o_posit) {
+                        continue;
+                    }
 
-                for posit_0 in [
-                    cell.min_image(w.o.posit),
-                    cell.min_image(w.h0.posit),
-                    cell.min_image(w.h1.posit),
-                ] {
-                    for posit_1 in [
-                        cell.min_image(o_posit),
-                        cell.min_image(h0_posit),
-                        cell.min_image(h1_posit),
-                    ] {
-                        let dist_sq = cell
-                            .min_image(posit_0 - cell.min_image(posit_1))
-                            .magnitude_squared();
-
-                        if dist_sq < MIN_WATER_O_O_DIST_SQ {
-                            loops_used += 1;
-                            continue 'outer;
+                    // Conflict with solute atoms.
+                    for &atom_p in &atom_posits {
+                        if (atom_p - o_posit).magnitude_squared() < MIN_NONWATER_DIST_SQ {
+                            continue 'mol;
                         }
                     }
-                }
-            }
 
-            // todo: You must check sim box edge effects of water-water interactions.
-
-            // Check if the molecule is inside the cell. Our templates iterate in a spherical pattern
-            // outwards, so this will happen for molecules outside the cell faces towards their center,
-            // until the corners are filled.
-            if !cell.contains(o_posit) {
-                loops_used += 1;
-                continue 'outer;
-            }
-
-            // todo: You can come up with a cheaper way to skip the orientation geometry.
-            // This template sets up the charge, mass, element, etc. We override posits and vels.
-            let mut mol = WaterMol::new(
-                Vec3::new_zero(),
-                Vec3::new_zero(),
-                Quaternion::new_identity(),
-            );
-            mol.o.posit = o_posit;
-            mol.h0.posit = h0_posit;
-            mol.h1.posit = h1_posit;
-
-            mol.o.vel = template.o_velocities[i];
-            mol.h0.vel = template.h0_velocities[i];
-            mol.h1.vel = template.h1_velocities[i];
-
-            result.push(mol);
-            num_added += 1;
-
-            if num_added == n_mols {
-                break;
-            }
-            loops_used += 1;
-        }
-    } else {
-        // Tile the template.
-        let min0 = template.bounds.0 + offset;
-        let max1 = template.bounds.1 + offset;
-
-        let ix_min = ((cell.bounds_low.x - max1.x) / template_size.x).floor() as i32;
-        let iy_min = ((cell.bounds_low.y - max1.y) / template_size.y).floor() as i32;
-        let iz_min = ((cell.bounds_low.z - max1.z) / template_size.z).floor() as i32;
-
-        let ix_max = ((cell.bounds_high.x - min0.x) / template_size.x).ceil() as i32;
-        let iy_max = ((cell.bounds_high.y - min0.y) / template_size.y).ceil() as i32;
-        let iz_max = ((cell.bounds_high.z - min0.z) / template_size.z).ceil() as i32;
-
-        'tiles: for ix in ix_min..=ix_max {
-            for iy in iy_min..=iy_max {
-                for iz in iz_min..=iz_max {
-                    let tile_offset = offset
-                        + Vec3::new(
-                            ix as f32 * template_size.x,
-                            iy as f32 * template_size.y,
-                            iz as f32 * template_size.z,
-                        );
-
-                    'mol: for i in 0..template.o_posits.len() {
-                        let o_posit = template.o_posits[i] + tile_offset;
-                        let h0_posit = template.h0_posits[i] + tile_offset;
-                        let h1_posit = template.h1_posits[i] + tile_offset;
-
-                        loops_used += 1;
-
-                        if !cell.contains(o_posit) {
-                            continue;
+                    // Conflict with already-placed water. Use min-image so molecules near
+                    // opposite faces of the cell (PBC images) are also caught.
+                    for w in &result {
+                        if cell.min_image(w.o.posit - o_posit).magnitude_squared()
+                            < MIN_WATER_O_O_DIST_SQ
+                        {
+                            continue 'mol;
                         }
+                    }
 
-                        for atom_p in &atom_posits {
-                            if (*atom_p - o_posit).magnitude_squared() < MIN_NONWATER_DIST_SQ {
-                                continue 'mol;
-                            }
-                        }
+                    let mut mol = WaterMol::new(
+                        Vec3::new_zero(),
+                        Vec3::new_zero(),
+                        Quaternion::new_identity(),
+                    );
+                    mol.o.posit = o_posit;
+                    mol.h0.posit = h0_posit;
+                    mol.h1.posit = h1_posit;
+                    mol.o.vel = template.o_velocities[i];
+                    mol.h0.vel = template.h0_velocities[i];
+                    mol.h1.vel = template.h1_velocities[i];
 
-                        for w in &result {
-                            if (w.o.posit - o_posit).magnitude_squared() < MIN_WATER_O_O_DIST_SQ {
-                                continue 'mol;
-                            }
-                        }
+                    result.push(mol);
 
-                        let mut mol = WaterMol::new(
-                            Vec3::new_zero(),
-                            Vec3::new_zero(),
-                            Quaternion::new_identity(),
-                        );
-                        mol.o.posit = o_posit;
-                        mol.h0.posit = h0_posit;
-                        mol.h1.posit = h1_posit;
-
-                        mol.o.vel = template.o_velocities[i];
-                        mol.h0.vel = template.h0_velocities[i];
-                        mol.h1.vel = template.h1_velocities[i];
-
-                        result.push(mol);
-                        num_added += 1;
-
-                        if num_added == n_mols {
-                            break 'tiles;
-                        }
+                    if result.len() == n_mols {
+                        break 'tiles;
                     }
                 }
             }
@@ -598,8 +480,10 @@ fn _init_velocities(
         m.h1.vel = v_com + omega.cross(r_h1);
     }
 
-    // Remove global COM drift
-    remove_com_velocity(mols);
+    if zero_com_drift {
+        // Remove global COM drift
+        remove_com_velocity(mols);
+    }
 
     let (ke_raw, dof) = _kinetic_energy_and_dof(mols, zero_com_drift);
 

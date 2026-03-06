@@ -305,11 +305,13 @@ impl MdState {
             }
         };
 
-        // Linear calls angular, which is why we don't run both at the same time.
-        if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
-            self.zero_angular_momentum();
-        } else if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
-            self.zero_linear_momentum();
+        if self.cfg.zero_com_drift {
+            // Linear calls angular, which is why we don't run both at the same time.
+            if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
+                self.zero_angular_momentum();
+            } else if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
+                self.zero_linear_momentum();
+            }
         }
 
         self.time += dt as f64;
