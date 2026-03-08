@@ -172,13 +172,14 @@ pub fn make_water_mols(
     _temperature_tgt: f32,
     atoms: &[AtomDynamics],
     _zero_com_drift: bool,
+    specify_num_water: Option<usize>,
 ) -> Vec<WaterMol> {
     println!("Initializing water molecules...");
     let start = Instant::now();
 
     let template: WaterInitTemplate = load_from_bytes(INIT_TEMPLATE).unwrap();
 
-    let n_mols = calc_n_mols(cell, atoms);
+    let n_mols = specify_num_water.unwrap_or_else(|| calc_n_mols(cell, atoms));
     let mut result = Vec::with_capacity(n_mols);
 
     if n_mols == 0 {
