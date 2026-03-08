@@ -918,6 +918,83 @@ impl MdState {
 
         result.cell.recenter(&result.atoms);
 
+        // Validate atom positions before the expensive water-placement and minimization steps.
+        // Fail early if atoms are outside the sim box, too close to its edge, or if atoms from
+        // different molecules are dangerously close under the minimum-image (PBC) convention —
+        // which catches molecules on opposite sides of the cell whose periodic images overlap.
+        {
+            const MIN_DIST_FROM_EDGE: f32 = 0.5; // Å
+            const MIN_INTER_MOL_DIST: f32 = 0.5; // Å
+
+            let lo = result.cell.bounds_low;
+            let hi = result.cell.bounds_high;
+
+            for (i, atom) in result.atoms.iter().enumerate() {
+                let p = atom.posit;
+
+                if p.x < lo.x || p.y < lo.y || p.z < lo.z
+                    || p.x > hi.x || p.y > hi.y || p.z > hi.z
+                {
+                    return Err(ParamError::new(&format!(
+                        "Atom index {i} is outside the sim box. \
+                         Pos ({:.3}, {:.3}, {:.3}), box [{:.3}..{:.3}, {:.3}..{:.3}, {:.3}..{:.3}]",
+                        p.x, p.y, p.z, lo.x, hi.x, lo.y, hi.y, lo.z, hi.z,
+                    )));
+                }
+
+                let dist_to_edge = (p.x - lo.x)
+                    .min(hi.x - p.x)
+                    .min(p.y - lo.y)
+                    .min(hi.y - p.y)
+                    .min(p.z - lo.z)
+                    .min(hi.z - p.z);
+
+                if dist_to_edge < MIN_DIST_FROM_EDGE {
+                    return Err(ParamError::new(&format!(
+                        "Atom index {i} is too close to the sim box edge ({dist_to_edge:.3} Å). \
+                         Pos ({:.3}, {:.3}, {:.3})",
+                        p.x, p.y, p.z,
+                    )));
+                }
+            }
+
+            // Inter-molecular minimum-image overlap check.
+            // This catches the periodic-image case: molecules that appear far apart in direct
+            // space but whose images wrap to overlap on the other side of the cell.
+            if result.mol_start_indices.len() > 1 {
+                let mut atom_mol = vec![0usize; result.atoms.len()];
+                for (mol_i, &start) in result.mol_start_indices.iter().enumerate() {
+                    let end = result
+                        .mol_start_indices
+                        .get(mol_i + 1)
+                        .copied()
+                        .unwrap_or(result.atoms.len());
+                    for idx in start..end {
+                        atom_mol[idx] = mol_i;
+                    }
+                }
+
+                for i in 0..result.atoms.len() {
+                    for j in (i + 1)..result.atoms.len() {
+                        if atom_mol[i] == atom_mol[j] {
+                            continue;
+                        }
+                        let diff = result
+                            .cell
+                            .min_image(result.atoms[i].posit - result.atoms[j].posit);
+                        let dist = diff.magnitude();
+                        if dist < MIN_INTER_MOL_DIST {
+                            return Err(ParamError::new(&format!(
+                                "Atoms from different molecules (indices {i} and {j}) are too \
+                                 close in minimum-image distance ({dist:.3} Å). This would cause \
+                                 immediate simulation blow-up.",
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
         result.lj_tables = LjTables::new(&result.atoms);
