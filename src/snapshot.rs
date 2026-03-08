@@ -81,6 +81,13 @@ pub struct Snapshot {
     pub temperature: f32,
     /// Instantaneous pressure in Bar.
     pub pressure: f32,
+    /// Instantaneous ∂H/∂λ in kcal/mol, for alchemical free energy calculations.
+    ///
+    /// Non-zero only when `MdState::alch_mol_idx` is set.  For linear decoupling
+    /// this equals the negative of the solute–solvent interaction energy at the
+    /// current configuration.  Average this over a λ window's trajectory and pass
+    /// the result to `alchemical::collect_window` / `alchemical::free_energy_ti`.
+    pub dh_dl: f32,
 }
 
 impl Snapshot {

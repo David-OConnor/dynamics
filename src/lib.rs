@@ -101,6 +101,7 @@ mod com_zero;
 mod gpu_interface;
 pub mod minimize_energy;
 
+pub mod alchemical;
 pub mod param_inference;
 mod sa_surface;
 pub mod snapshot_mdt;
@@ -710,6 +711,17 @@ pub struct MdState {
     pub mol_start_indices: Vec<usize>,
     /// A flag we set to disable certain things like snapshots during this MD phase.
     water_only_sim_at_init: bool,
+    /// Index into `mol_start_indices` of the molecule being alchemically decoupled.
+    ///
+    /// When `Some(m)`, `take_snapshot` computes ∂H/∂λ for molecule m and stores it
+    /// in each `Snapshot::dh_dl`.  Set `None` (the default) for ordinary MD.
+    pub alch_mol_idx: Option<usize>,
+    /// Current lambda value for alchemical simulations, in [0, 1].
+    ///
+    /// λ = 0: solute fully coupled; λ = 1: solute fully decoupled.
+    /// For thermodynamic integration, hold this fixed for the duration of one
+    /// simulation window and sweep across multiple windows.
+    pub lambda: f64,
 }
 
 impl Display for MdState {
@@ -1247,7 +1259,43 @@ impl MdState {
             hydrogen_bonds: Vec::new(), // Populated later A/R.
             temperature,
             pressure: pressure as f32,
+            dh_dl: self.compute_dh_dl() as f32,
         }
+    }
+
+    /// Compute the instantaneous ∂H/∂λ in kcal/mol for the current alchemical molecule.
+    ///
+    /// For linear coupling/decoupling:
+    ///   H(λ) = H_solvent + (1−λ)·U_alch_interact + H_solute_bonded
+    ///   ∂H/∂λ = −U_alch_interact
+    ///
+    /// where U_alch_interact is the non-bonded interaction energy of molecule
+    /// `alch_mol_idx` with all other molecules, taken from
+    /// `potential_energy_between_mols` (updated each step by `apply_nonbonded_forces`).
+    ///
+    /// Returns 0.0 when `alch_mol_idx` is `None`.
+    ///
+    /// # Physical correctness
+    /// For true thermodynamic integration at intermediate λ values, the non-bonded
+    /// forces on the alchemical molecule must be scaled by `(1 − λ)` in
+    /// `apply_nonbonded_forces`.  Without that scaling every window samples the
+    /// fully-coupled ensemble and TI is equivalent to a single-point FEP estimate.
+    pub fn compute_dh_dl(&self) -> f64 {
+        let m = match self.alch_mol_idx {
+            Some(m) => m,
+            None => return 0.0,
+        };
+
+        let n = self.mol_start_indices.len();
+        // potential_energy_between_mols is a symmetric N×N matrix:
+        // both [m*n + j] and [j*n + m] hold the interaction energy for pair (m, j).
+        // Sum row m (j ≠ m) to get the total solute–solvent interaction energy.
+        let u_interact: f64 = (0..n)
+            .filter(|&j| j != m)
+            .map(|j| self.potential_energy_between_mols[m * n + j])
+            .sum();
+
+        -u_interact
     }
 }
 

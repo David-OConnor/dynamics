@@ -160,6 +160,7 @@ impl Snapshot {
             hydrogen_bonds: Vec::new(),
             temperature,
             pressure,
+            dh_dl: 0.0,
         })
     }
 }
