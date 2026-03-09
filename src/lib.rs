@@ -918,14 +918,13 @@ impl MdState {
             ..Default::default()
         };
 
-        result.cell.recenter(&result.atoms);
-
-        // Validate atom positions before the expensive water-placement and minimization steps.
-        // Fail early if atoms are outside the sim box, too close to its edge, or if atoms from
-        // different molecules are dangerously close under the minimum-image (PBC) convention —
-        // which catches molecules on opposite sides of the cell whose periodic images overlap.
-
+        // Validate atom positions BEFORE recentering so we check against the box that was
+        // used for placement (add_copies places atoms relative to the original Fixed bounds).
+        // Recentering shifts bounds_low/bounds_high to the atom centroid, which can move
+        // atoms that were legitimately near a wall to just outside the new bounds.
         result.check_for_overlaps_oob()?;
+
+        result.cell.recenter(&result.atoms);
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
