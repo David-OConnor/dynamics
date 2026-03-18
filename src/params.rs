@@ -279,7 +279,7 @@ pub fn populate_peptide_ff_and_q(
             };
 
             let ResidueType::AminoAcid(aa) = &res.res_type else {
-                // e.g. water or other hetero atoms; skip.
+                // e.g. solvent or other hetero atoms; skip.
                 continue;
             };
 

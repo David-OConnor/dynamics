@@ -54,7 +54,7 @@ rayon = "1.11.0"  # Parallel execution on CPU using thread pools.
 #bincode = { version = "2.0.1", optional = true }
 bincode = "2.0.1"
 
-# We use this to compute the volume of  solvent accessible surface mesh when adding water molecules
+# We use this to compute the volume of  solvent accessible surface mesh when adding solvent molecules
 mcubes = "0.1.7"
 
 candle-core = { version = "0.9.1" }

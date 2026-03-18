@@ -1,5 +1,5 @@
 //! This module implements the SETTLE algorithm, for drifting
-//!  rigid water molecules.
+//!  rigid solvent molecules.
 //!
 //! See these reference implementations:
 //! -[OpenFF](https://github.com/openmm/openmm/blob/master/platforms/cpu/src/CpuSETTLE.cpp)
@@ -12,10 +12,10 @@ use lin_alg::f32::Vec3;
 
 use crate::{
     barostat::{SimBox, Virial},
-    water::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMol},
+    solvent::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMol},
 };
 
-// Reset the water angle to the defined parameter every this many steps,
+// Reset the solvent angle to the defined parameter every this many steps,
 // to counter numerical drift
 pub(crate) const RESET_ANGLE_RATIO: usize = 1_000;
 
@@ -94,8 +94,8 @@ fn solve_symmetric3(ixx: f32, iyy: f32, izz: f32, ixy: f32, ixz: f32, iyz: f32, 
     )
 }
 
-/// Analytic SETTLE implementation for 3‑site rigid water (Miyamoto & Kollman, JCC 1992).
-/// Works for any bond length / HOH angle. This handles the drift (position updates) for water
+/// Analytic SETTLE implementation for 3‑site rigid solvent (Miyamoto & Kollman, JCC 1992).
+/// Works for any bond length / HOH angle. This handles the drift (position updates) for solvent
 /// molecules. It also places M on the bisector, and performs a rigid wrap.
 ///
 /// All distances & masses are in MD internal units (Å, ps, amu, kcal/mol).
@@ -337,7 +337,7 @@ pub(crate) fn settle_analytic(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial
     mol.update_virtual_site();
 }
 
-/// Periodically run this to re-establish the initial water geometry; this should be maintained
+/// Periodically run this to re-establish the initial solvent geometry; this should be maintained
 /// rigid normally, but numerical errors will accumulate. RUn this periodically to reset it.
 pub(crate) fn reset_angle(mol: &mut WaterMol, cell: &SimBox) {
     // Rebuild u (bisector) and v (in-plane) from the updated positions

@@ -51,7 +51,7 @@ fn main() {
     );
     for posit in &snap.atom_posits {
         println!("Posit: {posit}");
-        // Also keeps track of velocities, and water molecule positions/velocity
+        // Also keeps track of velocities, and solvent molecule positions/velocity
     }
 
     // Do something with snapshot data, like displaying atom positions in your UI.

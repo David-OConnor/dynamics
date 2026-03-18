@@ -51,7 +51,7 @@ pub fn build_dynamics(
     }
 
     // A demonstration of only selecting peptide atoms near a ligand.
-    // We assume hetero atoms are ligands, water etc, and are not part of the protein.
+    // We assume hetero atoms are ligands, solvent etc, and are not part of the protein.
     let atoms: Vec<_> = peptide
         .atoms
         .iter()

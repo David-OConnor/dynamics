@@ -4,7 +4,7 @@ use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 
 use crate::{
     MdState,
-    water::{H_MASS, MASS_WATER_MOL, O_MASS},
+    solvent::{H_MASS, MASS_WATER_MOL, O_MASS},
 };
 
 const EPS: f64 = 1e-6;
@@ -44,7 +44,7 @@ impl MdState {
         }
 
         // I don't think we need to use SHAKE/RATTLE here, as the velocity
-        // change is uniform for the water atoms in a given mol.
+        // change is uniform for the solvent atoms in a given mol.
         for w in &mut self.water {
             w.o.vel -= vel_com;
             w.h0.vel -= vel_com;

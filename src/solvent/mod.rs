@@ -1,14 +1,14 @@
 #![allow(non_upper_case_globals)]
 #![allow(clippy::excessive_precision)]
 
-//! We use the [OPC model](https://pubs.acs.org/doi/10.1021/jz501780a) for water.
+//! We use the [OPC model](https://pubs.acs.org/doi/10.1021/jz501780a) for solvent.
 //! See also, the Amber Reference Manual.
 //!
 //! This is a rigid model that includes an "EP" or "M" massless charge-only molecule (No LJ terms),
 //! and no charge on the Oxygen. We integrate it using standard Amber-style forces.
 //! Amber strongly recommends using this model when their ff19SB foces for proteins.
 //!
-//! Amber RM: "OPC is a non-polarizable, 4-point, 3-charge rigid water model. Geometrically, it
+//! Amber RM: "OPC is a non-polarizable, 4-point, 3-charge rigid solvent model. Geometrically, it
 //! resembles TIP4P-like mod-
 //! els, although the values of OPC point charges and charge-charge distances are quite different.
 //! The model has a single VDW center on the oxygen nucleus."
@@ -21,7 +21,7 @@
 //!
 //! This module, in particular, contains structs, constants, and the integrator.
 //!
-//! Note: H bond average maintenance time: 1-20ps: Use this to validate your water model
+//! Note: H bond average maintenance time: 1-20ps: Use this to validate your solvent model
 
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
@@ -32,7 +32,9 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{AtomDynamics, KCAL_TO_NATIVE, barostat::SimBox, non_bonded::CHARGE_UNIT_SCALER};
+use crate::{
+    AtomDynamics, KCAL_TO_NATIVE, MolDynamics, barostat::SimBox, non_bonded::CHARGE_UNIT_SCALER,
+};
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
@@ -42,7 +44,7 @@ pub(crate) mod settle;
 
 use settle::RA;
 
-// Constant parameters below are for the OPC water (JPCL, 2014, 5 (21), pp 3863-3871)
+// Constant parameters below are for the OPC solvent (JPCL, 2014, 5 (21), pp 3863-3871)
 // (Amber 2025, frcmod.opc) EP/M is the massless, 4th charge.
 // These values are taken directly from `frcmod.opc`, in the Amber package. We have omitted
 // values that are 0., or otherwise not relevant in this model. (e.g. EP mass, O charge, bonded params
@@ -85,7 +87,107 @@ const C_O: f32 = 1.0 - 2.0 * C_H;
 pub(crate) const ACCEL_CONV_WATER_O: f32 = KCAL_TO_NATIVE / O_MASS;
 pub(crate) const ACCEL_CONV_WATER_H: f32 = KCAL_TO_NATIVE / H_MASS;
 
-// We use this encoding when passing to CUDA. We reserve 0 for non-water atoms.
+/// Used when configuring a MD Sim. We use OPC (rigid) water as a default, but can
+/// use custom solvents as well, from arbitrary molecules using standard MD forcefields.
+///
+/// todo: We may switch out these absolute count `usize` values for something else, like
+/// todo a portion by mass, volume, or mol count.
+#[derive(Clone, Debug, Default)]
+pub enum Solvent {
+    #[default]
+    WaterOpc,
+    WaterOpcSpecifyMolCount(usize),
+    /// (Custom mols and their counts, OPC water count). Unlikje for OPC water, we use standard
+    /// MD force fields for these, as we do for other molecules. Their presense in solvents here
+    /// is primarily for the purposes of initializing them on their own, or with OPC water. Compared
+    /// to with other molecules, the intent here is to saturate the cell / SimBox at init, in a way
+    /// which requires care with how we're packing.
+    ///
+    /// For now, we use GAFF2 (Small molecule) force fields for these non-water solvents.
+    Custom((Vec<(MolDynamics, usize)>, usize)),
+}
+
+impl PartialEq for Solvent {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::WaterOpc, Self::WaterOpc) => true,
+            (Self::WaterOpcSpecifyMolCount(a), Self::WaterOpcSpecifyMolCount(b)) => a == b,
+            (Self::Custom((_, water_a)), Self::Custom((_, water_b))) => water_a == water_b,
+            _ => false,
+        }
+    }
+}
+
+// Manual Encode/Decode as MolDynamics doesn't impl it, so we can't derive. Need to encode,
+// as it's part of MdConfig.
+#[cfg(feature = "encode")]
+impl bincode::Encode for Solvent {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        match self {
+            Self::WaterOpc => {
+                0u32.encode(encoder)?;
+            }
+            Self::WaterOpcSpecifyMolCount(count) => {
+                1u32.encode(encoder)?;
+                count.encode(encoder)?;
+            }
+            Self::Custom(_) => {
+                0u32.encode(encoder)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "encode")]
+impl<Context> bincode::Decode<Context> for Solvent {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let variant = u32::decode(decoder)?;
+
+        match variant {
+            0 => Ok(Self::WaterOpc),
+            1 => {
+                let count = usize::decode(decoder)?;
+                Ok(Self::WaterOpcSpecifyMolCount(count))
+            }
+            _ => Err(bincode::error::DecodeError::UnexpectedVariant {
+                type_name: "Solvent",
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 1 },
+                found: variant,
+            }),
+        }
+    }
+}
+
+#[cfg(feature = "encode")]
+impl<'de, Context> bincode::BorrowDecode<'de, Context> for Solvent {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let variant = u32::borrow_decode(decoder)?;
+
+        match variant {
+            0 => Ok(Self::WaterOpc),
+            1 => {
+                let count = usize::borrow_decode(decoder)?;
+                Ok(Self::WaterOpcSpecifyMolCount(count))
+            }
+            _ => Err(bincode::error::DecodeError::UnexpectedVariant {
+                type_name: "Solvent",
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 1 },
+                found: variant,
+            }),
+        }
+    }
+}
+
+// We use this encoding when passing to CUDA. We reserve 0 for non-solvent atoms.
 #[derive(Copy, Clone, PartialEq)]
 #[repr(u8)]
 pub(crate) enum WaterSite {
@@ -95,7 +197,7 @@ pub(crate) enum WaterSite {
     H1 = 4,
 }
 
-/// Per-water, per-site force accumulator. Used transiently when applying nonbonded forces.
+/// Per-solvent, per-site force accumulator. Used transiently when applying nonbonded forces.
 /// This is the force *on* each atom in the molecule.
 #[derive(Clone, Copy, Default)]
 pub struct ForcesOnWaterMol {
@@ -129,9 +231,9 @@ pub struct ForcesOnWaterMolx16 {
     pub f_m: Vec3x16,
 }
 
-/// Contains 4 atoms for each water molecules, at a given time step. Note that these
+/// Contains 4 atoms for each solvent molecules, at a given time step. Note that these
 /// are not independent, but are useful in our general MD APIs, for compatibility with
-/// non-water atoms.
+/// non-solvent atoms.
 ///
 /// Note: We currently don't use accel value on each atom directly, but use a `ForcesOnAtoms` abstraction.
 ///
@@ -192,7 +294,7 @@ impl WaterMol {
             element: Element::Hydrogen,
             posit: h0_pos,
             vel,
-            // This is actually force for our purposes, in the context of water molecules.
+            // This is actually force for our purposes, in the context of solvent molecules.
             mass: H_MASS,
             partial_charge: Q_H,
             ..Default::default()

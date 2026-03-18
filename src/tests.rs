@@ -54,7 +54,7 @@ fn test_forces_on_pair() {
         let cfg = MdConfig {
             overrides: MdOverrides {
                 // allow_missing_dihedral_params: true,
-                skip_water: true,
+                skip_solvent: true,
                 thermo_disabled: true,
                 baro_disabled: true,
                 ..Default::default()

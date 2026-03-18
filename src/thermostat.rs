@@ -6,7 +6,7 @@ use rand_distr::{ChiSquared, StandardNormal};
 
 use crate::{
     HydrogenConstraint, MdState, NATIVE_TO_KCAL,
-    water::{H_MASS, MASS_WATER_MOL, O_MASS},
+    solvent::{H_MASS, MASS_WATER_MOL, O_MASS},
 };
 
 // Per-molecule Boltzmann, in kcal/mol/K.
@@ -19,7 +19,7 @@ pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 
 impl MdState {
     /// Computes total kinetic energy, in native units.
-    /// Includes all non-static atoms, including water.
+    /// Includes all non-static atoms, including solvent.
     pub(crate) fn kinetic_energy(&self) -> f64 {
         let mut result = 0.0;
 
@@ -40,8 +40,8 @@ impl MdState {
         result * 0.5 * NATIVE_TO_KCAL as f64
     }
 
-    /// COM-only kinetic energy for water + full atomic KE for non-water atoms, in kcal/mol.
-    /// Used for pressure via the molecular virial theorem: rigid water molecules contribute
+    /// COM-only kinetic energy for solvent + full atomic KE for non-solvent atoms, in kcal/mol.
+    /// Used for pressure via the molecular virial theorem: rigid solvent molecules contribute
     /// only their translational (COM) KE, so no SETTLE constraint virial is needed.
     pub(crate) fn kinetic_energy_translational(&self) -> f64 {
         let mut result = 0.0;
@@ -69,17 +69,17 @@ impl MdState {
     /// and static atoms.
     /// We cache this at init. Used for kinetic energy and temperature computations.
     pub(crate) fn dof_for_thermo(&self) -> usize {
-        // 3 positional + 3 rotational for each water mol.
+        // 3 positional + 3 rotational for each solvent mol.
         let mut result = 6 * self.water.len();
 
-        if !self.water_only_sim_at_init {
+        if !self.solvent_only_sim_at_init {
             result += 3 * self.atoms.iter().filter(|a| !a.static_).count();
         }
 
         let num_constraints = {
             let mut c = 0;
 
-            if !self.water_only_sim_at_init {
+            if !self.solvent_only_sim_at_init {
                 for atom in &self.atoms {
                     if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained
                         && atom.element == Element::Hydrogen

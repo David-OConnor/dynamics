@@ -15,7 +15,7 @@ use crate::{
     AtomDynamics, ComputationDevice, MdOverrides, MdState,
     barostat::SimBox,
     forces::force_e_lj,
-    water::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
+    solvent::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
 };
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
@@ -57,14 +57,14 @@ pub const SCALE_COUL_14: f32 = 1.0 / 1.2;
 
 // Multiply by this to convert partial charges from elementary charge (What we store in Atoms loaded from mol2
 // files and amino19.lib.) to the self-consistent amber units required to calculate Coulomb force.
-// We apply this to dynamic and static atoms when building Indexed params, and to water molecules
+// We apply this to dynamic and static atoms when building Indexed params, and to solvent molecules
 // on their construction. We do not apply this during integration.
 // Electrostatic constant: 332.0522 kcal·Å/(mol·e²). This is the square root of that.
 pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 
 /// We use this to load the correct data from LJ lookup tables. Since we use indices,
 /// we must index correctly into the dynamic, or static tables. We have single-index lookups
-/// for atoms acting on water, since there is only one O LJ type.
+/// for atoms acting on solvent, since there is only one O LJ type.
 #[derive(Debug)]
 pub enum LjTableIndices {
     /// (tgt, src)
@@ -79,12 +79,12 @@ pub enum LjTableIndices {
 /// memory use, and reduces CPU use. We use indices, as they're faster than HashMaps.
 /// The indices are flattened, of each interaction pair. Values are (σ, ε).
 ///
-/// Water-water is not included, as it's a single, hard-coded parameter pair.
+/// Water-solvent is not included, as it's a single, hard-coded parameter pair.
 #[derive(Default)]
 pub struct LjTables {
-    /// Non-water, non-water interactions. Upper triangle.
+    /// Non-solvent, non-solvent interactions. Upper triangle.
     pub std: Vec<(f32, f32)>,
-    /// Water, non-water interactions.
+    /// Water, non-solvent interactions.
     pub water_std: Vec<(f32, f32)>,
     pub n_std: usize,
 }
@@ -93,9 +93,9 @@ pub struct LjTables {
 #[cfg(target_arch = "x86_64")]
 #[derive(Default)]
 pub struct LjTablesx8 {
-    /// Non-water, non-water interactions. Upper triangle.
+    /// Non-solvent, non-solvent interactions. Upper triangle.
     pub std: Vec<(f32x8, f32x8)>,
-    /// Water, non-water interactions.
+    /// Water, non-solvent interactions.
     pub water_std: Vec<(f32x8, f32x8)>,
     pub n_std: [usize; 8],
 }
@@ -104,9 +104,9 @@ pub struct LjTablesx8 {
 #[cfg(target_arch = "x86_64")]
 #[derive(Default)]
 pub struct LjTablesx16 {
-    /// Non-water, non-water interactions. Upper triangle.
+    /// Non-solvent, non-solvent interactions. Upper triangle.
     pub std: Vec<(f32x16, f32x16)>,
-    /// Water, non-water interactions.
+    /// Water, non-solvent interactions.
     pub water_std: Vec<(f32x16, f32x16)>,
     pub n_std: [usize; 8],
 }
@@ -136,7 +136,7 @@ impl LjTables {
             }
         }
 
-        // One LJ pair per dynamic atom vs water O:
+        // One LJ pair per dynamic atom vs solvent O:
         let mut water_std = Vec::with_capacity(n_std);
         for atom in atoms {
             let σ = 0.5 * (atom.lj_sigma + O_SIGMA);
@@ -226,7 +226,7 @@ pub struct NonBondedPair {
     pub symmetric: bool,
 }
 
-/// Add a force into the right accumulator (std or water). Static never accumulates.
+/// Add a force into the right accumulator (std or solvent). Static never accumulates.
 fn add_to_sink(
     sink_non_water: &mut [Vec3F64],
     sink_wat: &mut [ForcesOnWaterMol],
@@ -248,7 +248,7 @@ fn add_to_sink(
 /// Applies non-bonded force in parallel (CPU thread-pool) over a set of atoms, with indices assigned
 /// upstream.
 ///
-/// Returns (forces on non-water atoms, forces on water molecules, virial, potential energy total,
+/// Returns (forces on non-solvent atoms, forces on solvent molecules, virial, potential energy total,
 /// potential energy between molecule pairs. (kcal/mol)
 fn calc_force_cpu(
     pairs: &[NonBondedPair],
@@ -309,8 +309,8 @@ fn calc_force_cpu(
                     add_to_sink(&mut f_std, &mut f_wat, p.src, -f);
                 }
 
-                // We are not interested, in this point, at potential energy that only involves water atoms.
-                // We skip water-water.
+                // We are not interested, in this point, at potential energy that only involves solvent atoms.
+                // We skip solvent-solvent.
                 let involves_std =
                     matches!(p.tgt, BodyRef::NonWater(_)) || matches!(p.src, BodyRef::NonWater(_));
 
@@ -374,7 +374,7 @@ fn calc_force_cpu(
 // fn calc_force_x8(
 //     pairs: &[NonBondedPair],
 //     atoms_std: &[AtomDynamicsx8],
-//     water: &[WaterMolx8],
+//     solvent: &[WaterMolx8],
 //     cell: &SimBox,
 //     lj_tables: &LjTablesx8,
 // ) -> (Vec<Vec3x8>, Vec<ForcesOnWaterMol>, f64, f64) {
@@ -384,19 +384,19 @@ fn calc_force_cpu(
 // fn calc_force_x16(
 //     pairs: &[NonBondedPair],
 //     atoms_std: &[AtomDynamicsx16],
-//     water: &[WaterMolx16],
+//     solvent: &[WaterMolx16],
 //     cell: &SimBox,
 //     lj_tables: &LjTablesx16,
 // ) -> (Vec<Vec3x16>, Vec<ForcesOnWaterMol>, f64, f64) {
 // }
 
 impl MdState {
-    /// Run the appropriate force-computation function to get force on non-water atoms, force
-    /// on water atoms, and virial sum for the barostat. Uses GPU if available.
+    /// Run the appropriate force-computation function to get force on non-solvent atoms, force
+    /// on solvent atoms, and virial sum for the barostat. Uses GPU if available.
     ///
-    /// Applies Coulomb and Van der Waals (Lennard-Jones) forces on non-water atoms, in place.
+    /// Applies Coulomb and Van der Waals (Lennard-Jones) forces on non-solvent atoms, in place.
     /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
-    /// applies forces from non-water, and water sources.
+    /// applies forces from non-solvent, and solvent sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
         let (f_on_non_water, f_on_water, virial, energy, energy_between_mols) = match dev {
             ComputationDevice::Cpu => {
@@ -404,7 +404,7 @@ impl MdState {
                     // calc_force_x16(
                     //     &self.nb_pairs,
                     //     &self.atoms_x16,
-                    //     &self.water,
+                    //     &self.solvent,
                     //     &self.cell,
                     //     &self.lj_tables,
                     // )
@@ -412,7 +412,7 @@ impl MdState {
                     // calc_force_x8(
                     //     &self.nb_pairs,
                     //     &self.atoms_x8,
-                    //     &self.water,
+                    //     &self.solvent,
                     //     &self.cell,
                     //     &self.lj_tables,
                     // )
@@ -533,7 +533,7 @@ impl MdState {
         // todo: Look at water_water
         // todo: In general, your static exclusions will get messed up with this logic.
 
-        // Forces from water on non-water atoms, and vice-versa
+        // Forces from solvent on non-solvent atoms, and vice-versa
         let mut pairs_std_water: Vec<_> = (0..n_std)
             .flat_map(|i_std| {
                 self.neighbors_nb.std_water[i_std]
@@ -553,7 +553,7 @@ impl MdState {
             })
             .collect();
 
-        // ------ Water on water ------
+        // ------ Water on solvent ------
         let mut pairs_water_water = Vec::new();
 
         for i_0 in 0..n_water_mols {
@@ -672,9 +672,9 @@ impl MdState {
         (f_recip, e_recip as f64, virial_lr_recip)
     }
 
-    /// Gather all particles that contribute to PME (non-water atoms, water sites).
+    /// Gather all particles that contribute to PME (non-solvent atoms, solvent sites).
     /// Returns positions wrapped to the primary box, and their charges. We pack (and unpack)
-    /// in a predictable way: non-water atoms, then water, with order as defined below.
+    /// in a predictable way: non-solvent atoms, then solvent, with order as defined below.
     fn pack_pme_pos_q(&self) -> (Vec<Vec3>, Vec<f32>) {
         let n_std = self.atoms.len();
         let n_wat = self.water.len();
@@ -682,7 +682,7 @@ impl MdState {
         let mut pos = Vec::with_capacity(n_std + 3 * n_wat);
         let mut q = Vec::with_capacity(pos.capacity());
 
-        // Non-water atoms.
+        // Non-solvent atoms.
         for a in &self.atoms {
             pos.push(self.cell.wrap(a.posit)); // [0,L) per axis
             q.push(a.partial_charge); // already scaled to Amber units
@@ -759,7 +759,7 @@ impl MdState {
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Lennard Jones and (short-range) Coulomb forces. Used by water and non-water.
+/// Lennard Jones and (short-range) Coulomb forces. Used by solvent and non-solvent.
 /// We run long-range SPME Coulomb force separately.
 ///
 /// We use a hard distance cutoff for Vdw, enabled by its ^-7 falloff.
@@ -772,7 +772,7 @@ pub fn f_nonbonded_cpu(
     scale14: bool, // See notes earlier in this module.
     lj_indices: &LjTableIndices,
     lj_tables: &LjTables,
-    // These flags are for use with forces on water.
+    // These flags are for use with forces on solvent.
     calc_lj: bool,
     calc_coulomb: bool,
     overrides: &MdOverrides,
@@ -841,7 +841,7 @@ pub fn f_nonbonded_cpu(
 
 /// Helper. Returns σ, ε between an atom pair. Atom order passed as params doesn't matter.
 /// Note that this uses the traditional algorithm; not the Amber-specific version: We pre-set
-/// atom-specific σ and ε to traditional versions on ingest, and when building water.
+/// atom-specific σ and ε to traditional versions on ingest, and when building solvent.
 fn combine_lj_params(atom_0: &AtomDynamics, atom_1: &AtomDynamics) -> (f32, f32) {
     let σ = 0.5 * (atom_0.lj_sigma + atom_1.lj_sigma);
     let ε = (atom_0.lj_eps * atom_1.lj_eps).sqrt();

@@ -1,27 +1,30 @@
 #![allow(clippy::excessive_precision)]
 
-//! Code for initializing water molecules, including assigning quantity, initial positions, and
+//! Code for initializing solvent molecules, including assigning quantity, initial positions, and
 //! velocities. Set up to meet density, pressure, and or temperature targets. Not specific to the
-//! water model used.
+//! solvent model used.
 
 use std::{f32::consts::TAU, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
-use lin_alg::f32::{Mat3 as Mat3F32, Quaternion, Vec3};
+use lin_alg::{
+    f32::{Mat3 as Mat3F32, Quaternion, Vec3},
+    f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
+};
 use rand::{Rng, distr::Uniform, rngs::ThreadRng};
 use rand_distr::{Distribution, Normal};
 
 use crate::{
-    AtomDynamics, ComputationDevice, MdState, NATIVE_TO_KCAL,
+    AtomDynamics, ComputationDevice, MdState, MolDynamics, NATIVE_TO_KCAL,
     barostat::SimBox,
     partial_charge_inference::{files::load_from_bytes, save},
     sa_surface,
+    solvent::WaterMol,
     thermostat::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU},
-    water::WaterMol,
 };
 
 // 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing
-// and maintaining the water density and molecule count.
+// and maintaining the solvent density and molecule count.
 const WATER_DENSITY: f32 = 0.997;
 
 // g / mol (or AMU per molecule)
@@ -36,22 +39,22 @@ const N_A: f32 = 6.022_140_76e23;
 // Multiplying this by volume in Angstrom^3 gives us AMU g cm^-3 Å^3 mol^-1
 const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 
-// Don't generate water molecules that are too close to other atoms.
-// Vdw contact distance between water molecules and organic molecules is roughly 3.5 Å.
+// Don't generate solvent molecules that are too close to other atoms.
+// Vdw contact distance between solvent molecules and organic molecules is roughly 3.5 Å.
 // todo: Hmm. We could get lower, but there's some risk of an H atom being too close,
-// todo and we're currently only measuring water o dist to atoms.
+// todo and we're currently only measuring solvent o dist to atoms.
 const MIN_NONWATER_DIST: f32 = 1.7;
 const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 
 // This seems low, but allows more flexibility in placement, and isn't so low
 // as to cause the system to blow up. Distances will be set up accurately
-// in the initial water-only sim.
+// in the initial solvent-only sim.
 const MIN_WATER_O_O_DIST: f32 = 1.7;
 const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
 
 // Higher is more accurate, but slower. After hydrogen bond networks are settled, higher doensn't
 // improve things. Note that we initialize from a pre-equilibrated template, so we shouldn't
-// need many effects. This mainly deals with template tiling effects, and water-solute conflicts.
+// need many effects. This mainly deals with template tiling effects, and solvent-solute conflicts.
 const NUM_SIM_STEPS: usize = 200;
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 // We seem to get better settling results with a low dt.
@@ -59,7 +62,7 @@ const SIM_DT: f32 = 0.0005;
 
 const INIT_TEMPLATE: &[u8] = include_bytes!("../../param_data/water_60A.water_init_template");
 
-/// We store pre-equilibrated water molecules in a template, and use it to initialize water for a simulation.
+/// We store pre-equilibrated solvent molecules in a template, and use it to initialize solvent for a simulation.
 /// This keeps the equilibration steps relatively low. Note that edge effects from tiling will require
 /// equilibration, as well as adjusting a template for the runtime temperature target.
 ///
@@ -103,7 +106,7 @@ impl WaterInitTemplate {
 
         // let (mut min, mut max) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
 
-        // Sort water by position so that it iterates out from the center. This makes initialization
+        // Sort solvent by position so that it iterates out from the center. This makes initialization
         // easier for cases where this template is larger than the target sim box.
         let water = {
             let ctr = (bounds.1 + bounds.0) / 2.;
@@ -160,12 +163,12 @@ fn calc_n_mols(cell: &SimBox, atoms: &[AtomDynamics]) -> usize {
     (WATER_MOLS_PER_VOL * free_vol).round() as usize
 }
 
-/// Create water molecules from a template, tiling it as many times as needed to fill the cell.
+/// Create solvent molecules from a template, tiling it as many times as needed to fill the cell.
 /// Works for any cell size: smaller than, equal to, or larger than the template.
 ///
 /// The template is always centered on the cell. For cells smaller than the template only tile
 /// (0,0,0) contributes; for larger cells neighbouring tiles fill in the rest.
-/// Water-water conflict detection uses min-image distances so molecules are never placed too
+/// Water-solvent conflict detection uses min-image distances so molecules are never placed too
 /// close to a PBC image of an already-placed molecule.
 pub fn make_water_mols(
     cell: &SimBox,
@@ -174,7 +177,7 @@ pub fn make_water_mols(
     _zero_com_drift: bool,
     specify_num_water: Option<usize>,
 ) -> Vec<WaterMol> {
-    println!("Initializing water molecules...");
+    println!("Initializing solvent molecules...");
     let start = Instant::now();
 
     let template: WaterInitTemplate = load_from_bytes(INIT_TEMPLATE).unwrap();
@@ -232,7 +235,7 @@ pub fn make_water_mols(
                         }
                     }
 
-                    // Conflict with already-placed water. Use min-image so molecules near
+                    // Conflict with already-placed solvent. Use min-image so molecules near
                     // opposite faces of the cell (PBC images) are also caught.
                     for w in &result {
                         if cell.min_image(w.o.posit - o_posit).magnitude_squared()
@@ -266,14 +269,218 @@ pub fn make_water_mols(
 
     let elapsed = start.elapsed().as_millis();
     println!(
-        "Added {} / {n_mols} water mols in {elapsed} ms. Used {loops_used} loops",
+        "Added {} / {n_mols} solvent mols in {elapsed} ms. Used {loops_used} loops",
         result.len()
     );
 
     result
 }
 
-/// Generate water molecules to meet a temperature target, using standard density assumptions.
+/// Pack copies of each custom solvent molecule into the simulation box, deconflicting with
+/// already-placed atoms (e.g. the solute).  Returns one `MolDynamics` per copy, each with
+/// `atom_posits` set to its chosen world-space positions.
+///
+/// Uses a greedy cubic-grid strategy with random-rotation search, identical in spirit to
+/// `add_copies` in the molchanica layer.  Soft overlaps (> 1.4 Å apart) are accepted and
+/// resolved later by the energy minimiser; hard overlaps are caught by `check_for_overlaps_oob`.
+///
+/// Only supports `SimBoxInit::Fixed` boxes — the caller is responsible for ensuring this.
+pub(crate) fn pack_custom_solvent(
+    bounds_low: Vec3,
+    bounds_high: Vec3,
+    existing_posits: &[Vec3F64], // declared positions of already-placed mols (e.g. solute)
+    mols_solvent: &[(MolDynamics, usize)],
+) -> Vec<MolDynamics> {
+    // Below this squared distance between atoms we log a soft-overlap warning.
+    // Energy minimisation resolves overlaps above the hard cutoff used in check_for_overlaps_oob.
+    const MIN_ATOM_DIST_SQ: f64 = 1.4 * 1.4; // Å²
+    // Keep every atom at least this far from each box face.
+    const WALL_MARGIN: f64 = 0.6; // Å  (slightly > check_for_overlaps_oob's 0.5 Å limit)
+    const MAX_ROT_ATTEMPTS: usize = 200;
+
+    let mut rng = rand::rng();
+
+    let lo = Vec3F64::new(
+        bounds_low.x as f64,
+        bounds_low.y as f64,
+        bounds_low.z as f64,
+    );
+    let hi = Vec3F64::new(
+        bounds_high.x as f64,
+        bounds_high.y as f64,
+        bounds_high.z as f64,
+    );
+    let box_size = hi - lo;
+    let box_ctr = (lo + hi) * 0.5;
+
+    // Grows as copies are committed; starts with the solute atom positions.
+    let mut placed_posits: Vec<Vec3F64> = existing_posits.to_vec();
+
+    let mut result: Vec<MolDynamics> = Vec::new();
+
+    for (mol, count) in mols_solvent {
+        let count = *count;
+        if count == 0 {
+            continue;
+        }
+
+        // Template positions in world space; prefer atom_posits override.
+        let template_world: Vec<Vec3F64> = if let Some(ap) = &mol.atom_posits {
+            ap.clone()
+        } else {
+            mol.atoms.iter().map(|a| a.posit).collect()
+        };
+
+        let n_atoms = template_world.len();
+        if n_atoms == 0 {
+            continue;
+        }
+
+        // Centroid and centroid-relative locals.
+        let centroid = template_world
+            .iter()
+            .fold(Vec3F64::new(0., 0., 0.), |s, &p| s + p)
+            * (1.0 / n_atoms as f64);
+        let local: Vec<Vec3F64> = template_world.iter().map(|&p| p - centroid).collect();
+        let bounding_r: f64 = local.iter().map(|p| p.magnitude()).fold(0.0_f64, f64::max);
+
+        // Spatial early-reject radius: only check placed atoms within this of a candidate centroid.
+        let search_sq = (bounding_r * 2.0 + 2.0).powi(2);
+
+        // Cubic grid with n³ ≥ count cells.  At least n=3 (27 cells) so even count=1 has
+        // alternatives when the origin cell already contains a solute atom.
+        let n = (count as f64).cbrt().ceil() as usize;
+        let n = n.max(3);
+        let (sx, sy, sz) = (
+            box_size.x / n as f64,
+            box_size.y / n as f64,
+            box_size.z / n as f64,
+        );
+        // Box-centred half-widths that respect the wall margin.
+        let (hx, hy, hz) = (
+            box_size.x * 0.5 - WALL_MARGIN,
+            box_size.y * 0.5 - WALL_MARGIN,
+            box_size.z * 0.5 - WALL_MARGIN,
+        );
+
+        // Grid cell centres in absolute world coordinates.
+        let mut grid: Vec<Vec3F64> = (0..n)
+            .flat_map(|ix| {
+                (0..n).flat_map(move |iy| {
+                    (0..n).map(move |iz| {
+                        Vec3F64::new(
+                            lo.x + (ix as f64 + 0.5) * sx,
+                            lo.y + (iy as f64 + 0.5) * sy,
+                            lo.z + (iz as f64 + 0.5) * sz,
+                        )
+                    })
+                })
+            })
+            .collect();
+
+        for copy_i in 0..count {
+            // Greedy: pick the cell whose centroid is furthest from all placed atoms.
+            let best_cell_idx = if placed_posits.is_empty() {
+                0
+            } else {
+                grid.iter()
+                    .enumerate()
+                    .map(|(i, &cell_ctr)| {
+                        let min_dsq = placed_posits
+                            .iter()
+                            .map(|&p| (cell_ctr - p).magnitude_squared())
+                            .fold(f64::MAX, f64::min);
+                        (i, min_dsq)
+                    })
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            };
+
+            let world_ctr = grid.remove(best_cell_idx);
+
+            let mut best_min_sq = f64::NEG_INFINITY;
+            let mut best_posits: Vec<Vec3F64> = Vec::new();
+
+            for _ in 0..MAX_ROT_ATTEMPTS {
+                let (w, x, y, z): (f64, f64, f64, f64) =
+                    (rng.random(), rng.random(), rng.random(), rng.random());
+                let rot = QuaternionF64::new(w, x, y, z).to_normalized();
+
+                let new_posits: Vec<Vec3F64> = local
+                    .iter()
+                    .map(|&l| rot.rotate_vec(l) + world_ctr)
+                    .collect();
+
+                // Wall check in box-centred coordinates.
+                if !new_posits.iter().all(|p| {
+                    let dp = *p - box_ctr;
+                    dp.x.abs() <= hx && dp.y.abs() <= hy && dp.z.abs() <= hz
+                }) {
+                    continue;
+                }
+
+                // Atom-level clash check against placed atoms.
+                let mut min_sq = f64::MAX;
+                'check: for &np in &new_posits {
+                    for &pp in &placed_posits {
+                        if (pp - world_ctr).magnitude_squared() > search_sq {
+                            continue;
+                        }
+                        let dsq = (np - pp).magnitude_squared();
+                        if dsq < min_sq {
+                            min_sq = dsq;
+                            if min_sq < MIN_ATOM_DIST_SQ {
+                                break 'check;
+                            }
+                        }
+                    }
+                }
+
+                if min_sq > best_min_sq {
+                    best_min_sq = min_sq;
+                    best_posits = new_posits;
+                }
+                if best_min_sq >= MIN_ATOM_DIST_SQ {
+                    break; // Clean placement found.
+                }
+            }
+
+            // Fallback if every rotation attempt failed the wall check.
+            if best_posits.is_empty() {
+                best_posits = local.iter().map(|&l| l + world_ctr).collect();
+            }
+
+            if best_min_sq < MIN_ATOM_DIST_SQ {
+                eprintln!(
+                    "pack_custom_solvent: copy {copy_i}: best min atom dist {:.2} Å — \
+                     placing with soft overlap (energy minimiser will resolve).",
+                    best_min_sq.max(0.0).sqrt()
+                );
+            }
+
+            placed_posits.extend_from_slice(&best_posits);
+
+            let mut mol_copy = mol.clone();
+            mol_copy.atom_posits = Some(best_posits);
+            result.push(mol_copy);
+
+            if grid.is_empty() && copy_i + 1 < count {
+                eprintln!(
+                    "pack_custom_solvent: grid cells exhausted after {} / {} copies; \
+                     box may be too small for this many solvent molecules.",
+                    copy_i + 1,
+                    count
+                );
+                break;
+            }
+        }
+    }
+
+    result
+}
+
+/// Generate solvent molecules to meet a temperature target, using standard density assumptions.
 /// We deconflict with (solute) atoms in the simulation, and base the number of molecules to add
 /// on the free space, not the total cell volume.
 ///
@@ -284,7 +491,7 @@ pub fn make_water_mols(
 ///   that matches the target temperature. Move molecules to the edge that are too close to
 ///   solute atoms.
 /// - Run a brief simulation with the solute
-///   atoms as static, to intially position water molecules realistically. This
+///   atoms as static, to intially position solvent molecules realistically. This
 ///   takes advantage of our simulations' acceleration limits to set up realistic geometry using
 ///   hydrogen bond networks, and breaks the crystal lattice.
 ///
@@ -298,7 +505,7 @@ pub fn _make_water_mols_grid(
     atoms: &[AtomDynamics],
     zero_com_drift: bool,
 ) -> Vec<WaterMol> {
-    println!("Initializing water molecules...");
+    println!("Initializing solvent molecules...");
     let start = Instant::now();
 
     // Initialize an RNG for orientations.
@@ -314,7 +521,7 @@ pub fn _make_water_mols_grid(
         return result;
     }
 
-    // Initialize the correct number of water molecules on a uniform grid. We ignore the solute for
+    // Initialize the correct number of solvent molecules on a uniform grid. We ignore the solute for
     let lx = cell.bounds_high.x - cell.bounds_low.x;
     let ly = cell.bounds_high.y - cell.bounds_low.y;
     let lz = cell.bounds_high.z - cell.bounds_low.z;
@@ -359,7 +566,7 @@ pub fn _make_water_mols_grid(
             }
         }
 
-        // Check for an overlap with existing water molecules.
+        // Check for an overlap with existing solvent molecules.
         for w in &result {
             let dist_sq = (w.o.posit - posit).magnitude_squared();
             if dist_sq < MIN_WATER_O_O_DIST_SQ {
@@ -386,14 +593,14 @@ pub fn _make_water_mols_grid(
 
     let elapsed = start.elapsed().as_millis();
     println!(
-        "Added {} / {n_mols} water mols in {elapsed} ms. Used {loops_used} loops",
+        "Added {} / {n_mols} solvent mols in {elapsed} ms. Used {loops_used} loops",
         result.len()
     );
     result
 }
 
 /// Note: This sets a reasonable default, but our thermostat, applied notably during
-/// our initial water simulation, determines the actual temperature set at proper sim init.
+/// our initial solvent simulation, determines the actual temperature set at proper sim init.
 /// Note: We've deprecated this in favor of velocities pre-initialized in the template.
 fn _init_velocities(
     mols: &mut [WaterMol],
@@ -499,7 +706,7 @@ fn _init_velocities(
     }
 }
 
-/// Calculate kinetic energy in kcal/mol, and DOF for water only.
+/// Calculate kinetic energy in kcal/mol, and DOF for solvent only.
 /// Water is rigid, so 3 DOF per molecule.
 fn _kinetic_energy_and_dof(mols: &[WaterMol], zero_com_drift: bool) -> (f32, usize) {
     let mut ke = 0.;
@@ -557,23 +764,23 @@ fn _random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
 }
 
 impl MdState {
-    /// Use this to help initialize water molecules to realistic geometry of hydrogen bond networks,
-    /// prior to the first proper simulation step. Runs MD on water only.
+    /// Use this to help initialize solvent molecules to realistic geometry of hydrogen bond networks,
+    /// prior to the first proper simulation step. Runs MD on solvent only.
     /// Make sure to only run this after state is properly initialized, e.g. towards the end
     /// of init; not immediately after populating waters.
     ///
-    /// This will result in an immediate energy bump as water positions settle from their grid
+    /// This will result in an immediate energy bump as solvent positions settle from their grid
     /// into position. As they settle, the thermostat will bring the velocities down to set
-    /// the target temp. This sim should run long enough to the water is stable by the time
+    /// the target temp. This sim should run long enough to the solvent is stable by the time
     /// the main sim starts.
     pub fn md_on_water_only(&mut self, dev: &ComputationDevice) {
-        println!("Initializing water H bond networks...");
+        println!("Initializing solvent H bond networks...");
         let start = Instant::now();
 
         // This disables things like snapshot saving, and certain prints.
-        self.water_only_sim_at_init = true;
+        self.solvent_only_sim_at_init = true;
 
-        // Mark all non-water atoms as static; keep track of their original state here.
+        // Mark all non-solvent atoms as static; keep track of their original state here.
         let mut static_state = Vec::with_capacity(self.atoms.len());
         for a in &mut self.atoms {
             static_state.push(a.static_);
@@ -589,7 +796,7 @@ impl MdState {
             a.static_ = static_state[i];
         }
 
-        self.water_only_sim_at_init = false;
+        self.solvent_only_sim_at_init = false;
         self.step_count = 0; // Reset.
 
         let elapsed = start.elapsed().as_millis();

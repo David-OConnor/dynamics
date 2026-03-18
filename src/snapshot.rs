@@ -57,13 +57,13 @@ pub struct Snapshot {
     // /// Posits and velocities by mol: Outer index is the molecule index, corresponding to molecules
     // /// in `MdState`
     // // todo: Experimenting with storing snaps as per-mol. This may replace the flat per-atom approach,
-    // // todo: but we're leaving per-atom fields in for now. This may effectively double the non-water
+    // // todo: but we're leaving per-atom fields in for now. This may effectively double the non-solvent
     // // todo size of the snapshot.
     // pub atom_posits_by_mol: Vec<Vec<Vec3>>,
     pub water_o_posits: Vec<Vec3>,
     pub water_h0_posits: Vec<Vec3>,
     pub water_h1_posits: Vec<Vec3>,
-    /// Single velocity per water molecule, as it's rigid.
+    /// Single velocity per solvent molecule, as it's rigid.
     pub water_velocities: Vec<Vec3>,
     pub energy_kinetic: f32,
     pub energy_potential: f32,

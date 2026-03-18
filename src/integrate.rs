@@ -15,7 +15,7 @@ use crate::{
     barostat::{
         LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT, measure_pressure,
     },
-    water::{
+    solvent::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O, MASS_WATER_MOL,
         settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
     },
@@ -117,11 +117,11 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                if !self.cfg.overrides.thermo_disabled && !self.water_only_sim_at_init {
+                if !self.cfg.overrides.thermo_disabled && !self.solvent_only_sim_at_init {
                     self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
                     // Update KE after vel updates from the thermostat, prior to barostat.
                     self.kinetic_energy = self.kinetic_energy();
-                } else if self.water_only_sim_at_init {
+                } else if self.solvent_only_sim_at_init {
                     self.apply_langevin_thermostat(
                         dt,
                         LANGEVIN_GAMMA_WATER_INIT,
@@ -162,7 +162,7 @@ impl MdState {
                 // Applying from our pre-reset calcs.
                 self.barostat.virial.constraints = virial_constr;
 
-                // Molecular virial theorem: use COM-only KE for water (rigid molecules
+                // Molecular virial theorem: use COM-only KE for solvent (rigid molecules
                 // contribute no rotational KE to pressure; no SETTLE constraint virial needed).
                 let pressure = measure_pressure(
                     self.kinetic_energy_translational(),
@@ -230,7 +230,7 @@ impl MdState {
                 // Applying from our pre-reset calcs.
                 self.barostat.virial.constraints = virial_constr;
 
-                // Molecular virial theorem: COM-only KE for water (no SETTLE constraint virial).
+                // Molecular virial theorem: COM-only KE for solvent (no SETTLE constraint virial).
                 let pressure = measure_pressure(
                     self.kinetic_energy_translational(),
                     &self.cell,
@@ -242,8 +242,8 @@ impl MdState {
                     self.computation_time.ambient_sum += elapsed;
                 }
 
-                // Forces (bonded and nonbonded, to non-water and water atoms) have been applied; perform other
-                // steps required for integration; second half-kick, RATTLE for hydrogens; SETTLE for water. -----
+                // Forces (bonded and nonbonded, to non-solvent and solvent atoms) have been applied; perform other
+                // steps required for integration; second half-kick, RATTLE for hydrogens; SETTLE for solvent. -----
 
                 // Second half-kick using the forces calculated this step, and update accelerations using the atom's mass;
                 // Between the accel reset and this step, the accelerations have been missing those factors; this is an optimization to
@@ -267,11 +267,11 @@ impl MdState {
                 // it updates all velocites uniformly.
                 if let Some(tau_temp) = thermostat
                     && !self.cfg.overrides.thermo_disabled
-                    && !self.water_only_sim_at_init
+                    && !self.solvent_only_sim_at_init
                 {
                     self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
                     self.kinetic_energy = self.kinetic_energy();
-                } else if self.water_only_sim_at_init {
+                } else if self.solvent_only_sim_at_init {
                     self.apply_thermostat_csvr(
                         dt as f64,
                         TAU_TEMP_WATER_INIT,
@@ -339,7 +339,7 @@ impl MdState {
             }
         }
 
-        if !self.water_only_sim_at_init {
+        if !self.solvent_only_sim_at_init {
             // if self.step_count.is_multiple_of(200) {
             //     self.print_ambient_data(pressure);
             // }
@@ -358,13 +358,13 @@ impl MdState {
             }
         }
 
-        if self.cfg.overrides.snapshots_during_equilibration && self.water_only_sim_at_init {
+        if self.cfg.overrides.snapshots_during_equilibration && self.solvent_only_sim_at_init {
             self.take_snapshot_if_required(pressure);
         }
     }
 
-    /// Half kick and drift for non-water and water. We call this one or more time
-    /// in the various integration approaches. Includes the SETTLE application for water,
+    /// Half kick and drift for non-solvent and solvent. We call this one or more time
+    /// in the various integration approaches. Includes the SETTLE application for solvent,
     /// and SHAKE + RATTLE for hydrogens, if applicable. Updates kinetic energy.
     fn kick_and_drift(&mut self, dt_kick: f32, dt_drift: f32) {
         // Half-kick
@@ -394,7 +394,7 @@ impl MdState {
         self.kinetic_energy = self.kinetic_energy();
     }
 
-    /// Half kick for non-water and water. We call this one or more time
+    /// Half kick for non-solvent and solvent. We call this one or more time
     /// in the various integration approaches. Updates kinetic energy.
     fn kick_and_calc_accel(&mut self, dt: f32) {
         for (i, a) in self.atoms.iter_mut().enumerate() {
@@ -438,7 +438,7 @@ impl MdState {
         self.kinetic_energy = self.kinetic_energy();
     }
 
-    /// Drifts all non-static atoms in the system.  Includes the SETTLE application for water,
+    /// Drifts all non-static atoms in the system.  Includes the SETTLE application for solvent,
     /// and SHAKE + RATTLE for hydrogens, if applicable.
     fn drift(&mut self, dt: f32) {
         for a in &mut self.atoms {

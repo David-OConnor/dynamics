@@ -121,8 +121,8 @@ pub fn append_xtc(snapshots: &[Snapshot], path: &Path, write_water: bool) -> io:
 /// - If you want output in **nm**, use `coord_unscale = 1.0`.
 /// - If you want output in **Å**, use `coord_unscale = ANGSTROM_PER_NM`.
 ///
-/// Note: XTC doesn’t encode semantic grouping (e.g. “these atoms are water”),
-/// so this loader puts all coords into `atom_posits` and leaves water empty.
+/// Note: XTC doesn’t encode semantic grouping (e.g. “these atoms are solvent”),
+/// so this loader puts all coords into `atom_posits` and leaves solvent empty.
 pub fn load_xtc_scaled(path: &Path, coord_unscale: f32) -> io::Result<Vec<Snapshot>> {
     let mut trj = XTCTrajectory::open_read(path).map_err(xdr_to_io)?;
     let n_atoms = trj.get_num_atoms().map_err(xdr_to_io)?;

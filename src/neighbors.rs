@@ -4,7 +4,7 @@
 //!
 //! Note: GPU is probably not a good fit for rebuilding neighbor lists.
 //!
-//! We generally use cell-wrapped distances for water, and direct distances for non-water.
+//! We generally use cell-wrapped distances for solvent, and direct distances for non-solvent.
 
 use std::time::Instant;
 
@@ -15,8 +15,8 @@ use rayon::prelude::*;
 use crate::gpu_interface::PerNeighborGpu;
 use crate::{ComputationDevice, MdState, barostat::SimBox, non_bonded::LONG_RANGE_CUTOFF};
 
-/// By index for fast lookups; separate fields, as these indices are applied differently for non-water atoms
-/// and water.
+/// By index for fast lookups; separate fields, as these indices are applied differently for non-solvent atoms
+/// and solvent.
 ///
 /// These are historically called "Verlet lists", but we're not using that term, as we use "Verlet" to refer
 /// to the integrator, which this has nothing to do with. They do have to do with their applicability to
@@ -25,14 +25,14 @@ use crate::{ComputationDevice, MdState, barostat::SimBox, non_bonded::LONG_RANGE
 pub struct NeighborsNb {
     /// Symmetric std-std indices.
     pub std_std: Vec<Vec<usize>>,
-    /// Outer: standard. Inner: water.
+    /// Outer: standard. Inner: solvent.
     pub std_water: Vec<Vec<usize>>,
-    /// Symmetric water-water indices.
+    /// Symmetric solvent-solvent indices.
     pub water_water: Vec<Vec<usize>>,
     //
     /// Reference positions used to determine when we rebuild.
     pub atom_posits_last_rebuild: Vec<Vec3>,
-    /// We use O as proxy for the rigid water, omitting its hydrogens to save computation; they
+    /// We use O as proxy for the rigid solvent, omitting its hydrogens to save computation; they
     /// will always be near.
     pub water_o_posits_last_rebuild: Vec<Vec3>,
     /// Used to determine when to rebuild neighbor lists.
@@ -267,7 +267,7 @@ pub fn build_neighbors(
 
                     if !st_st {
                         let pos_inner = posits_inner[i_inner];
-                        // todo: Only take the min image for water?
+                        // todo: Only take the min image for solvent?
                         let d = cell.min_image(pos_outer - pos_inner);
                         if d.magnitude_squared() < skin_sq_w_cutoff {
                             out.push(i_inner);

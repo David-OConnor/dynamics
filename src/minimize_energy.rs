@@ -50,12 +50,12 @@ impl MdState {
     /// Relaxes the molecules using a steepest-descent energy minimizer. Use this at the start of the simulation
     /// to control kinetic energy that
     /// arrises from differences between atom positions, and bonded parameters. It can also be called
-    /// externally. It also stabilizes the water molecules, so that their hydrogen bond
+    /// externally. It also stabilizes the solvent molecules, so that their hydrogen bond
     /// structure is correct at initialization.
     ///
     /// Uses flexible bonds to hydrogen. (Not Shake/Rattle constraints)
     ///
-    /// We don't apply this to water molecules, as we have a pre-sim set up for them that runs
+    /// We don't apply this to solvent molecules, as we have a pre-sim set up for them that runs
     /// prior to this.
     pub fn minimize_energy(
         &mut self,

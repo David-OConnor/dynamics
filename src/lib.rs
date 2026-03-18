@@ -29,11 +29,11 @@
 //! of which is an approximation for both Van der Waals force and exclusion.
 //!
 //! ## A broad list of components of this simulation:
-//! - Water: Rigid OPC water molecules that have mutual non-bonded interactions with dynamic atoms and water
-//! - Thermostat/barostat, with a way to specify temp, pressure, water density
-//! - OPC water model
+//! - Water: Rigid OPC solvent molecules that have mutual non-bonded interactions with dynamic atoms and solvent
+//! - Thermostat/barostat, with a way to specify temp, pressure, solvent density
+//! - OPC solvent model
 //! - Cell wrapping
-//! - Velocity Verlet integration (Water and non-water)
+//! - Velocity Verlet integration (Water and non-solvent)
 //! - Amber parameters for mass, partial charge, VdW (via LJ), dihedral/improper, angle, bond len
 //! - Optimizations for Coulomb: Ewald/SPME.
 //! - Optimizations for LJ: Dist cutoff for now.
@@ -60,9 +60,9 @@
 //! partial charges, and Lennard Jones potentials to simulate Van der Waals forces. These use spring-like
 //! forces to retain most geometry, while allowing for flexibility.
 //!
-//! We use the OPC water model. (See `water_opc.rs`). For both maintaining the geometry of each water
+//! We use the OPC solvent model. (See `water_opc.rs`). For both maintaining the geometry of each solvent
 //! molecule, and for maintaining Hydrogen atom positions, we do not apply typical non-bonded interactions:
-//! We use SHAKE + RATTLE algorithms for these. In the case of water, it's required for OPC compliance.
+//! We use SHAKE + RATTLE algorithms for these. In the case of solvent, it's required for OPC compliance.
 //! For H, it allows us to maintain integrator stability with a greater timestep, e.g. 2fs instead of 1fs.
 //!
 //! On f32 vs f64 floating point precision: f32 may be good enough for most things, and typical MD packages
@@ -92,9 +92,9 @@ mod prep;
 #[cfg(target_arch = "x86_64")]
 mod simd;
 pub mod snapshot;
+mod solvent;
 mod thermostat;
 mod util;
-mod water;
 
 mod com_zero;
 #[cfg(feature = "cuda")]
@@ -134,8 +134,6 @@ use bio_files::{
 use cudarc::driver::{CudaContext, CudaFunction, CudaStream};
 #[cfg(feature = "cuda")]
 use cudarc::nvrtc::Ptx;
-// use dcd::append_dcd;
-// pub use dcd::load_dcd;
 use ewald::PmeRecip;
 pub use integrate::Integrator;
 #[allow(unused)]
@@ -145,7 +143,7 @@ use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
-pub use water::{ForcesOnWaterMol, init::WaterInitTemplate};
+pub use solvent::{ForcesOnWaterMol, Solvent, init::WaterInitTemplate};
 
 pub use crate::barostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 #[cfg(feature = "cuda")]
@@ -159,8 +157,11 @@ use crate::{
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{SaveType, Snapshot, SnapshotHandler},
     snapshot_mdt::{load_mdt, save_mdt},
+    solvent::{
+        WaterMol, WaterMolx8, WaterMolx16,
+        init::{make_water_mols, pack_custom_solvent},
+    },
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
-    water::{WaterMol, WaterMolx8, WaterMolx16, init::make_water_mols},
 };
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
@@ -537,8 +538,8 @@ impl Default for SimBoxInit {
 /// for specific scenarios as well, e.g. if wishing to speed up computations for real-time use
 /// by removing long range forces.
 pub struct MdOverrides {
-    pub skip_water: bool,
-    /// Skips the initial water relaxation, where a simulation is run until
+    pub skip_solvent: bool,
+    /// Skips the initial solvent relaxation, where a simulation is run until
     /// hydrogen bonds are established, and temperature is initialized.
     pub skip_water_relaxation: bool,
     pub bonded_disabled: bool,
@@ -548,10 +549,11 @@ pub struct MdOverrides {
     pub thermo_disabled: bool,
     pub baro_disabled: bool,
     /// Run this block if we wish to, for dev purposes, take snapshots during the
-    /// water equilibration phase, e.g. for tuning it.
+    /// solvent equilibration phase, e.g. for tuning it.
     pub snapshots_during_equilibration: bool,
-    /// Take snapshots during the energy minimization phase. (Not water equilibration)
+    /// Take snapshots during the energy minimization phase. (Not solvent equilibration)
     pub snapshots_during_energy_min: bool,
+    pub skip_water: bool,
 }
 
 /// This is the primary way of configurating an MD run. It's passed at init, along with the
@@ -562,7 +564,6 @@ pub struct MdConfig {
     /// Defaults to Velocity Verlet.
     pub integrator: Integrator,
     /// If enabled, zero the drift in center of mass of the system.
-    /// todo: Implement
     pub zero_com_drift: bool,
     /// Kelvin. Defaults to 310 K.
     pub temp_target: f32,
@@ -573,6 +574,7 @@ pub struct MdConfig {
     pub hydrogen_constraint: HydrogenConstraint,
     pub snapshot_handlers: Vec<SnapshotHandler>,
     pub sim_box: SimBoxInit,
+    pub solvent: Solvent,
     /// Prior to the first integrator step, we attempt to relax energy in the system.
     /// Use no more than this many iterations to do so. Higher can produce better results,
     /// but is slower. If None, don't relax.
@@ -581,7 +583,6 @@ pub struct MdConfig {
     /// 2-4Å are common values. Higher values rebuild less often, and have more computationally-intense
     /// rebuilds. Rebuild the list if an atom moved > skin/2.
     pub neighbor_skin: f32,
-    pub specify_num_water: Option<usize>,
     pub overrides: MdOverrides,
 }
 
@@ -598,9 +599,9 @@ impl Default for MdConfig {
                 ratio: 1,
             }],
             sim_box: Default::default(),
+            solvent: Default::default(),
             max_init_relaxation_iters: Some(1_000), // todo: A/R
             neighbor_skin: 4.0,
-            specify_num_water: None,
             overrides: Default::default(),
         }
     }
@@ -628,25 +629,7 @@ pub struct MdState {
     /// Note: We don't use bond structs once the simulation is set up; the adjacency list is the
     /// source of this.
     pub adjacency_list: Vec<Vec<usize>>,
-    // h_constraints: Vec<HydrogenConstraintInner>,
-    // /// Sources that affect atoms in the system, but are not themselves affected by it. E.g.
-    // /// in docking, this might be a rigid receptor. These are for *non-bonded* interactions (e.g. Coulomb
-    // /// and VDW) only.
-    // pub atoms_static: Vec<AtomDynamics>,
-    // todo: Make this a vec. For each dynamic atom.
-    // todo: We don't need it for static, as they use partial charge and LJ data, which
-    // todo are assigned to each atom.
     pub(crate) force_field_params: ForceFieldParamsIndexed,
-    // /// `lj_lut`, `lj_sigma`, and `lj_eps` are Lennard Jones parameters. Flat here, with outer loop receptor.
-    // /// Flattened. Separate single-value array facilitate use in CUDA and SIMD, vice a tuple.
-    // pub lj_sigma: Vec<f64>,
-    // pub lj_eps: Vec<f64>,
-    // todo: Implment these SIMD variants A/R, bearing in mind the caveat about our built-in ones vs
-    // todo ones loaded from [e.g. Amber] files.
-    // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    // pub lj_sigma_x8: Vec<f64x4>,
-    // #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    // pub lj_eps_x8: Vec<f64x4>,
     /// Current simulation time, in picoseconds.
     pub time: f64,
     pub step_count: usize, // increments.
@@ -700,7 +683,7 @@ pub struct MdState {
     mass_accel_factor: Vec<f32>,
     pub computation_time: ComputationTimeSums,
     /// A cache. We don't run SPME every step; store the previous step's per-atom
-    /// force values (Flattened; non-water, then water M, H0, H1), and apply them
+    /// force values (Flattened; non-solvent, then solvent M, H0, H1), and apply them
     /// on the steps where we don't re-calculate. (Force, potential energy, virial energy)
     spme_force_prev: Option<(Vec<Vec3>, f64, f64)>,
     /// Cached at init; used for kinetic energy calculations.
@@ -712,7 +695,7 @@ pub struct MdState {
     /// Used to track which molecule each atom is associated with in our flattened structures.
     pub mol_start_indices: Vec<usize>,
     /// A flag we set to disable certain things like snapshots during this MD phase.
-    water_only_sim_at_init: bool,
+    solvent_only_sim_at_init: bool,
     /// Index into `mol_start_indices` of the molecule being alchemically decoupled.
     ///
     /// When `Some(m)`, `take_snapshot` computes ∂H/∂λ for molecule m and stores it
@@ -762,7 +745,44 @@ impl MdState {
 
         let mut mol_start_indices = Vec::new();
 
-        for mol in mols {
+        // Pre-pack custom solvent molecules so their atoms, bonds, and parameters are included
+        // in ForceFieldParamsIndexed (built below from the combined atoms list).
+        // We extract the declared positions from the regular `mols` to use as exclusion zones.
+        let custom_packed: Vec<MolDynamics> = match (&cfg.solvent, &cfg.sim_box) {
+            (Solvent::Custom((mols_solvent, _)), SimBoxInit::Fixed((low, high))) => {
+                let existing: Vec<Vec3F64> = mols
+                    .iter()
+                    .flat_map(|m| -> Vec<Vec3F64> {
+                        if let Some(ap) = &m.atom_posits {
+                            ap.clone()
+                        } else {
+                            m.atoms.iter().map(|a| a.posit).collect()
+                        }
+                    })
+                    .collect();
+
+                pack_custom_solvent(*low, *high, &existing, mols_solvent)
+            }
+            (Solvent::Custom(_), SimBoxInit::Pad(_)) => {
+                return Err(ParamError {
+                    descrip: "Custom solvent with a Pad sim box is not yet supported; \
+                     skipping custom solvent packing."
+                        .to_string(),
+                });
+            }
+            _ => Vec::new(),
+        };
+
+        // Build a combined slice: caller-supplied mols first, then packed custom solvents.
+        let combined_mols: Vec<MolDynamics>;
+        let all_mols: &[MolDynamics] = if custom_packed.is_empty() {
+            mols
+        } else {
+            combined_mols = mols.iter().cloned().chain(custom_packed).collect();
+            &combined_mols
+        };
+
+        for mol in all_mols {
             if !mol.atoms.is_empty() {
                 mol_start_indices.push(atoms_md.len());
             }
@@ -934,19 +954,30 @@ impl MdState {
 
         result.barostat.pressure_target = cfg.pressure_target as f64;
 
-        result.water = if cfg.overrides.skip_water {
+        // Custom solvent molecules were pre-packed and added to `all_mols` before the atom-
+        // processing loop above, so their atoms are already in `result.atoms` and their
+        // parameters are already included in `force_field_params`.  Water (below) will avoid
+        // them automatically because `make_water_mols` checks against `result.atoms`.
+
+        result.water = if cfg.overrides.skip_solvent {
             Vec::new()
         } else {
+            let count = match &cfg.solvent {
+                Solvent::WaterOpc => None,
+                Solvent::WaterOpcSpecifyMolCount(c) => Some(*c),
+                Solvent::Custom((_, c)) => Some(*c),
+            };
+
             make_water_mols(
                 &result.cell,
                 cfg.temp_target,
                 &result.atoms,
                 cfg.zero_com_drift,
-                cfg.specify_num_water,
+                count,
             )
         };
 
-        // Calc DOF only after all atoms and water are initialized.
+        // Calc DOF only after all atoms and solvent are initialized.
         result.thermo_dof = result.dof_for_thermo();
 
         result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
@@ -991,7 +1022,7 @@ impl MdState {
         #[cfg(target_arch = "x86_64")]
         result.pack_atoms();
 
-        if !result.cfg.overrides.skip_water && !result.cfg.overrides.skip_water_relaxation {
+        if !result.cfg.overrides.skip_solvent && !result.cfg.overrides.skip_water_relaxation {
             result.md_on_water_only(dev);
         }
 
@@ -1087,7 +1118,7 @@ impl MdState {
     /// Reset acceleration, force, potential energy, and virial. Do this each step after the first half-step and drift, and
     /// shaking the fixed hydrogens.
     /// We must reset the virial pair prior to accumulating it, which we do when calculating non-bonded
-    /// forces. Also reset forces on water.
+    /// forces. Also reset forces on solvent.
     fn reset_f_acc_pe_virial(&mut self) {
         for a in &mut self.atoms {
             a.accel = Vec3::new_zero();
@@ -1166,7 +1197,7 @@ impl MdState {
                 // Use the previously-cached SPME forces.
                 match &self.spme_force_prev {
                     Some((forces, potential_e, virial_e)) => {
-                        // Unpack; forces were applied to flattened water and non-water
+                        // Unpack; forces were applied to flattened solvent and non-solvent
                         // due to how our GPU pipeline works.
 
                         // self.unpack_apply_pme_forces(forces, &[]);
@@ -1435,7 +1466,7 @@ pub(crate) fn split4_mut<T>(
     }
 }
 
-/// Set up with no water molecules or relaxation. Run one step to compute energies, then return
+/// Set up with no solvent molecules or relaxation. Run one step to compute energies, then return
 /// the snapshot taken.
 pub fn compute_energy_snapshot(
     dev: &ComputationDevice,
@@ -1447,7 +1478,7 @@ pub fn compute_energy_snapshot(
         hydrogen_constraint: HydrogenConstraint::Flexible,
         max_init_relaxation_iters: None,
         overrides: MdOverrides {
-            skip_water: true,
+            skip_solvent: true,
             ..Default::default()
         },
         ..Default::default()

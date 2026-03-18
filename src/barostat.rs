@@ -1,7 +1,7 @@
 //! This module deals with the sim box, and barostat.
 //!
 //! We set up Sim box, or cell, which is a rectangular prism (cube currently) which wraps at each face,
-//! indefinitely. Its purpose is to simulate an infinity of water molecules. This box covers the atoms of interest,
+//! indefinitely. Its purpose is to simulate an infinity of solvent molecules. This box covers the atoms of interest,
 //! but atoms in the neighboring (tiled) boxes influence the system as well. We use the concept of
 //! a "minimum image" to find the closest copy of an item to a given site, among all tiled boxes.
 //!
@@ -13,7 +13,7 @@ use lin_alg::f32::Vec3;
 use rand::prelude::ThreadRng;
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::{AtomDynamics, KCAL_TO_NATIVE, MdState, NATIVE_TO_KCAL, SimBoxInit, water::WaterMol};
+use crate::{AtomDynamics, KCAL_TO_NATIVE, MdState, NATIVE_TO_KCAL, SimBoxInit, solvent::WaterMol};
 
 pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 
@@ -22,7 +22,7 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 const KB_BAR_A3_PER_K: f64 = 138.064_9;
 
 // TAU is for the CSVR thermostat. In ps. Lower means more sensitive.
-// We set an aggressive thermostat during water initialization, then a more relaxed one at runtime.
+// We set an aggressive thermostat during solvent initialization, then a more relaxed one at runtime.
 // This is for the VV/CVSR themostat only.
 // Note: These are publically exposed, for use in applications.
 // pub const TAU_TEMP_DEFAULT: f64 = 1.0;
@@ -35,7 +35,7 @@ pub const LANGEVIN_GAMMA_DEFAULT: f32 = 1.0;
 pub const LANGEVIN_GAMMA_WATER_INIT: f32 = 15.;
 
 /// This bounds the area where atoms are wrapped. For now at least, it is only
-/// used for water atoms. Its size and position should be such as to keep the system
+/// used for solvent atoms. Its size and position should be such as to keep the system
 /// solvated. We may move it around during the sim.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 pub struct SimBox {
@@ -260,7 +260,7 @@ pub struct Barostat {
     pub pressure_target: f64,
     /// picoseconds
     pub tau_pressure: f64,
-    /// bar‑1 (≈4.5×10⁻⁵ for water at 300K, 1bar)
+    /// bar‑1 (≈4.5×10⁻⁵ for solvent at 300K, 1bar)
     pub kappa_t: f64,
     pub virial: Virial,
     pub rng: ThreadRng,
@@ -273,7 +273,7 @@ impl Default for Barostat {
             pressure_target: 1.,
             // Relaxation time: 1 ps ⇒ gentle volume changes every few steps.
             tau_pressure: 1.,
-            // Isothermal compressibility of water at 298 K.
+            // Isothermal compressibility of solvent at 298 K.
             kappa_t: 4.5e-5,
             virial: Default::default(),
             rng: rand::rng(),
@@ -390,7 +390,7 @@ impl MdState {
         let cell_vol = self.cell.volume() as f64;
         let atom_count = &self.atoms.iter().filter(|a| !a.static_).count();
         println!(
-            "Cell vol: {cell_vol:.1} Å^3 num dynamic atoms: {atom_count} num water mols: {}",
+            "Cell vol: {cell_vol:.1} Å^3 num dynamic atoms: {atom_count} num solvent mols: {}",
             self.water.len()
         );
 

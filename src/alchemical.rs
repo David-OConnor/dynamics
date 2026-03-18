@@ -2,11 +2,11 @@
 //!
 //! # Overview
 //!
-//! LogP (the octanol-water partition coefficient) can be estimated from alchemical
+//! LogP (the octanol-solvent partition coefficient) can be estimated from alchemical
 //! free energy simulations using thermodynamic integration (TI):
 //!
 //! 1. Run **N separate MD simulations** at different λ values (e.g., 0.0, 0.05, …, 1.0),
-//!    **in both water and octanol**. λ = 0 means the solute interacts normally with the
+//!    **in both solvent and octanol**. λ = 0 means the solute interacts normally with the
 //!    solvent; λ = 1 means it is fully decoupled (non-interacting ghost).
 //!
 //! 2. At each simulation frame, record **∂H/∂λ** — the derivative of the Hamiltonian
@@ -109,7 +109,7 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> f64 {
         .sum()
 }
 
-/// Compute **LogP** from free energies in water and octanol.
+/// Compute **LogP** from free energies in solvent and octanol.
 ///
 /// Both `dg_water` and `dg_octanol` should be the decoupling free energies
 /// (ΔG for turning off solute–solvent interactions), in kcal/mol, obtained from

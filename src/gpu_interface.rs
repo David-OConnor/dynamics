@@ -9,7 +9,7 @@ use lin_alg::{
 use crate::{
     AtomDynamics, ForcesOnWaterMol, MdOverrides,
     non_bonded::{BodyRef, LjTables, NonBondedPair},
-    water::{WaterMol, WaterSite},
+    solvent::{WaterMol, WaterSite},
 };
 
 /// Device buffers that persist across all steps. Mutated on the GPU.
@@ -132,10 +132,10 @@ impl PerNeighborGpu {
 
         // Unpack BodyRef to fields. It doesn't map neatly to CUDA flattening primitives.
 
-        // These atom and water types are so the Kernel can assign to the correct output arrays.
+        // These atom and solvent types are so the Kernel can assign to the correct output arrays.
         // 0 means Dyn, 1 means Water.
         let mut atom_types_tgt = vec![0; n];
-        // 0 for not-water or N/A. 1 = O, 2 = M, 3 = H0, 4 = H1.
+        // 0 for not-solvent or N/A. 1 = O, 2 = M, 3 = H0, 4 = H1.
         // Pre-allocated to 0, which we use for dyn atom targets.
         let mut water_types_tgt = vec![0; n];
 
@@ -151,7 +151,7 @@ impl PerNeighborGpu {
                 BodyRef::Water { mol: j, site } => {
                     tgt_is.push(j as u32);
 
-                    // Mark so the kernel will use the water output.
+                    // Mark so the kernel will use the solvent output.
                     atom_types_tgt[i] = 1;
                     water_types_tgt[i] = site as u8;
 
@@ -173,7 +173,7 @@ impl PerNeighborGpu {
                 BodyRef::Water { mol: j, site } => {
                     src_is.push(j as u32);
 
-                    // Mark so the kernel will use the water output. (In case of dyn/water symmetric)
+                    // Mark so the kernel will use the solvent output. (In case of dyn/solvent symmetric)
                     atom_types_src[i] = 1;
                     water_types_src[i] = site as u8;
                     match site {
@@ -307,7 +307,7 @@ fn upload_positions(
 /// Inputs are structured differently here from our other one; uses pre-paired inputs and outputs, and
 /// a common index. Exclusions (e.g. Amber-style 1-2 adn 1-3) are handled upstream.
 ///
-/// Returns (force on non-water, force on water, virial sum, potential energy total, per-mol-pair potential energy)
+/// Returns (force on non-solvent, force on solvent, virial sum, potential energy total, per-mol-pair potential energy)
 pub fn force_nonbonded_gpu(
     stream: &Arc<CudaStream>,
     kernel: &CudaFunction,
@@ -434,7 +434,7 @@ fn zero_forces_and_accums(
     n_non_water: usize,
     n_water: usize,
 ) {
-    // Non-water atoms: 3 floats per atom
+    // Non-solvent atoms: 3 floats per atom
     let std_len_u32 = (n_non_water * 3) as u32;
 
     // If 0, we get a panic when launching.
@@ -447,7 +447,7 @@ fn zero_forces_and_accums(
         unsafe { l0.launch(cfg_dyn) }.unwrap();
     }
 
-    // water arrays: 3 floats per molecule for each site-buffer
+    // solvent arrays: 3 floats per molecule for each site-buffer
     let wat_len_u32 = (n_water * 3) as u32;
 
     if wat_len_u32 > 0 {

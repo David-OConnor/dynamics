@@ -10,7 +10,7 @@ use std::f64::consts::TAU;
 
 use lin_alg::f64::{Quaternion, Vec3};
 
-// use crate::water;
+// use crate::solvent;
 
 // These lengths are in angstroms.
 
@@ -27,7 +27,7 @@ pub const LEN_CP_O: f64 = 1.229; // C -O
 pub const LEN_CALPHA_H: f64 = 1.080; // CA-CH
 pub const LEN_N_H: f64 = 1.010; // H -N;
 pub const LEN_C_H: f64 = 1.09; // Note: This varies depending on the side chain.
-pub const LEN_O_H: f64 = 0.9572; // In water molecules. In proteins, maybe 1.01?
+pub const LEN_O_H: f64 = 0.9572; // In solvent molecules. In proteins, maybe 1.01?
 pub const LEN_S_H: f64 = 1.336; // S-H thiol bond length
 
 // Called in the creation of our bond vecs

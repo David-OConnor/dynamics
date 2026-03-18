@@ -1,5 +1,5 @@
 //! This is a copy+paste + modify from dadedalus. We use it to compute the area
-//! taken up by molecules when adding water, for the purpose of choosing how many water molecules
+//! taken up by molecules when adding solvent, for the purpose of choosing how many solvent molecules
 //! to add in a given volume
 
 use lin_alg::f32::Vec3;
@@ -7,13 +7,13 @@ use mcubes::{MarchingCubes, MeshSide};
 
 use crate::AtomDynamics;
 
-const SOLVENT_RAD: f32 = 1.4; // water probe
+const SOLVENT_RAD: f32 = 1.4; // solvent probe
 
 // Lower means more precise. A higher value runs faster, but slightly underestimates volume.
 const PRECISION: f32 = 0.5;
 
 /// Find the volume taken up by atoms, e.g. the volume that we don't need to fill with solvent.
-/// We subtract this from the simulation box volume when determining how many water
+/// We subtract this from the simulation box volume when determining how many solvent
 /// molecules to add.
 pub fn vol_take_up_by_atoms(atoms: &[AtomDynamics]) -> f32 {
     if atoms.is_empty() {
