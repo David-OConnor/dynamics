@@ -347,23 +347,44 @@ pub(crate) fn pack_custom_solvent(
         // Spatial early-reject radius: only check placed atoms within this of a candidate centroid.
         let search_sq = (bounding_r * 2.0 + 2.0).powi(2);
 
-        // Cubic grid with n³ ≥ count cells.  At least n=3 (27 cells) so even count=1 has
-        // alternatives when the origin cell already contains a solute atom.
-        let n = (count as f64).cbrt().ceil() as usize;
-        let n = n.max(3);
+        // Every copy's centroid must be ≥ bounding_r + WALL_MARGIN from each wall face so that
+        // even the molecule's furthest atom stays within the per-atom wall margin.
+        let safe_margin = bounding_r + WALL_MARGIN;
+        let inner_lo = lo + Vec3F64::new(safe_margin, safe_margin, safe_margin);
+        let inner_hi = hi - Vec3F64::new(safe_margin, safe_margin, safe_margin);
+
+        if inner_lo.x >= inner_hi.x || inner_lo.y >= inner_hi.y || inner_lo.z >= inner_hi.z {
+            eprintln!(
+                "pack_custom_solvent: box too small for molecule \
+                 (bounding_r={:.1} Å, need >{:.1} Å per side); skipping {} copies.",
+                bounding_r,
+                2.0 * safe_margin,
+                count
+            );
+            continue;
+        }
+
+        let inner_size = inner_hi - inner_lo;
+        // Scale n up from ∛count so that valid grid cells (those within inner_lo..inner_hi)
+        // number at least `count`.  Use the tightest dimension as the conservative factor.
+        let naive_n = (count as f64).cbrt().ceil() as usize;
+        let scale = (box_size.x / inner_size.x)
+            .max(box_size.y / inner_size.y)
+            .max(box_size.z / inner_size.z);
+        let n = ((naive_n as f64 * scale).ceil() as usize).max(3);
         let (sx, sy, sz) = (
             box_size.x / n as f64,
             box_size.y / n as f64,
             box_size.z / n as f64,
         );
-        // Box-centred half-widths that respect the wall margin.
+        // Box-centred half-widths for the per-atom wall check.
         let (hx, hy, hz) = (
             box_size.x * 0.5 - WALL_MARGIN,
             box_size.y * 0.5 - WALL_MARGIN,
             box_size.z * 0.5 - WALL_MARGIN,
         );
 
-        // Grid cell centres in absolute world coordinates.
+        // Grid cell centres restricted to the safe inner region.
         let mut grid: Vec<Vec3F64> = (0..n)
             .flat_map(|ix| {
                 (0..n).flat_map(move |iy| {
@@ -375,6 +396,14 @@ pub(crate) fn pack_custom_solvent(
                         )
                     })
                 })
+            })
+            .filter(|c| {
+                c.x >= inner_lo.x
+                    && c.x <= inner_hi.x
+                    && c.y >= inner_lo.y
+                    && c.y <= inner_hi.y
+                    && c.z >= inner_lo.z
+                    && c.z <= inner_hi.z
             })
             .collect();
 
