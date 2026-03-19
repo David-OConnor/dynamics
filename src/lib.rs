@@ -107,6 +107,7 @@ mod sa_surface;
 pub mod snapshot_mdt;
 #[cfg(test)]
 mod tests;
+pub mod spme_validation;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
