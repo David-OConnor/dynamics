@@ -25,7 +25,6 @@ use crate::non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF};
 pub const K_ELEC: f32 = CHARGE_UNIT_SCALER * CHARGE_UNIT_SCALER;
 
 /// Wrap a single coordinate component into [0, L).
-#[inline]
 fn wrap1(x: f32, l: f32) -> f32 {
     x.rem_euclid(l)
 }
@@ -46,71 +45,38 @@ fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
     pme
 }
 
-/// Compute the total SPME Coulomb energy for a pair of charges in a cubic box.
+/// Compute SPME forces and energy on a pair of charges in a cubic box.
 ///
 /// Charges `q1_e` and `q2_e` are in **elementary units** (e); internally they are
 /// scaled to Amber units before passing into the SPME and short-range routines.
 ///
-/// Returns `(e_short_range, e_long_range, e_total)` in **kcal/mol**.
-pub fn spme_pair_energy(
+/// Returns `((f_short_on_q1, f_long_on_q1, f_long_on_q2), (e_short, e_long, e_total))`
+/// with forces in kcal/(mol·Å) and energies in kcal/mol.
+pub fn spme_pair_forces_energy(
     r1: Vec3,
     r2: Vec3,
     q1_e: f32,
     q2_e: f32,
     box_len: f32,
     alpha: f32,
-) -> (f32, f32, f32) {
-    let q1 = q1_e * CHARGE_UNIT_SCALER;
-    let q2 = q2_e * CHARGE_UNIT_SCALER;
-
-    // Short-range contribution
-    let mut diff = r1 - r2;
-    diff.x -= box_len * (diff.x / box_len).round();
-    diff.y -= box_len * (diff.y / box_len).round();
-    diff.z -= box_len * (diff.z / box_len).round();
-    let dist = diff.magnitude();
-
-    let inv_dist = 1.0 / dist;
-    let dir = diff * inv_dist;
-    let (_, e_sr) =
-        force_coulomb_short_range(dir, dist, inv_dist, q1, q2, LONG_RANGE_CUTOFF, alpha);
-
-    // Long-range (reciprocal) contribution via SPME
-    let l = (box_len, box_len, box_len);
-    let mut pme = make_pme(l, alpha, 1.0);
-    let pos = vec![wrap_pos(r1, l), wrap_pos(r2, l)];
-    let q_arr = vec![q1, q2];
-    let (_, e_lr) = pme.forces(&pos, &q_arr);
-
-    let e_total = e_sr + e_lr;
-    (e_sr, e_lr, e_total)
-}
-
-/// Compute SPME forces on a pair of charges in a cubic box.
-///
-/// Returns `(f_short_on_q1, f_long_on_q1, f_long_on_q2)`.
-/// Charges are in elementary units.
-pub fn spme_pair_forces(
-    r1: Vec3,
-    r2: Vec3,
-    q1_e: f32,
-    q2_e: f32,
-    box_len: f32,
-    alpha: f32,
-) -> (Vec3, Vec3, Vec3) {
+) -> ((Vec3, Vec3, Vec3), (f32, f32, f32)) {
     let q1 = q1_e * CHARGE_UNIT_SCALER;
     let q2 = q2_e * CHARGE_UNIT_SCALER;
 
     // Short-range force on q1 (from q2)
-    let mut diff = r1 - r2;
-    diff.x -= box_len * (diff.x / box_len).round();
-    diff.y -= box_len * (diff.y / box_len).round();
-    diff.z -= box_len * (diff.z / box_len).round();
+    let diff = {
+        let mut v = r1 - r2;
+        v.x -= box_len * (v.x / box_len).round();
+        v.y -= box_len * (v.y / box_len).round();
+        v.z -= box_len * (v.z / box_len).round();
+
+        v
+    };
     let dist = diff.magnitude();
 
     let inv_dist = 1.0 / dist;
     let dir = diff * inv_dist;
-    let (f_sr_1, _) =
+    let (f_sr_1, e_sr) =
         force_coulomb_short_range(dir, dist, inv_dist, q1, q2, LONG_RANGE_CUTOFF, alpha);
 
     // Long-range forces
@@ -118,9 +84,11 @@ pub fn spme_pair_forces(
     let mut pme = make_pme(l, alpha, 1.0);
     let pos = vec![wrap_pos(r1, l), wrap_pos(r2, l)];
     let q_arr = vec![q1, q2];
-    let (f_recip, _) = pme.forces(&pos, &q_arr);
+    let (f_recip, e_lr) = pme.forces(&pos, &q_arr);
 
-    (f_sr_1, f_recip[0], f_recip[1])
+    let e_total = e_sr + e_lr;
+
+    ((f_sr_1, f_recip[0], f_recip[1]), (e_sr, e_lr, e_total))
 }
 
 /// Expected vacuum Coulomb energy in kcal/mol.
@@ -129,11 +97,6 @@ pub fn vacuum_coulomb_energy(q1_e: f32, q2_e: f32, dist: f32) -> f32 {
     K_ELEC * q1_e * q2_e / dist
 }
 
-/// Expected vacuum Coulomb force on q₁ due to q₂, in the direction (r₁ − r₂)/|r₁ − r₂|.
-/// `F_mag = K · q₁_e · q₂_e / r²`  (positive = repulsive, negative = attractive)
-pub fn vacuum_coulomb_force_component(q1_e: f32, q2_e: f32, dist: f32) -> f32 {
-    K_ELEC * q1_e * q2_e / (dist * dist)
-}
 
 #[cfg(test)]
 mod tests {
@@ -162,15 +125,16 @@ mod tests {
     /// converge to the vacuum Coulomb energy  E = −K/r.
     #[test]
     fn test_spme_energy_opposite_charges() {
-        let box_len = 50.0f32;
+        let box_len = 50.0;
         let alpha = EWALD_ALPHA;
 
-        for (dist, tag) in [(3.0f32, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
+        for (dist, tag) in [(3.0, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
             let center = box_len / 2.0;
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
-            let (e_sr, e_lr, e_total) = spme_pair_energy(r1, r2, 1.0, -1.0, box_len, alpha);
+            let (_, (e_sr, e_lr, e_total)) =
+                spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
             let e_vac = vacuum_coulomb_energy(1.0, -1.0, dist);
 
             println!(
@@ -185,15 +149,15 @@ mod tests {
     /// Same as above but with fractional charges to ensure charge-scaling is linear.
     #[test]
     fn test_spme_energy_fractional_charges() {
-        let box_len = 50.0f32;
+        let box_len = 50.0;
         let alpha = EWALD_ALPHA;
-        let dist = 5.0f32;
+        let dist = 5.0;
         let center = box_len / 2.0;
         let r1 = Vec3::new(center - dist / 2.0, center, center);
         let r2 = Vec3::new(center + dist / 2.0, center, center);
 
         for (q1e, q2e, tag) in [(0.5f32, -0.5f32, "q=±0.5"), (0.25, -0.25, "q=±0.25")] {
-            let (_, _, e_total) = spme_pair_energy(r1, r2, q1e, q2e, box_len, alpha);
+            let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, q1e, q2e, box_len, alpha);
             let e_vac = vacuum_coulomb_energy(q1e, q2e, dist);
             println!("{tag}: e_total={e_total:.4}  e_vac={e_vac:.4} kcal/mol");
             assert_rel_close(e_total, e_vac, REL_TOL, tag);
@@ -204,16 +168,16 @@ mod tests {
     /// Relative error must be < 1 % at L = 50 Å for r = 5 Å.
     #[test]
     fn test_spme_energy_box_convergence() {
-        let dist = 5.0f32;
+        let dist = 5.0;
         let alpha = EWALD_ALPHA;
         let e_vac = vacuum_coulomb_energy(1.0, -1.0, dist);
 
         println!("Box-size convergence test (e_vac = {e_vac:.4} kcal/mol):");
-        for box_len in [20.0f32, 30.0, 50.0] {
+        for box_len in [20.0, 30.0, 50.0] {
             let c = box_len / 2.0;
             let r1 = Vec3::new(c - dist / 2.0, c, c);
             let r2 = Vec3::new(c + dist / 2.0, c, c);
-            let (_, _, e_total) = spme_pair_energy(r1, r2, 1.0, -1.0, box_len, alpha);
+            let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
             let rel = ((e_total - e_vac) / e_vac).abs();
             println!("  L={box_len:.0} Å:  e_total={e_total:.4}  rel_err={rel:.4}");
         }
@@ -222,7 +186,7 @@ mod tests {
         let c = 50.0 / 2.0;
         let r1 = Vec3::new(c - dist / 2.0, c, c);
         let r2 = Vec3::new(c + dist / 2.0, c, c);
-        let (_, _, e_total) = spme_pair_energy(r1, r2, 1.0, -1.0, 50.0, alpha);
+        let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, 50.0, alpha);
         assert_rel_close(e_total, e_vac, REL_TOL, "energy at L=50 Å");
     }
 
@@ -234,16 +198,16 @@ mod tests {
     /// vacuum Coulomb: F_x = +K/r² (attractive, toward the −1 charge at +x).
     #[test]
     fn test_spme_force_magnitude() {
-        let box_len = 50.0f32;
-        let alpha = EWALD_ALPHA;
+        let box_len = 50.;
 
-        for (dist, tag) in [(3.0f32, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
+        for (dist, tag) in [(3., "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
             let center = box_len / 2.0;
             // q1 (+1) to the left, q2 (−1) to the right
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
-            let (f_sr_1, f_lr_1, _) = spme_pair_forces(r1, r2, 1.0, -1.0, box_len, alpha);
+            let ((f_sr_1, f_lr_1, _), _) =
+                spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, EWALD_ALPHA);
 
             let fx_total = f_sr_1.x + f_lr_1.x;
 
@@ -283,16 +247,16 @@ mod tests {
     /// must sum to (near) zero.  Exact only in the limit L → ∞.
     #[test]
     fn test_spme_force_newton3() {
-        let box_len = 50.0f32;
+        let box_len = 50.;
         let alpha = EWALD_ALPHA;
 
-        for (dist, tag) in [(3.0f32, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
+        for (dist, tag) in [(3., "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
             let center = box_len / 2.0;
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
-            let q1 = 1.0f32 * CHARGE_UNIT_SCALER;
-            let q2 = -1.0f32 * CHARGE_UNIT_SCALER;
+            let q1 = 1. * CHARGE_UNIT_SCALER;
+            let q2 = -1.0 * CHARGE_UNIT_SCALER;
 
             // Short-range forces
             let diff = r1 - r2;
@@ -352,11 +316,12 @@ mod tests {
                 LONG_RANGE_CUTOFF,
                 EWALD_ALPHA,
             );
-            assert!(
-                f.magnitude_squared() == 0.0,
+            assert_eq!(
+                f.magnitude_squared(),
+                0.0,
                 "force should be 0 at dist={dist:.2}: {f:?}"
             );
-            assert!(e == 0.0, "energy should be 0 at dist={dist:.2}: {e}");
+            assert_eq!(e, 0.0, "energy should be 0 at dist={dist:.2}: {e}");
         }
     }
 
@@ -368,18 +333,18 @@ mod tests {
     #[test]
     fn test_spme_energy_non_cubic_box() {
         let alpha = EWALD_ALPHA;
-        let dist = 5.0f32;
+        let dist = 5.0;
 
         // Elongated box: charges along the long axis
-        let lx = 60.0f32;
-        let ly = 30.0f32;
-        let lz = 30.0f32;
+        let lx = 60.0;
+        let ly = 30.0;
+        let lz = 30.0;
 
         let r1 = Vec3::new(lx / 2.0 - dist / 2.0, ly / 2.0, lz / 2.0);
         let r2 = Vec3::new(lx / 2.0 + dist / 2.0, ly / 2.0, lz / 2.0);
 
-        let q1 = 1.0f32 * CHARGE_UNIT_SCALER;
-        let q2 = -1.0f32 * CHARGE_UNIT_SCALER;
+        let q1 = 1.0 * CHARGE_UNIT_SCALER;
+        let q2 = -1.0 * CHARGE_UNIT_SCALER;
 
         let l = (lx, ly, lz);
         let mut pme = make_pme(l, alpha, 1.0);
@@ -416,15 +381,16 @@ mod tests {
     /// shifts the energy but contributes zero gradient.
     #[test]
     fn test_spme_force_like_charges() {
-        let box_len = 50.0f32;
+        let box_len = 50.0;
         let alpha = EWALD_ALPHA;
 
-        for (dist, tag) in [(3.0f32, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
+        for (dist, tag) in [(3.0, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
             let center = box_len / 2.0;
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
-            let (f_sr_1, f_lr_1, _) = spme_pair_forces(r1, r2, 1.0, 1.0, box_len, alpha);
+            let ((f_sr_1, f_lr_1, _), _) =
+                spme_pair_forces_energy(r1, r2, 1.0, 1.0, box_len, alpha);
 
             let fx_total = f_sr_1.x + f_lr_1.x;
 
@@ -474,11 +440,11 @@ mod tests {
     /// paths.
     #[test]
     fn test_spme_force_matches_energy_gradient() {
-        let box_len = 50.0f32;
+        let box_len = 50.0;
         let alpha = EWALD_ALPHA;
-        let delta = 0.01f32; // Å
+        let delta = 0.01; // Å
 
-        for (dist, tag) in [(3.0f32, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
+        for (dist, tag) in [(3.0, "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
             let center = box_len / 2.0;
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
@@ -486,12 +452,14 @@ mod tests {
             // Central-difference numerical gradient of total energy w.r.t. r1.x.
             let r1_plus = Vec3::new(r1.x + delta, r1.y, r1.z);
             let r1_minus = Vec3::new(r1.x - delta, r1.y, r1.z);
-            let (_, _, e_plus) = spme_pair_energy(r1_plus, r2, 1.0, -1.0, box_len, alpha);
-            let (_, _, e_minus) = spme_pair_energy(r1_minus, r2, 1.0, -1.0, box_len, alpha);
+            let (_, (_, _, e_plus)) =
+                spme_pair_forces_energy(r1_plus, r2, 1.0, -1.0, box_len, alpha);
+            let (_, (_, _, e_minus)) =
+                spme_pair_forces_energy(r1_minus, r2, 1.0, -1.0, box_len, alpha);
             let fx_numerical = -(e_plus - e_minus) / (2.0 * delta);
 
             // Analytic SPME force on charge 1.
-            let (f_sr, f_lr, _) = spme_pair_forces(r1, r2, 1.0, -1.0, box_len, alpha);
+            let ((f_sr, f_lr, _), _) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
             let fx_computed = f_sr.x + f_lr.x;
 
             println!(
