@@ -42,7 +42,7 @@ pub const LONG_RANGE_CUTOFF: f32 = 12.0; // Å
 // A bigger α means more damping, and a smaller real-space contribution. (Cheaper real), but larger
 // reciprocal load.
 // Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
-pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff = 10.
+pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff of 10–12 Å.
 
 // Å. Smaller uses a higher-resolution mesh. 1 is a good default.
 pub const SPME_MESH_SPACING: f32 = 1.;
@@ -615,11 +615,10 @@ impl MdState {
                 #[cfg(feature = "cuda")]
                 #[allow(unused)]
                 ComputationDevice::Gpu(stream) => {
+                    // todo temp: CPU only for now while troubleshooting.
                     #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
                     let v = pme_recip.forces(&pos_all, &q_all);
                     #[cfg(any(feature = "cufft", feature = "vkfft"))]
-                    // todo temp!!! GPU version is broken/the old one that has runaway
-                    // todo energy, and CPU version is not validated.
                     let v = pme_recip.forces(&pos_all, &q_all);
                     // let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
 
@@ -746,8 +745,10 @@ impl MdState {
             }
             #[cfg(feature = "cuda")]
             ComputationDevice::Gpu(stream) => {
+                // todo temp CPU only until we're sure it's solid.
                 #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                let v = PmeRecip::new(Some(stream), n, l, EWALD_ALPHA);
+                let v = PmeRecip::new(n, l, EWALD_ALPHA);
+                // let v = PmeRecip::new(Some(stream), n, l, EWALD_ALPHA);
 
                 #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
                 let v = PmeRecip::new(n, l, EWALD_ALPHA);

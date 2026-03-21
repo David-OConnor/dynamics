@@ -5,7 +5,6 @@ use crate::{
     param_inference::{AmberDefSet, find_ff_types},
     partial_charge_inference::files::{GEOSTD_PATH, find_mol2_paths},
 };
-// use crate::*;
 
 fn setup_test_pair(dist: f32) -> [AtomGeneric; 2] {
     let atom_0 = AtomGeneric {

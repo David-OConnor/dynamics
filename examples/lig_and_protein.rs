@@ -92,7 +92,7 @@ pub fn build_dynamics(
     let start = Instant::now();
 
     for _ in 0..n_steps {
-        md_state.step(dev, dt);
+        md_state.step(dev, dt, None);
     }
 
     let elapsed = start.elapsed();

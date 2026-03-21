@@ -105,9 +105,9 @@ pub mod alchemical;
 pub mod param_inference;
 mod sa_surface;
 pub mod snapshot_mdt;
+pub mod spme_validation;
 #[cfg(test)]
 mod tests;
-pub mod spme_validation;
 
 #[cfg(feature = "cuda")]
 use std::sync::Arc;

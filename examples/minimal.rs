@@ -41,7 +41,7 @@ fn main() {
     let dt = 0.002; // picoseconds.
 
     for _ in 0..n_steps {
-        md.step(&dev, dt);
+        md.step(&dev, dt, None);
     }
 
     let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
