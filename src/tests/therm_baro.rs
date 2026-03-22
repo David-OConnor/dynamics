@@ -436,9 +436,6 @@ fn test_pressure_water_sim_1bar() {
     // (30³ = 27 000 Å³; water: 1 molecule per ~30 Å³ ≈ 900 molecules — we
     //  deliberately use fewer for speed while still exercising the virial path.)
 
-    // todo: It may be worth trying two setups: One with a fixed number of water molecules and fixed
-    // todo
-
     let cfg_auto_water_count = MdConfig {
         // integrator: Integrator::LangevinMiddle { gamma: 1.0 },
         integrator: Integrator::VerletVelocity { thermostat: None },
@@ -454,11 +451,13 @@ fn test_pressure_water_sim_1bar() {
 
     let cfg_fixed_water_count = MdConfig {
         // todo: QC this is the right number of water mols for a sim box of that size.
-        solvent: Solvent::WaterOpcSpecifyMolCount(50),
+        solvent: Solvent::WaterOpcSpecifyMolCount(1_423),
         ..cfg_auto_water_count.clone()
     };
 
     let pressure_expected = 1.; // Bar
+    // todo: Steps may not be required; init should be enough to validate the barostat.
+    let n_steps = 100;
 
     // Sim 1: Using an automatically set water count.
     for (i, cfg) in [cfg_auto_water_count, cfg_fixed_water_count]
@@ -475,8 +474,6 @@ fn test_pressure_water_sim_1bar() {
             println!("Simulating with fixed water count. {num_water_mols} mols");
         }
 
-        // todo: Steps may not be required; init should be enough to validate the barostat.
-        let n_steps = 100;
         for _ in 0..n_steps {
             md.step(&dev, 0.002, None);
         }
