@@ -458,6 +458,8 @@ fn test_pressure_water_sim_1bar() {
         ..cfg_auto_water_count.clone()
     };
 
+    let pressure_expected = 1.; // Bar
+
     // Sim 1: Using an automatically set water count.
     for (i, cfg) in [cfg_auto_water_count, cfg_fixed_water_count]
         .iter()
@@ -484,33 +486,8 @@ fn test_pressure_water_sim_1bar() {
 
         println!("avg pressure over {n_steps} steps: {avg_pressure:.1} bar");
 
-        let expected = 1.; // Bar
-
         assert!(
-            (avg_pressure - expected).abs() < 0.2,
-            "average pressure {avg_pressure:.1} bar is outside the expected range"
-        );
-    }
-
-    // Sim 2: Using an automatically set water count.
-    {
-        let mut md = MdState::new(&dev, &cfg, &[], &param_set).unwrap();
-
-        // todo: Steps may not be required; init should be enough to validate the barostat.
-        let n_steps = 100;
-        for _ in 0..n_steps {
-            md.step(&dev, 0.002, None);
-        }
-
-        let avg_pressure: f64 =
-            md.snapshots.iter().map(|s| s.pressure as f64).sum::<f64>() / md.snapshots.len() as f64;
-
-        println!("avg pressure over {n_steps} steps: {avg_pressure:.1} bar");
-
-        let expected = 1.; // Bar
-
-        assert!(
-            (avg_pressure - expected).abs() < 0.2,
+            (avg_pressure - pressure_expected).abs() < 0.2,
             "average pressure {avg_pressure:.1} bar is outside the expected range"
         );
     }
