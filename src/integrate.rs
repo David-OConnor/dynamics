@@ -120,14 +120,14 @@ impl MdState {
                 if !self.cfg.overrides.thermo_disabled && !self.solvent_only_sim_at_init {
                     self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
                     // Update KE after vel updates from the thermostat, prior to barostat.
-                    self.kinetic_energy = self.kinetic_energy();
+                    self.kinetic_energy = self.measure_kinetic_energy();
                 } else if self.solvent_only_sim_at_init {
                     self.apply_langevin_thermostat(
                         dt,
                         LANGEVIN_GAMMA_WATER_INIT,
                         self.cfg.temp_target,
                     );
-                    self.kinetic_energy = self.kinetic_energy();
+                    self.kinetic_energy = self.measure_kinetic_energy();
                 }
 
                 // Rattle after the thermostat run, as it updates velocities in a non-uniform manner.
@@ -165,7 +165,7 @@ impl MdState {
                 // Molecular virial theorem: use COM-only KE for solvent (rigid molecules
                 // contribute no rotational KE to pressure; no SETTLE constraint virial needed).
                 let pressure = measure_pressure(
-                    self.kinetic_energy_translational(),
+                    self.measure_kinetic_energy_translational(),
                     &self.cell,
                     &self.barostat.virial.to_kcal_mol(),
                 );
@@ -232,7 +232,7 @@ impl MdState {
 
                 // Molecular virial theorem: COM-only KE for solvent (no SETTLE constraint virial).
                 let pressure = measure_pressure(
-                    self.kinetic_energy_translational(),
+                    self.measure_kinetic_energy_translational(),
                     &self.cell,
                     &self.barostat.virial.to_kcal_mol(),
                 );
@@ -270,14 +270,14 @@ impl MdState {
                     && !self.solvent_only_sim_at_init
                 {
                     self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
-                    self.kinetic_energy = self.kinetic_energy();
+                    self.kinetic_energy = self.measure_kinetic_energy();
                 } else if self.solvent_only_sim_at_init {
                     self.apply_thermostat_csvr(
                         dt as f64,
                         TAU_TEMP_WATER_INIT,
                         self.cfg.temp_target as f64,
                     );
-                    self.kinetic_energy = self.kinetic_energy();
+                    self.kinetic_energy = self.measure_kinetic_energy();
                 }
 
                 // Barostat runs last in VV: velocities are fully updated and the thermostat has
@@ -391,7 +391,7 @@ impl MdState {
             self.rattle_hydrogens(dt_kick);
         }
 
-        self.kinetic_energy = self.kinetic_energy();
+        self.kinetic_energy = self.measure_kinetic_energy();
     }
 
     /// Half kick for non-solvent and solvent. We call this one or more time
@@ -435,7 +435,7 @@ impl MdState {
             self.rattle_hydrogens(dt);
         }
 
-        self.kinetic_energy = self.kinetic_energy();
+        self.kinetic_energy = self.measure_kinetic_energy();
     }
 
     /// Drifts all non-static atoms in the system.  Includes the SETTLE application for solvent,

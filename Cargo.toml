@@ -40,7 +40,7 @@ lin_alg = { version = "1.4.1", features = ["encode"] }
 na_seq = "0.3.15"
 bio_files = "0.4.7"
 #bio_files = { path = "../bio_files" }
-#ewald = { version = "0.1.12" }
+#ewald = { version = "0.1.13" }
 ewald = { path = "../ewald" }
 bio_apis = "0.2.5"
 

@@ -395,7 +395,7 @@ impl MdState {
         );
 
         {
-            let p_kin_bar = (2.0 * self.kinetic_energy_translational()) / (3.0 * cell_vol)
+            let p_kin_bar = (2.0 * self.measure_kinetic_energy_translational()) / (3.0 * cell_vol)
                 * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
 
             let vir_total_kcal = self.barostat.virial.to_kcal_mol().total();
@@ -404,7 +404,7 @@ impl MdState {
             println!("P_kin: {p_kin_bar:.3} bar  P_vir: {p_vir_bar:.3} bar");
         }
 
-        let temp = self.temperature();
+        let temp = self.measure_temperature();
         println!("\nTemperature: {temp:.2} K");
 
         let mut water_v = 0.;

@@ -105,7 +105,7 @@ pub mod alchemical;
 pub mod param_inference;
 mod sa_surface;
 pub mod snapshot_mdt;
-pub mod spme_validation;
+
 #[cfg(test)]
 mod tests;
 
@@ -1350,7 +1350,7 @@ impl MdState {
         }
 
         // todo: Store/cache?
-        let temperature = self.temperature() as f32;
+        let temperature = self.measure_temperature() as f32;
 
         let energy_potential_between_mols = self
             .potential_energy_between_mols

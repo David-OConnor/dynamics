@@ -20,7 +20,7 @@ pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 impl MdState {
     /// Computes total kinetic energy, in native units.
     /// Includes all non-static atoms, including solvent.
-    pub(crate) fn kinetic_energy(&self) -> f64 {
+    pub(crate) fn measure_kinetic_energy(&self) -> f64 {
         let mut result = 0.0;
 
         for a in &self.atoms {
@@ -43,7 +43,7 @@ impl MdState {
     /// COM-only kinetic energy for solvent + full atomic KE for non-solvent atoms, in kcal/mol.
     /// Used for pressure via the molecular virial theorem: rigid solvent molecules contribute
     /// only their translational (COM) KE, so no SETTLE constraint virial is needed.
-    pub(crate) fn kinetic_energy_translational(&self) -> f64 {
+    pub(crate) fn measure_kinetic_energy_translational(&self) -> f64 {
         let mut result = 0.0;
 
         for a in &self.atoms {
@@ -61,7 +61,7 @@ impl MdState {
     }
 
     /// Instantaneous temperature [K]
-    pub(crate) fn temperature(&self) -> f64 {
+    pub(crate) fn measure_temperature(&self) -> f64 {
         (2.0 * self.kinetic_energy) / (self.thermo_dof as f64 * GAS_CONST_R)
     }
 
