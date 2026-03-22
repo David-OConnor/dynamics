@@ -84,8 +84,8 @@ cuda_setup = { version = "0.1.9", optional = true }
 # on the user's computer. And it runs slower for inference than CPU in our first test cases.
 #cuda = ["cuda_setup", "cudarc", "lin_alg/cuda", "candle-core/cuda", "candle-nn/cuda"]
 cuda = ["cuda_setup", "cudarc", "lin_alg/cuda"]
-cufft = ["ewald/cufft"]
-vkfft = ["ewald/vkfft"]
+cufft = ["cuda", "ewald/cufft"]
+vkfft = ["cuda", "ewald/vkfft"]
 
 #encode = ["bincode"]
 encode = []

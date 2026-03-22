@@ -13,11 +13,11 @@
 //!   E_long  ≈ erf(α·r)/r  · q₁·q₂ · K   (plus small image contributions)
 //!   E_total = E_short + E_long  →  K·q₁·q₂/r   as L → ∞
 //!
-//! Run without features to test on CPU. Run `cargo test --features "cuda cufft"` (or vkfft) to test
+//! Run without features to test on CPU. Run `cargo test --features "cufft"` (or vkfft) to test
 //! on GPU. Test both.
 
 #[cfg(feature = "cuda")]
-use cudarc::driver::{CudaContext, CudaStream};
+use cudarc::driver::CudaContext;
 use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 use lin_alg::f32::Vec3;
 
@@ -143,12 +143,6 @@ fn assert_rel_close(got: f32, expected: f32, tol: f32, label: &str) {
 /// converge to the vacuum Coulomb energy  E = −K/r.
 #[test]
 fn test_spme_energy_opposite_charges() {
-    #[cfg(feature = "cuda")]
-    let stream = {
-        let ctx = CudaContext::new(0).unwrap();
-        ctx.default_stream()
-    };
-
     let box_len = 50.0;
     let alpha = EWALD_ALPHA;
 
@@ -173,12 +167,6 @@ fn test_spme_energy_opposite_charges() {
 /// Same as above but with fractional charges to ensure charge-scaling is linear.
 #[test]
 fn test_spme_energy_fractional_charges() {
-    #[cfg(feature = "cuda")]
-    let stream = {
-        let ctx = CudaContext::new(0).unwrap();
-        ctx.default_stream()
-    };
-
     let box_len = 50.0;
     let alpha = EWALD_ALPHA;
     let dist = 5.0;
@@ -199,12 +187,6 @@ fn test_spme_energy_fractional_charges() {
 /// Relative error must be < 1 % at L = 50 Å for r = 5 Å.
 #[test]
 fn test_spme_energy_box_convergence() {
-    #[cfg(feature = "cuda")]
-    let stream = {
-        let ctx = CudaContext::new(0).unwrap();
-        ctx.default_stream()
-    };
-
     let dist = 5.0;
     let alpha = EWALD_ALPHA;
     let e_vac = vacuum_coulomb_energy(1.0, -1.0, dist);
@@ -239,12 +221,6 @@ fn test_spme_energy_box_convergence() {
 /// vacuum Coulomb: F_x = +K/r² (attractive, toward the −1 charge at +x).
 #[test]
 fn test_spme_force_magnitude() {
-    #[cfg(feature = "cuda")]
-    let stream = {
-        let ctx = CudaContext::new(0).unwrap();
-        ctx.default_stream()
-    };
-
     let box_len = 50.;
 
     for (dist, tag) in [(3., "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
@@ -420,12 +396,6 @@ fn test_spme_energy_non_cubic_box() {
 /// shifts the energy but contributes zero gradient.
 #[test]
 fn test_spme_force_like_charges() {
-    #[cfg(feature = "cuda")]
-    let stream = {
-        let ctx = CudaContext::new(0).unwrap();
-        ctx.default_stream()
-    };
-
     let box_len = 50.0;
     let alpha = EWALD_ALPHA;
 
@@ -484,12 +454,6 @@ fn test_spme_force_like_charges() {
 /// paths.
 #[test]
 fn test_spme_force_matches_energy_gradient() {
-    #[cfg(feature = "cuda")]
-    let stream = {
-        let ctx = CudaContext::new(0).unwrap();
-        ctx.default_stream()
-    };
-
     let box_len = 50.0;
     let alpha = EWALD_ALPHA;
     let delta = 0.01; // Å
