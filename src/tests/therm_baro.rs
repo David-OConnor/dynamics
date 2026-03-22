@@ -5,7 +5,7 @@ use cudarc::driver::CudaContext;
 use lin_alg::f32::Vec3;
 
 use crate::{
-    AtomDynamics, MdState, NATIVE_TO_KCAL,
+    AtomDynamics, MdState, NATIVE_TO_KCAL, Solvent,
     barostat::BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED,
     solvent::{H_MASS, MASS_WATER_MOL, O_MASS, WaterMol},
     thermostat::GAS_CONST_R,
@@ -397,8 +397,10 @@ fn test_pressure_lj_virial() {
 
 // ── water at 1 bar ────────────────────────────────────────────────────────────
 
-/// Runs a small pure-water NVT simulation at 300 K and checks that the
-/// time-averaged pressure is close to 1 bar.
+/// Runs a small pure-water simulation at 310 K and checks that the
+/// time-averaged pressure is close to 1 bar. Using default solvent settings, the simulation
+/// will initialize water to a standard pressure of 1 bar. It sets the water mol count, and
+/// sim box size IOC this.
 ///
 /// The tolerance is wide (±2000 bar) because instantaneous pressure in a small
 /// box has large fluctuations — this is normal in MD.  What this test catches
@@ -433,7 +435,11 @@ fn test_pressure_water_sim_1bar() {
     // 30 Å cube holds ~100 OPC water molecules at roughly water density.
     // (30³ = 27 000 Å³; water: 1 molecule per ~30 Å³ ≈ 900 molecules — we
     //  deliberately use fewer for speed while still exercising the virial path.)
-    let cfg = MdConfig {
+
+    // todo: It may be worth trying two setups: One with a fixed number of water molecules and fixed
+    // todo
+
+    let cfg_auto_water_count = MdConfig {
         // integrator: Integrator::LangevinMiddle { gamma: 1.0 },
         integrator: Integrator::VerletVelocity { thermostat: None },
         sim_box: SimBoxInit::Fixed((Vec3::new(0., 0., 0.), Vec3::new(35., 35., 35.))),
@@ -446,28 +452,70 @@ fn test_pressure_water_sim_1bar() {
         ..Default::default()
     };
 
-    let mut md = MdState::new(&dev, &cfg, &[], &param_set).unwrap();
+    let cfg_fixed_water_count = MdConfig {
+        // todo: QC this is the right number of water mols for a sim box of that size.
+        solvent: Solvent::WaterOpcSpecifyMolCount(50),
+        ..cfg_auto_water_count.clone()
+    };
 
-    let n_steps = 200;
-    for _ in 0..n_steps {
-        md.step(&dev, 0.002, None);
+    // Sim 1: Using an automatically set water count.
+    for (i, cfg) in [cfg_auto_water_count, cfg_fixed_water_count]
+        .iter()
+        .enumerate()
+    {
+        let mut md = MdState::new(&dev, &cfg, &[], &param_set).unwrap();
+
+        let num_water_mols = md.water.len();
+
+        if i == 0 {
+            println!("Simulating with automatic water count. {num_water_mols} mols");
+        } else {
+            println!("Simulating with fixed water count. {num_water_mols} mols");
+        }
+
+        // todo: Steps may not be required; init should be enough to validate the barostat.
+        let n_steps = 100;
+        for _ in 0..n_steps {
+            md.step(&dev, 0.002, None);
+        }
+
+        let avg_pressure: f64 =
+            md.snapshots.iter().map(|s| s.pressure as f64).sum::<f64>() / md.snapshots.len() as f64;
+
+        println!("avg pressure over {n_steps} steps: {avg_pressure:.1} bar");
+
+        let expected = 1.; // Bar
+
+        assert!(
+            (avg_pressure - expected).abs() < 0.2,
+            "average pressure {avg_pressure:.1} bar is outside the expected range"
+        );
     }
 
-    let avg_pressure: f64 =
-        md.snapshots.iter().map(|s| s.pressure as f64).sum::<f64>() / md.snapshots.len() as f64;
+    // Sim 2: Using an automatically set water count.
+    {
+        let mut md = MdState::new(&dev, &cfg, &[], &param_set).unwrap();
 
-    println!("avg pressure over {n_steps} steps: {avg_pressure:.1} bar");
+        // todo: Steps may not be required; init should be enough to validate the barostat.
+        let n_steps = 100;
+        for _ in 0..n_steps {
+            md.step(&dev, 0.002, None);
+        }
 
-    // Physically sane range: large fluctuations are normal in a small box, but
-    // if the virial is wrong by ~418× (e.g. NATIVE_TO_KCAL applied to already-
-    // kcal/mol virials) P_kin alone pushes the average above ~5000 bar.
-    let expected = 1.; // Bar
+        let avg_pressure: f64 =
+            md.snapshots.iter().map(|s| s.pressure as f64).sum::<f64>() / md.snapshots.len() as f64;
 
-    assert!(
-        (avg_pressure - expected).abs() < 0.2,
-        "average pressure {avg_pressure:.1} bar is outside the expected range"
-    );
+        println!("avg pressure over {n_steps} steps: {avg_pressure:.1} bar");
+
+        let expected = 1.; // Bar
+
+        assert!(
+            (avg_pressure - expected).abs() < 0.2,
+            "average pressure {avg_pressure:.1} bar is outside the expected range"
+        );
+    }
 }
+
 //
 // // todo: Replace the sim_1_bar with this A/R.
 // #[test]
