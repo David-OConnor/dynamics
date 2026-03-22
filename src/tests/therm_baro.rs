@@ -1,8 +1,14 @@
 //! Tests for temperature, pressure, and kinetic energy measurement functions.
 //!
-//! These tests exercise the pure-computation functions directly — no full MD
-//! simulation is needed.  All inputs are constructed analytically so the expected
-//! output can be computed by hand alongside the code.
+//! Two kinds of tests live here:
+//!
+//! 1. **Unit tests** — exercise the pure-computation functions directly with
+//!    analytically-constructed inputs (no full MD simulation needed).
+//!
+//! 2. **Integration tests** — run a real `MdState::new` + `step` with known
+//!    initial conditions and check `Snapshot::pressure`.  These catch bugs that
+//!    the unit tests miss: wrong unit conversions inside the pipeline, virials
+//!    being accumulated incorrectly, the wrong KE path being used, etc.
 
 use lin_alg::f32::Vec3;
 
@@ -293,4 +299,144 @@ fn test_measure_pressure_volume_scaling() {
 
     // Volume ratio = (40/20)^3 = 8  →  pressure ratio = 1/8
     assert_close(p_large, p_small / 8.0, 1e-6, "pressure ∝ 1/V");
+}
+
+// ── pressure pipeline integration test ───────────────────────────────────────
+
+/// Integration test: runs a real simulation step with all forces disabled and
+/// known initial velocities, then reads `Snapshot::pressure` and checks it
+/// equals the ideal-gas pressure `P = 2·KE / (3·V) · BAR_CONST`.
+///
+/// This test is **non-pathological**: it exercises the complete pressure pipeline
+///   `step() → measure_kinetic_energy_translational() → measure_pressure()
+///    → take_snapshot() → Snapshot::pressure`
+/// and will fail if there is a unit-conversion bug, a wrong KE path, or an
+/// incorrect virial accumulation — even though the formula-only tests above
+/// would still pass in those cases.
+///
+/// Setup:
+///  • 60 Å cube, no water, no thermostat, no barostat, all force terms off.
+///  • 3 "ca" carbon atoms with known initial velocities.
+///  • mol_a: bonded pair (atoms 0 & 1) — 1-2 exclusion removes them from nb_pairs,
+///    so atom 2 is needed to supply at least one non-bonded pair (otherwise the
+///    integrator's early-return guard fires before any pressure is computed).
+///  • All forces disabled → W = 0 → P = 2·KE_trans / (3·V) · BAR_CONST.
+///  • Initial accel = 0, thermostat off → velocities are unchanged at the point
+///    the pressure is measured inside `step()`.
+#[test]
+fn test_pressure_pipeline_ideal_gas() {
+    use bio_files::{AtomGeneric, BondGeneric, BondType};
+    use na_seq::Element;
+
+    use crate::{
+        ComputationDevice, FfMolType, Integrator, MdConfig, MdOverrides, MolDynamics, SimBoxInit,
+        params::FfParamSet,
+    };
+
+    let param_set = FfParamSet::new_amber().unwrap();
+    let dev = ComputationDevice::Cpu;
+
+    // Known initial velocities for each atom (Å/ps).
+    let v0 = Vec3::new(2.0, 0.0, 0.0);
+    let v1 = Vec3::new(-1.0, 1.0, 0.0);
+    let v2 = Vec3::new(0.0, 0.0, 3.0);
+
+    let c = 30.0_f32; // Centre of the 60 Å box.
+
+    let cfg = MdConfig {
+        integrator: Integrator::VerletVelocity { thermostat: None },
+        sim_box: SimBoxInit::Fixed((Vec3::new(0., 0., 0.), Vec3::new(60., 60., 60.))),
+        overrides: MdOverrides {
+            skip_solvent: true,
+            thermo_disabled: true,
+            baro_disabled: true,
+            bonded_disabled: true,
+            coulomb_disabled: true,
+            lj_disabled: true,
+            long_range_recip_disabled: true,
+            ..Default::default()
+        },
+        max_init_relaxation_iters: None,
+        ..Default::default()
+    };
+
+    // mol_a: two bonded "ca" carbons — their 1-2 exclusion removes them from nb_pairs.
+    let mol_a = MolDynamics {
+        ff_mol_type: FfMolType::SmallOrganic,
+        atoms: vec![
+            AtomGeneric {
+                serial_number: 1,
+                posit: Vec3::new(c - 2.5, c, c).into(),
+                force_field_type: Some("ca".to_string()),
+                element: Element::Carbon,
+                partial_charge: Some(0.0),
+                ..Default::default()
+            },
+            AtomGeneric {
+                serial_number: 2,
+                posit: Vec3::new(c + 2.5, c, c).into(),
+                force_field_type: Some("ca".to_string()),
+                element: Element::Carbon,
+                partial_charge: Some(0.0),
+                ..Default::default()
+            },
+        ],
+        atom_init_velocities: Some(vec![v0, v1]),
+        bonds: vec![BondGeneric {
+            atom_0_sn: 1,
+            atom_1_sn: 2,
+            bond_type: BondType::Aromatic,
+        }],
+        ..Default::default()
+    };
+
+    // mol_b: isolated atom 8 Å away — within the cutoff so it appears in nb_pairs
+    // and the integrator's early-return guard does not fire.
+    let mol_b = MolDynamics {
+        ff_mol_type: FfMolType::SmallOrganic,
+        atoms: vec![AtomGeneric {
+            serial_number: 3,
+            posit: Vec3::new(c, c - 8.0, c).into(),
+            force_field_type: Some("ca".to_string()),
+            element: Element::Carbon,
+            partial_charge: Some(0.0),
+            ..Default::default()
+        }],
+        atom_init_velocities: Some(vec![v2]),
+        ..Default::default()
+    };
+
+    let mut md = MdState::new(&dev, &cfg, &[mol_a, mol_b], &param_set).unwrap();
+
+    // One step: all forces disabled, so W = 0 and velocities are unchanged.
+    md.step(&dev, 0.001, None);
+
+    let snap = md.snapshots.last().expect("snapshot must be saved after step");
+
+    // Expected: P = 2·KE_trans / (3·V) · BAR_CONST
+    // No water → KE_trans = KE_total = 0.5 · Σ(m_i · v_i²) · NATIVE_TO_KCAL.
+    // Velocities at pressure-measurement time equal the initial velocities because
+    // accel = 0 (all forces off) and the thermostat is disabled.
+    let init_vels = [v0, v1, v2];
+    let ke_trans: f64 = md
+        .atoms
+        .iter()
+        .zip(&init_vels)
+        .map(|(a, v)| {
+            let vsq = (v.x * v.x + v.y * v.y + v.z * v.z) as f64;
+            0.5 * a.mass as f64 * vsq
+        })
+        .sum::<f64>()
+        * NATIVE_TO_KCAL as f64;
+
+    let ext = md.cell.extent;
+    let vol = ext.x as f64 * ext.y as f64 * ext.z as f64;
+    let expected = 2.0 * ke_trans / (3.0 * vol) * BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED;
+
+    assert_close(
+        snap.pressure as f64,
+        expected,
+        1e-4,
+        "snapshot pressure must match ideal-gas formula computed from initial KE",
+    );
 }
