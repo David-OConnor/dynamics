@@ -64,7 +64,6 @@ fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
 /// Returns `((f_short_on_q1, f_long_on_q1, f_long_on_q2), (e_short, e_long, e_total))`
 /// with forces in kcal/(mol·Å) and energies in kcal/mol.
 pub fn spme_pair_forces_energy(
-    #[cfg(feature = "cuda")] stream: &std::sync::Arc<CudaStream>,
     r1: Vec3,
     r2: Vec3,
     q1_e: f32,
@@ -72,6 +71,12 @@ pub fn spme_pair_forces_energy(
     box_len: f32,
     alpha: f32,
 ) -> ((Vec3, Vec3, Vec3), (f32, f32, f32)) {
+    #[cfg(feature = "cuda")]
+    let stream = {
+        let ctx = CudaContext::new(0).unwrap();
+        ctx.default_stream()
+    };
+
     let q1 = q1_e * CHARGE_UNIT_SCALER;
     let q2 = q2_e * CHARGE_UNIT_SCALER;
 
@@ -156,13 +161,8 @@ mod tests {
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
-            #[cfg(not(feature = "cuda"))]
             let (_, (e_sr, e_lr, e_total)) =
                 spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
-
-            #[cfg(feature = "cuda")]
-            let (_, (e_sr, e_lr, e_total)) =
-                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, alpha);
 
             let e_vac = vacuum_coulomb_energy(1.0, -1.0, dist);
 
@@ -192,12 +192,7 @@ mod tests {
         let r2 = Vec3::new(center + dist / 2.0, center, center);
 
         for (q1e, q2e, tag) in [(0.5f32, -0.5f32, "q=±0.5"), (0.25, -0.25, "q=±0.25")] {
-            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, q1e, q2e, box_len, alpha);
-
-            #[cfg(feature = "cuda")]
-            let (_, (_, _, e_total)) =
-                spme_pair_forces_energy(&stream, r1, r2, q1e, q2e, box_len, alpha);
 
             let e_vac = vacuum_coulomb_energy(q1e, q2e, dist);
             println!("{tag}: e_total={e_total:.4}  e_vac={e_vac:.4} kcal/mol");
@@ -225,11 +220,7 @@ mod tests {
             let r1 = Vec3::new(c - dist / 2.0, c, c);
             let r2 = Vec3::new(c + dist / 2.0, c, c);
 
-            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
-            #[cfg(feature = "cuda")]
-            let (_, (_, _, e_total)) =
-                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, alpha);
 
             let rel = ((e_total - e_vac) / e_vac).abs();
             println!("  L={box_len:.0} Å:  e_total={e_total:.4}  rel_err={rel:.4}");
@@ -240,11 +231,7 @@ mod tests {
         let r1 = Vec3::new(c - dist / 2.0, c, c);
         let r2 = Vec3::new(c + dist / 2.0, c, c);
 
-        #[cfg(not(feature = "cuda"))]
         let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, 50.0, alpha);
-
-        #[cfg(feature = "cuda")]
-        let (_, (_, _, e_total)) = spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, 50.0, alpha);
 
         assert_rel_close(e_total, e_vac, REL_TOL, "energy at L=50 Å");
     }
@@ -271,13 +258,8 @@ mod tests {
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
-            #[cfg(not(feature = "cuda"))]
             let ((f_sr_1, f_lr_1, _), _) =
                 spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, EWALD_ALPHA);
-
-            #[cfg(feature = "cuda")]
-            let ((f_sr_1, f_lr_1, _), _) =
-                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, EWALD_ALPHA);
 
             let fx_total = f_sr_1.x + f_lr_1.x;
 
@@ -465,13 +447,8 @@ mod tests {
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
-            #[cfg(not(feature = "cuda"))]
             let ((f_sr_1, f_lr_1, _), _) =
                 spme_pair_forces_energy(r1, r2, 1.0, 1.0, box_len, alpha);
-
-            #[cfg(feature = "cuda")]
-            let ((f_sr_1, f_lr_1, _), _) =
-                spme_pair_forces_energy(&stream, r1, r2, 1.0, 1.0, box_len, alpha);
 
             let fx_total = f_sr_1.x + f_lr_1.x;
 
@@ -540,29 +517,15 @@ mod tests {
             let r1_plus = Vec3::new(r1.x + delta, r1.y, r1.z);
             let r1_minus = Vec3::new(r1.x - delta, r1.y, r1.z);
 
-            #[cfg(feature = "cuda")]
-            let (_, (_, _, e_plus)) =
-                spme_pair_forces_energy(&stream, r1_plus, r2, 1.0, -1.0, box_len, alpha);
-            #[cfg(feature = "cuda")]
-            let (_, (_, _, e_minus)) =
-                spme_pair_forces_energy(&stream, r1_minus, r2, 1.0, -1.0, box_len, alpha);
-
-            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_plus)) =
                 spme_pair_forces_energy(r1_plus, r2, 1.0, -1.0, box_len, alpha);
-            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_minus)) =
                 spme_pair_forces_energy(r1_minus, r2, 1.0, -1.0, box_len, alpha);
 
             let fx_numerical = -(e_plus - e_minus) / (2.0 * delta);
 
             // Analytic SPME force on charge 1.
-            #[cfg(not(feature = "cuda"))]
             let ((f_sr, f_lr, _), _) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
-
-            #[cfg(feature = "cuda")]
-            let ((f_sr, f_lr, _), _) =
-                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, alpha);
 
             let fx_computed = f_sr.x + f_lr.x;
 
