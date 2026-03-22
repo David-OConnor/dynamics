@@ -10,7 +10,7 @@ use bincode::Decode;
 pub const MODEL_PATH: &str = "geostd_model.safetensors";
 pub const VOCAB_PATH: &str = "geostd_model.vocab";
 
-pub const GEOSTD_PATH: &str = "C:/users/the_a/Desktop/bio_misc/amber_geostd";
+pub const GEOSTD_PATH: &str = "C:/users/the_a/Desktop/bio_misc/Amber/amber_geostd";
 // pub const GEOSTD_PATH: &str = "C:/users/the_a/Desktop/bio_misc/amber_geostd_test"; // todo temp
 
 /// Find Mol2  paths. Assumes there are per-letter subfolders one-layer deep.

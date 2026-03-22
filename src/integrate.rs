@@ -16,7 +16,7 @@ use crate::{
         LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT, measure_pressure,
     },
     solvent::{
-        ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O, MASS_WATER_MOL,
+        ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
         settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
     },
 };

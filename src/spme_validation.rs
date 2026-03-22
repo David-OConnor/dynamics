@@ -13,8 +13,11 @@
 //!   E_long  ≈ erf(α·r)/r  · q₁·q₂ · K   (plus small image contributions)
 //!   E_total = E_short + E_long  →  K·q₁·q₂/r   as L → ∞
 //!
-//! todo: For now, this module is CPU only.
+//! Run without features to test on CPU. Run `cargo test --features "cuda cufft"` (or vkfft) to test
+//! on GPU. Test both.
 
+#[cfg(feature = "cuda")]
+use cudarc::driver::{CudaContext, CudaStream};
 use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 use lin_alg::f32::Vec3;
 
@@ -34,15 +37,23 @@ fn wrap_pos(p: Vec3, l: (f32, f32, f32)) -> Vec3 {
     Vec3::new(wrap1(p.x, l.0), wrap1(p.y, l.1), wrap1(p.z, l.2))
 }
 
+#[cfg(feature = "cuda")]
 /// Build a PmeRecip with the given box and mesh spacing.
 /// Feature-gates match dynamics/src/non_bonded.rs.
 fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
+    let stream = {
+        let ctx = CudaContext::new(0).unwrap();
+        ctx.default_stream()
+    };
+
     let dims = get_grid_n(l, mesh_spacing);
-    #[cfg(any(feature = "vkfft", feature = "cufft"))]
-    let pme = PmeRecip::new(None, dims, l, alpha);
-    #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
-    let pme = PmeRecip::new(dims, l, alpha);
-    pme
+    PmeRecip::new(Some(&stream), dims, l, alpha)
+}
+
+#[cfg(not(feature = "cuda"))]
+fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
+    let dims = get_grid_n(l, mesh_spacing);
+    PmeRecip::new(dims, l, alpha)
 }
 
 /// Compute SPME forces and energy on a pair of charges in a cubic box.
@@ -53,6 +64,7 @@ fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
 /// Returns `((f_short_on_q1, f_long_on_q1, f_long_on_q2), (e_short, e_long, e_total))`
 /// with forces in kcal/(mol·Å) and energies in kcal/mol.
 pub fn spme_pair_forces_energy(
+    #[cfg(feature = "cuda")] stream: &std::sync::Arc<CudaStream>,
     r1: Vec3,
     r2: Vec3,
     q1_e: f32,
@@ -76,6 +88,7 @@ pub fn spme_pair_forces_energy(
 
     let inv_dist = 1.0 / dist;
     let dir = diff * inv_dist;
+
     let (f_sr_1, e_sr) =
         force_coulomb_short_range(dir, dist, inv_dist, q1, q2, LONG_RANGE_CUTOFF, alpha);
 
@@ -84,6 +97,11 @@ pub fn spme_pair_forces_energy(
     let mut pme = make_pme(l, alpha, 1.0);
     let pos = vec![wrap_pos(r1, l), wrap_pos(r2, l)];
     let q_arr = vec![q1, q2];
+
+    #[cfg(feature = "cuda")]
+    let (f_recip, e_lr) = pme.forces_gpu(&stream, &pos, &q_arr);
+
+    #[cfg(not(feature = "cuda"))]
     let (f_recip, e_lr) = pme.forces(&pos, &q_arr);
 
     let e_total = e_sr + e_lr;
@@ -96,7 +114,6 @@ pub fn spme_pair_forces_energy(
 pub fn vacuum_coulomb_energy(q1_e: f32, q2_e: f32, dist: f32) -> f32 {
     K_ELEC * q1_e * q2_e / dist
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -125,6 +142,12 @@ mod tests {
     /// converge to the vacuum Coulomb energy  E = −K/r.
     #[test]
     fn test_spme_energy_opposite_charges() {
+        #[cfg(feature = "cuda")]
+        let stream = {
+            let ctx = CudaContext::new(0).unwrap();
+            ctx.default_stream()
+        };
+
         let box_len = 50.0;
         let alpha = EWALD_ALPHA;
 
@@ -133,8 +156,14 @@ mod tests {
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
+            #[cfg(not(feature = "cuda"))]
             let (_, (e_sr, e_lr, e_total)) =
                 spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
+
+            #[cfg(feature = "cuda")]
+            let (_, (e_sr, e_lr, e_total)) =
+                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, alpha);
+
             let e_vac = vacuum_coulomb_energy(1.0, -1.0, dist);
 
             println!(
@@ -149,6 +178,12 @@ mod tests {
     /// Same as above but with fractional charges to ensure charge-scaling is linear.
     #[test]
     fn test_spme_energy_fractional_charges() {
+        #[cfg(feature = "cuda")]
+        let stream = {
+            let ctx = CudaContext::new(0).unwrap();
+            ctx.default_stream()
+        };
+
         let box_len = 50.0;
         let alpha = EWALD_ALPHA;
         let dist = 5.0;
@@ -157,7 +192,13 @@ mod tests {
         let r2 = Vec3::new(center + dist / 2.0, center, center);
 
         for (q1e, q2e, tag) in [(0.5f32, -0.5f32, "q=±0.5"), (0.25, -0.25, "q=±0.25")] {
+            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, q1e, q2e, box_len, alpha);
+
+            #[cfg(feature = "cuda")]
+            let (_, (_, _, e_total)) =
+                spme_pair_forces_energy(&stream, r1, r2, q1e, q2e, box_len, alpha);
+
             let e_vac = vacuum_coulomb_energy(q1e, q2e, dist);
             println!("{tag}: e_total={e_total:.4}  e_vac={e_vac:.4} kcal/mol");
             assert_rel_close(e_total, e_vac, REL_TOL, tag);
@@ -168,6 +209,12 @@ mod tests {
     /// Relative error must be < 1 % at L = 50 Å for r = 5 Å.
     #[test]
     fn test_spme_energy_box_convergence() {
+        #[cfg(feature = "cuda")]
+        let stream = {
+            let ctx = CudaContext::new(0).unwrap();
+            ctx.default_stream()
+        };
+
         let dist = 5.0;
         let alpha = EWALD_ALPHA;
         let e_vac = vacuum_coulomb_energy(1.0, -1.0, dist);
@@ -177,7 +224,13 @@ mod tests {
             let c = box_len / 2.0;
             let r1 = Vec3::new(c - dist / 2.0, c, c);
             let r2 = Vec3::new(c + dist / 2.0, c, c);
+
+            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
+            #[cfg(feature = "cuda")]
+            let (_, (_, _, e_total)) =
+                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, alpha);
+
             let rel = ((e_total - e_vac) / e_vac).abs();
             println!("  L={box_len:.0} Å:  e_total={e_total:.4}  rel_err={rel:.4}");
         }
@@ -186,7 +239,13 @@ mod tests {
         let c = 50.0 / 2.0;
         let r1 = Vec3::new(c - dist / 2.0, c, c);
         let r2 = Vec3::new(c + dist / 2.0, c, c);
+
+        #[cfg(not(feature = "cuda"))]
         let (_, (_, _, e_total)) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, 50.0, alpha);
+
+        #[cfg(feature = "cuda")]
+        let (_, (_, _, e_total)) = spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, 50.0, alpha);
+
         assert_rel_close(e_total, e_vac, REL_TOL, "energy at L=50 Å");
     }
 
@@ -198,6 +257,12 @@ mod tests {
     /// vacuum Coulomb: F_x = +K/r² (attractive, toward the −1 charge at +x).
     #[test]
     fn test_spme_force_magnitude() {
+        #[cfg(feature = "cuda")]
+        let stream = {
+            let ctx = CudaContext::new(0).unwrap();
+            ctx.default_stream()
+        };
+
         let box_len = 50.;
 
         for (dist, tag) in [(3., "3Å"), (5.0, "5Å"), (8.0, "8Å")] {
@@ -206,8 +271,13 @@ mod tests {
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
+            #[cfg(not(feature = "cuda"))]
             let ((f_sr_1, f_lr_1, _), _) =
                 spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, EWALD_ALPHA);
+
+            #[cfg(feature = "cuda")]
+            let ((f_sr_1, f_lr_1, _), _) =
+                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, EWALD_ALPHA);
 
             let fx_total = f_sr_1.x + f_lr_1.x;
 
@@ -381,6 +451,12 @@ mod tests {
     /// shifts the energy but contributes zero gradient.
     #[test]
     fn test_spme_force_like_charges() {
+        #[cfg(feature = "cuda")]
+        let stream = {
+            let ctx = CudaContext::new(0).unwrap();
+            ctx.default_stream()
+        };
+
         let box_len = 50.0;
         let alpha = EWALD_ALPHA;
 
@@ -389,8 +465,13 @@ mod tests {
             let r1 = Vec3::new(center - dist / 2.0, center, center);
             let r2 = Vec3::new(center + dist / 2.0, center, center);
 
+            #[cfg(not(feature = "cuda"))]
             let ((f_sr_1, f_lr_1, _), _) =
                 spme_pair_forces_energy(r1, r2, 1.0, 1.0, box_len, alpha);
+
+            #[cfg(feature = "cuda")]
+            let ((f_sr_1, f_lr_1, _), _) =
+                spme_pair_forces_energy(&stream, r1, r2, 1.0, 1.0, box_len, alpha);
 
             let fx_total = f_sr_1.x + f_lr_1.x;
 
@@ -440,6 +521,12 @@ mod tests {
     /// paths.
     #[test]
     fn test_spme_force_matches_energy_gradient() {
+        #[cfg(feature = "cuda")]
+        let stream = {
+            let ctx = CudaContext::new(0).unwrap();
+            ctx.default_stream()
+        };
+
         let box_len = 50.0;
         let alpha = EWALD_ALPHA;
         let delta = 0.01; // Å
@@ -452,14 +539,31 @@ mod tests {
             // Central-difference numerical gradient of total energy w.r.t. r1.x.
             let r1_plus = Vec3::new(r1.x + delta, r1.y, r1.z);
             let r1_minus = Vec3::new(r1.x - delta, r1.y, r1.z);
+
+            #[cfg(feature = "cuda")]
+            let (_, (_, _, e_plus)) =
+                spme_pair_forces_energy(&stream, r1_plus, r2, 1.0, -1.0, box_len, alpha);
+            #[cfg(feature = "cuda")]
+            let (_, (_, _, e_minus)) =
+                spme_pair_forces_energy(&stream, r1_minus, r2, 1.0, -1.0, box_len, alpha);
+
+            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_plus)) =
                 spme_pair_forces_energy(r1_plus, r2, 1.0, -1.0, box_len, alpha);
+            #[cfg(not(feature = "cuda"))]
             let (_, (_, _, e_minus)) =
                 spme_pair_forces_energy(r1_minus, r2, 1.0, -1.0, box_len, alpha);
+
             let fx_numerical = -(e_plus - e_minus) / (2.0 * delta);
 
             // Analytic SPME force on charge 1.
+            #[cfg(not(feature = "cuda"))]
             let ((f_sr, f_lr, _), _) = spme_pair_forces_energy(r1, r2, 1.0, -1.0, box_len, alpha);
+
+            #[cfg(feature = "cuda")]
+            let ((f_sr, f_lr, _), _) =
+                spme_pair_forces_energy(&stream, r1, r2, 1.0, -1.0, box_len, alpha);
+
             let fx_computed = f_sr.x + f_lr.x;
 
             println!(

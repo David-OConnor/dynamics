@@ -569,7 +569,7 @@ Rust setup example with Cudarc. Pass `dev`, defined below, to the `step` functio
 let ctx = CudaContext::new(0).unwrap();
 let stream = ctx.default_stream();
 
-let dev = ComputationDevice::Gpu(GpuModules(stream);
+let dev = ComputationDevice::Gpu(stream);
 ```
 
 To use with an Nvidia GPU, enable the `cuda` feature in `Cargo.toml`. The library will generate PTX instructions

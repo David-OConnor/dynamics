@@ -615,12 +615,10 @@ impl MdState {
                 #[cfg(feature = "cuda")]
                 #[allow(unused)]
                 ComputationDevice::Gpu(stream) => {
-                    // todo temp: CPU only for now while troubleshooting.
                     #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
                     let v = pme_recip.forces(&pos_all, &q_all);
                     #[cfg(any(feature = "cufft", feature = "vkfft"))]
-                    let v = pme_recip.forces(&pos_all, &q_all);
-                    // let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
+                    let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
 
                     v
                 }
@@ -745,10 +743,8 @@ impl MdState {
             }
             #[cfg(feature = "cuda")]
             ComputationDevice::Gpu(stream) => {
-                // todo temp CPU only until we're sure it's solid.
                 #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                let v = PmeRecip::new(n, l, EWALD_ALPHA);
-                // let v = PmeRecip::new(Some(stream), n, l, EWALD_ALPHA);
+                let v = PmeRecip::new(Some(stream), n, l, EWALD_ALPHA);
 
                 #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
                 let v = PmeRecip::new(n, l, EWALD_ALPHA);

@@ -101,9 +101,6 @@ fn test_ff_types_geostd() {
         let ff_types_actual = find_ff_types(&mol.atoms, &mol.bonds, &defs);
 
         for i in 0..mol.atoms.len() {
-            // todo tmep
-            println!("Testing atom {}", mol.atoms[i]);
-
             if (ff_types_expected[i] == "cc" && ff_types_actual[i] == "cd")
                 || (ff_types_expected[i] == "cd" && ff_types_actual[i] == "cc")
                 || (ff_types_expected[i] == "nd" && ff_types_actual[i] == "nc")
