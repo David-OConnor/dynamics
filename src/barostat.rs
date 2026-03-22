@@ -208,8 +208,13 @@ impl Display for VirialKcalMol {
     }
 }
 
-/// Acumulated during force computations. Used to measure pressure.
-/// In native units: Å² • amu / ps²
+/// Accumulated during force computations. Used to measure pressure.
+/// Units per field:
+///   - `bonded`, `nonbonded_short_range`, `nonbonded_long_range`: **kcal/mol**
+///     (forces in kcal/(mol·Å) × distances in Å — no conversion needed).
+///   - `constraints`: **native units** (amu·Å²/ps²), because SHAKE constraint
+///     forces are computed as m·Δr/dt² which is in amu·Å/ps², and the virial
+///     r·(m·Δr/dt²) is therefore in amu·Å²/ps².
 /// We split this into components to make validating and debugging easier.
 #[derive(Debug, Default)]
 pub struct Virial {
@@ -220,17 +225,15 @@ pub struct Virial {
 }
 
 impl Virial {
-    /// Convert from  our internal units to the ones used in common practice.
-    /// From amu • (Å/ps)² to kcal/mol.
-    /// This constant we  multiply by is ~0.0024
+    /// Convert to kcal/mol.
+    /// `bonded`/`nonbonded_*` are already in kcal/mol → copied as-is.
+    /// `constraints` is in native units (amu·Å²/ps²) → multiplied by NATIVE_TO_KCAL.
     pub(crate) fn to_kcal_mol(&self) -> VirialKcalMol {
-        const C: f64 = NATIVE_TO_KCAL as f64;
-
         VirialKcalMol {
-            bonded: self.bonded * C,
-            nonbonded_short_range: self.nonbonded_short_range * C,
-            nonbonded_long_range: self.nonbonded_long_range * C,
-            constraints: self.constraints * C,
+            bonded: self.bonded,
+            nonbonded_short_range: self.nonbonded_short_range,
+            nonbonded_long_range: self.nonbonded_long_range,
+            constraints: self.constraints * NATIVE_TO_KCAL as f64,
         }
     }
 }

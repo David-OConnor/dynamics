@@ -10,6 +10,7 @@ use crate::{
 };
 
 mod forces;
+mod md_sim;
 mod spme;
 mod therm_baro;
 
