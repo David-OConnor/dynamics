@@ -269,6 +269,11 @@ impl MdState {
                     && !self.cfg.overrides.thermo_disabled
                     && !self.solvent_only_sim_at_init
                 {
+                    // Update KE from the current velocities (after both half-kicks) before
+                    // passing it to CSVR, which uses self.kinetic_energy internally.  Without
+                    // this the cached value from the previous step's CSVR would be used,
+                    // making CSVR a near-no-op since it would think KE is already at target.
+                    self.kinetic_energy = self.measure_kinetic_energy();
                     self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
                     self.kinetic_energy = self.measure_kinetic_energy();
                 } else if self.solvent_only_sim_at_init {

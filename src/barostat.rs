@@ -388,7 +388,10 @@ impl MdState {
     // todo: Then, applications could display in GUI etc.
     /// Print ambient parameters, as a sanity check.
     pub(crate) fn print_ambient_data(&self, pressure: f64) {
-        println!("\n------Ambient stats at step {}--------", self.step_count);
+        println!(
+            "\n\n------Ambient stats at step {}--------",
+            self.step_count
+        );
 
         let cell_vol = self.cell.volume() as f64;
         let atom_count = &self.atoms.iter().filter(|a| !a.static_).count();

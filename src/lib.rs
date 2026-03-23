@@ -585,6 +585,18 @@ pub struct MdConfig {
     /// rebuilds. Rebuild the list if an atom moved > skin/2.
     pub neighbor_skin: f32,
     pub overrides: MdOverrides,
+    /// Optional path to a pre-equilibrated water template file.
+    /// When set, this template is used instead of the built-in 60 Å template.
+    /// A box-specific template (e.g. 30 Å) is required for accurate initial pressures,
+    /// because the built-in template is cut from a larger equilibrated cell and lacks
+    /// the long-range Coulomb correlations appropriate for the target PBC cell size.
+    /// Generate one with the `generate_water_init_template` test (marked #[ignore]).
+    pub water_template_path: Option<String>,
+    /// Skip the PBC-boundary proximity check (2.8 Å cross-boundary O-O filter) when placing
+    /// water molecules.  Use this only when generating a pre-equilibrated template at the correct
+    /// density: the ~88 boundary molecules that the filter would otherwise reject are needed to
+    /// reach 1 g/cm³, and the MD equilibration run will push them to their natural distances.
+    pub skip_water_pbc_filter: bool,
 }
 
 impl Default for MdConfig {
@@ -604,6 +616,8 @@ impl Default for MdConfig {
             max_init_relaxation_iters: Some(1_000), // todo: A/R
             neighbor_skin: 4.0,
             overrides: Default::default(),
+            water_template_path: None,
+            skip_water_pbc_filter: false,
         }
     }
 }
@@ -969,12 +983,29 @@ impl MdState {
                 Solvent::Custom((_, c)) => Some(*c),
             };
 
+            let water_template_override: Option<WaterInitTemplate> = cfg
+                .water_template_path
+                .as_deref()
+                .and_then(|path_str| {
+                    match WaterInitTemplate::load(std::path::Path::new(path_str)) {
+                        Ok(t) => Some(t),
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: could not load water template from {path_str:?}: {e}. Using default."
+                            );
+                            None
+                        }
+                    }
+                });
+
             make_water_mols(
                 &result.cell,
                 cfg.temp_target,
                 &result.atoms,
                 cfg.zero_com_drift,
                 count,
+                water_template_override.as_ref(),
+                cfg.skip_water_pbc_filter,
             )
         };
 

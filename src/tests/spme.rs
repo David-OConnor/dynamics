@@ -13,7 +13,7 @@
 //!   E_long  ≈ erf(α·r)/r  · q₁·q₂ · K   (plus small image contributions)
 //!   E_total = E_short + E_long  →  K·q₁·q₂/r   as L → ∞
 //!
-//! Run without features to test on CPU. Run `cargo test --features "cufft"` (or vkfft) to test
+//! Run without features to test on CPU. Run `cargo test --features " cufft"` (or vkfft) to test
 //! on GPU. Test both.
 
 #[cfg(feature = "cuda")]

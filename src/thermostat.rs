@@ -112,8 +112,8 @@ impl MdState {
         // This value is cached at init.
         let dof = self.thermo_dof.max(2) as f64;
 
-        // Cached during the kick-and-drift step.
-        let ke = self.kinetic_energy; // In kcal/mol
+        // Measure current KE from velocities so we get the post-kick value, not a stale cache.
+        let ke = self.measure_kinetic_energy(); // In kcal/mol
 
         if ke < 1e-20 {
             return;

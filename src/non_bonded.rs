@@ -609,18 +609,18 @@ impl MdState {
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) -> (Vec<Vec3>, f64, f64) {
         let (pos_all, q_all) = self.pack_pme_pos_q();
 
-        let (f_recip, e_recip) = match &mut self.pme_recip {
+        let (f_recip, e_recip, virial_from_kspace) = match &mut self.pme_recip {
             Some(pme_recip) => match dev {
-                ComputationDevice::Cpu => pme_recip.forces(&pos_all, &q_all),
+                ComputationDevice::Cpu => pme_recip.forces_and_virial(&pos_all, &q_all),
                 #[cfg(feature = "cuda")]
                 #[allow(unused)]
                 ComputationDevice::Gpu(stream) => {
                     #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
-                    let v = pme_recip.forces(&pos_all, &q_all);
+                    let (f, e) = pme_recip.forces(&pos_all, &q_all);
                     #[cfg(any(feature = "cufft", feature = "vkfft"))]
-                    let v = pme_recip.forces_gpu(stream, &pos_all, &q_all);
+                    let (f, e) = pme_recip.forces_gpu(stream, &pos_all, &q_all);
 
-                    v
+                    (f, e, 0.0_f64) // GPU path: virial not yet computed analytically
                 }
             },
             None => {
@@ -633,7 +633,9 @@ impl MdState {
         self.potential_energy += e_recip as f64;
         self.potential_energy_nonbonded += e_recip as f64;
 
-        let mut virial_lr_recip = self.unpack_apply_pme_forces(&f_recip, &pos_all);
+        // Apply forces; virial comes from the analytical k-space formula, not r·F.
+        self.unpack_apply_pme_forces(&f_recip);
+        let mut virial_lr_recip = virial_from_kspace;
 
         // 1–4 Coulomb scaling correction (vacuum correction)
         for &(i, j) in &self.pairs_14_scaled {
@@ -700,9 +702,9 @@ impl MdState {
         (pos, q)
     }
 
-    /// In the same order we pack above. Returns the tin-foil virial component of the recip force.
-    pub(crate) fn unpack_apply_pme_forces(&mut self, forces: &[Vec3], posits: &[Vec3]) -> f64 {
-        let mut virial: f64 = 0.;
+    /// Apply PME reciprocal forces to atoms and water sites. In the same order as pack_pme_pos_q.
+    /// Virial is computed analytically in the ewald library (forces_and_virial), not here.
+    pub(crate) fn unpack_apply_pme_forces(&mut self, forces: &[Vec3]) {
         let water_start = self.atoms.len();
 
         for (i, f) in forces.iter().enumerate() {
@@ -717,12 +719,7 @@ impl MdState {
                     _ => self.water[i_wat_mol].h1.force += *f,
                 }
             }
-
-            // todo: QC this.
-            virial += 0.5 * posits[i].dot(*f) as f64; // tin-foil virial
         }
-
-        virial
     }
 
     /// Re-initializes the SPME based on sim box dimensions. Run this at init, and whenever you

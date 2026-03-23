@@ -4,7 +4,7 @@
 //! velocities. Set up to meet density, pressure, and or temperature targets. Not specific to the
 //! solvent model used.
 
-use std::{f32::consts::TAU, io, path::Path, time::Instant};
+use std::{f32::consts::TAU, fs, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
 use lin_alg::{
@@ -46,11 +46,22 @@ const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 const MIN_NONWATER_DIST: f32 = 1.7;
 const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 
-// This seems low, but allows more flexibility in placement, and isn't so low
-// as to cause the system to blow up. Distances will be set up accurately
-// in the initial solvent-only sim.
+// Direct O-O overlap check — prevents truly coincident molecules.
 const MIN_WATER_O_O_DIST: f32 = 1.7;
 const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
+
+// PBC-boundary exclusion distance.
+// When a smaller box is filled from a larger template (e.g. 30 Å from a 60 Å template),
+// molecules near opposite faces become PBC neighbours even though they were ~30 Å apart in
+// the template and were never equilibrated at that short distance.  These pairs can slip
+// through the 1.7 Å check with PBC distances of 2.0–2.8 Å, where LJ energy is 6–74 kcal/mol
+// per pair — enough to push pressure into the tens-of-thousands-of-bar range.
+// 2.8 Å is just below the first RDF peak (~2.82 Å).  We only apply this stricter threshold
+// when PBC wrapping actually shortens the distance (i.e. `min_image_dist < direct_dist`),
+// so interior template molecules at their natural 2.5–2.8 Å first-shell distances are
+// accepted while un-equilibrated cross-boundary pairs are rejected.
+const PBC_MIN_WATER_O_O_DIST: f32 = 2.8;
+const PBC_MIN_WATER_O_O_DIST_SQ: f32 = PBC_MIN_WATER_O_O_DIST * PBC_MIN_WATER_O_O_DIST;
 
 // Higher is more accurate, but slower. After hydrogen bond networks are settled, higher doensn't
 // improve things. Note that we initialize from a pre-equilibrated template, so we shouldn't
@@ -91,6 +102,12 @@ pub struct WaterInitTemplate {
 }
 
 impl WaterInitTemplate {
+    /// Load a previously-saved template from a file path.
+    pub fn load(path: &Path) -> io::Result<Self> {
+        let bytes = fs::read(path)?;
+        load_from_bytes(&bytes)
+    }
+
     /// Construct from the current state, and save to file.
     /// Call this explicitly. (todo: Determine a formal or informal approach)
     pub fn save(water: &[WaterMol], bounds: (Vec3, Vec3), path: &Path) -> io::Result<()> {
@@ -153,8 +170,15 @@ fn calc_n_mols(cell: &SimBox, atoms: &[AtomDynamics]) -> usize {
     let mol_volume = sa_surface::vol_take_up_by_atoms(atoms);
     let free_vol = cell_volume - mol_volume;
 
+    let dims = format!(
+        "{}:.2 x {:.2} x {:.2}",
+        (cell.bounds_high.x - cell.bounds_low.x).abs(),
+        (cell.bounds_high.y - cell.bounds_low.y).abs(),
+        (cell.bounds_high.z - cell.bounds_low.z).abs()
+    );
+
     println!(
-        "Solvent-free vol: {:.2} Cell vol: {:.2} (Å³ / 1,000)",
+        "Solvent-free vol: {:.2} Cell vol: {:.2} (Å³ / 1,000). Dims: {dims} Å",
         free_vol / 1_000.,
         cell_volume / 1_000.
     );
@@ -170,17 +194,34 @@ fn calc_n_mols(cell: &SimBox, atoms: &[AtomDynamics]) -> usize {
 /// (0,0,0) contributes; for larger cells neighbouring tiles fill in the rest.
 /// Water-solvent conflict detection uses min-image distances so molecules are never placed too
 /// close to a PBC image of an already-placed molecule.
+///
+/// `template_override`: if provided, use this template instead of the built-in 60 Å one.
+/// A 30 Å pre-equilibrated template gives correct initial pressures for a 30 Å box.
 pub fn make_water_mols(
     cell: &SimBox,
     _temperature_tgt: f32,
     atoms: &[AtomDynamics],
     _zero_com_drift: bool,
     specify_num_water: Option<usize>,
+    template_override: Option<&WaterInitTemplate>,
+    // When true, skip the PBC-boundary proximity check (the 2.8 Å cross-boundary filter).
+    // Only the hard-overlap 1.7 Å direct-distance check remains.  Use this when generating
+    // a template at the correct equilibrium density: the ~88 boundary molecules that the PBC
+    // filter would reject are acceptable starting points; the MD equilibration run will push
+    // them to their natural first-shell distances.
+    skip_pbc_filter: bool,
 ) -> Vec<WaterMol> {
     println!("Initializing solvent molecules...");
     let start = Instant::now();
 
-    let template: WaterInitTemplate = load_from_bytes(INIT_TEMPLATE).unwrap();
+    let default_template;
+    let template: &WaterInitTemplate = match template_override {
+        Some(t) => t,
+        None => {
+            default_template = load_from_bytes(INIT_TEMPLATE).unwrap();
+            &default_template
+        }
+    };
 
     let n_mols = specify_num_water.unwrap_or_else(|| calc_n_mols(cell, atoms));
     let mut result = Vec::with_capacity(n_mols);
@@ -235,13 +276,31 @@ pub fn make_water_mols(
                         }
                     }
 
-                    // Conflict with already-placed solvent. Use min-image so molecules near
-                    // opposite faces of the cell (PBC images) are also caught.
+                    // Conflict with already-placed solvent.
+                    // Two-threshold check:
+                    //   1. Direct distance < 1.7 Å: hard overlap regardless of PBC.
+                    //   2. PBC-wrapped distance < 2.8 Å *and* wrapping shortened the distance:
+                    //      these are cross-boundary pairs from the template that were never
+                    //      equilibrated as PBC neighbours in this (smaller) cell.
+                    //      Interior template molecules at their natural 2.5–2.8 Å first-shell
+                    //      distances are not affected (min_image == direct for them).
                     for w in &result {
-                        if cell.min_image(w.o.posit - o_posit).magnitude_squared()
-                            < MIN_WATER_O_O_DIST_SQ
-                        {
+                        let diff = w.o.posit - o_posit;
+                        let direct_sq = diff.magnitude_squared();
+                        if direct_sq < MIN_WATER_O_O_DIST_SQ {
                             continue 'mol;
+                        }
+                        let min_image_sq = cell.min_image(diff).magnitude_squared();
+                        // Always reject PBC hard overlaps (PBC distance < 1.7 Å) even when
+                        // skip_pbc_filter is true, to prevent catastrophic initial forces.
+                        if min_image_sq < MIN_WATER_O_O_DIST_SQ {
+                            continue 'mol;
+                        }
+                        if !skip_pbc_filter {
+                            if min_image_sq < PBC_MIN_WATER_O_O_DIST_SQ && min_image_sq < direct_sq
+                            {
+                                continue 'mol;
+                            }
                         }
                     }
 
