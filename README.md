@@ -4,6 +4,7 @@
 [![API Docs](https://docs.rs/dynamics/badge.svg)](https://docs.rs/dynamics)
 [![Descriptive Docs](https://docs.rs/dynamics/badge.svg)](https://www.athanorlab.com/docs/md.html)
 [![PyPI](https://img.shields.io/pypi/v/mol_dynamics.svg)](https://pypi.org/project/mol_dynamics)
+[![Hypercommit](https://img.shields.io/badge/Hypercommit-DB2475)](https://hypercommit.com/dynamics)
 
 A Python and Rust library for molecular dynamics. Compatible with Linux, Windows, and Mac. Uses CPU with threadpools and
 SIMD, or an Nvidia GPU. It uses traditional forcefield-based molecular dynamics, and is inspired by Amber. It does not
