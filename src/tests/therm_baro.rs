@@ -401,9 +401,13 @@ fn test_pressure_lj_virial() {
 /// Run this once with `cargo test generate_water_30a_template -- --ignored --nocapture`
 /// and commit the resulting file. The pressure test uses this template for accurate 1-bar readings.
 ///
-/// Background: when a 30 Å box is filled from the built-in 60 Å template, the long-range Coulomb
-/// correlations appropriate for 30 Å PBC need ~40-50 ps (Debye relaxation time) to form.
-/// A pre-equilibrated 30 Å template avoids this wait, enabling a tight ±500 bar pressure check.
+/// Two-phase Langevin approach:
+/// - Phase 1 (20 ps, gamma=100): strong damping quickly resolves PBC close contacts (1.7-2.8 Å
+///   O-O) that arise when skip_water_pbc_filter accepts boundary molecules. Without this, large
+///   repulsive LJ forces (~14 000 kcal/(mol·Å)) overwhelm any thermostat.
+/// - Phase 2 (30 ps, gamma=10): gentler friction allows proper diffusion (D ≈ 1.4 Å²/ps) so
+///   the hydrogen-bond network and long-range Coulomb structure (Debye time ~26 ps) can form.
+///   W_lr should converge to ~-22 000 kcal/mol; P should reach ~1 bar.
 #[test]
 #[ignore]
 fn generate_water_30a_template() {
@@ -417,25 +421,14 @@ fn generate_water_30a_template() {
     let param_set = FfParamSet::new_amber().unwrap();
     let dev = ComputationDevice::Cpu;
 
-    // Use CSVR thermostat (VerletVelocity + tau=0.1 ps) which controls T without adding
-    // per-atom friction that would hinder the collective dielectric (Debye) relaxation needed
-    // to form the correct long-range Coulomb structure.  Barostat disabled: fixed 30 Å box.
-    //
     // skip_water_pbc_filter: the default 2.8 Å PBC-boundary filter rejects ~88 molecules when
     // cutting from the 60 Å template, leaving only 811 molecules (density 0.900 g/cm³) instead
     // of the ~898 needed for 1.0 g/cm³ / 1 bar.  With the filter disabled these boundary
-    // molecules are accepted.
-    //
-    // Energy minimisation (max_init_relaxation_iters) resolves the PBC close contacts
-    // (1.7-2.8 Å O-O under PBC) before MD starts, preventing numerical instability from
-    // the very large initial repulsive forces.
+    // molecules are accepted (down to 1.7 Å hard PBC limit).
     let cfg = MdConfig {
-        integrator: Integrator::VerletVelocity {
-            thermostat: Some(0.1),
-        },
+        integrator: Integrator::LangevinMiddle { gamma: 100.0 },
         sim_box: SimBoxInit::Fixed((Vec3::new(0., 0., 0.), Vec3::new(30., 30., 30.))),
         temp_target: 310.,
-        max_init_relaxation_iters: Some(5_000),
         skip_water_pbc_filter: true,
         overrides: MdOverrides {
             baro_disabled: true,
@@ -446,16 +439,31 @@ fn generate_water_30a_template() {
 
     let mut md = MdState::new(&dev, &cfg, &[], &param_set).unwrap();
 
-    // ~50 ps at dt=0.002 ps to let the dielectric (long-range Coulomb) structure form.
-    let n_equil = 25_000;
-    println!("Running {n_equil} equilibration steps (~50 ps)...");
-    for step in 0..n_equil {
+    // Phase 1: 20 ps with gamma=100 to resolve PBC close contacts.
+    println!("Phase 1: resolving close contacts (10 000 steps, gamma=100)...");
+    for step in 0..10_000_usize {
         md.step(&dev, 0.002, None);
-        if step % 5_000 == 4999 {
-            let v = md.barostat.virial.to_kcal_mol();
+        if step % 2_000 == 1_999 {
             let t = md.measure_temperature();
+            let v = md.barostat.virial.to_kcal_mol();
             println!(
-                "  step {}: T={t:.1} K  W_lr={:.1} kcal/mol",
+                "  phase1 step {}: T={t:.1} K  W_lr={:.1} kcal/mol",
+                step + 1,
+                v.nonbonded_long_range
+            );
+        }
+    }
+
+    // Phase 2: 30 ps with gamma=10 for Debye relaxation and H-bond network formation.
+    println!("Phase 2: Debye relaxation (15 000 steps, gamma=10)...");
+    md.cfg.integrator = Integrator::LangevinMiddle { gamma: 10.0 };
+    for step in 0..15_000_usize {
+        md.step(&dev, 0.002, None);
+        if step % 3_000 == 2_999 {
+            let t = md.measure_temperature();
+            let v = md.barostat.virial.to_kcal_mol();
+            println!(
+                "  phase2 step {}: T={t:.1} K  W_lr={:.1} kcal/mol",
                 step + 1,
                 v.nonbonded_long_range
             );

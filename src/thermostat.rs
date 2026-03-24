@@ -17,6 +17,18 @@ pub(crate) const GAS_CONST_R: f64 = 0.001_987_204_1; // kcal mol⁻¹ K⁻¹ (Am
 // We use this for the Langevin and Anderson thermostat, where we need per-particle Gaussian noise or variance.
 pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 
+// TAU is for the CSVR thermostat. In ps. Lower means more sensitive.
+// We set an aggressive thermostat during solvent initialization, then a more relaxed one at runtime.
+// This is for the VV/CVSR themostat only.
+// Note: These are publically exposed, for use in applications.
+pub const TAU_TEMP_DEFAULT: f64 = 0.1; // GROMACS default.
+pub const TAU_TEMP_WATER_INIT: f64 = 0.01; // for CSVR
+
+// These are in 1/ps. 1 ps^-1 is a good default for explicit solvent and constrained H bonds.
+// Lower is closer to Newtonian dynamics. 1-2 are good values.
+pub const LANGEVIN_GAMMA_DEFAULT: f32 = 2.0;
+pub const LANGEVIN_GAMMA_WATER_INIT: f32 = 15.;
+
 impl MdState {
     /// Computes total kinetic energy, in native units.
     /// Includes all non-static atoms, including solvent.

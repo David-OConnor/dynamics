@@ -21,19 +21,6 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 /// Used for the stochastic term in the C-rescale barostat.
 const KB_BAR_A3_PER_K: f64 = 138.064_9;
 
-// TAU is for the CSVR thermostat. In ps. Lower means more sensitive.
-// We set an aggressive thermostat during solvent initialization, then a more relaxed one at runtime.
-// This is for the VV/CVSR themostat only.
-// Note: These are publically exposed, for use in applications.
-// pub const TAU_TEMP_DEFAULT: f64 = 1.0;
-pub const TAU_TEMP_DEFAULT: f64 = 0.9;
-pub const TAU_TEMP_WATER_INIT: f64 = 0.01; // for CSVR
-
-// These are in 1/ps. 1 ps^-1 is a good default for explicit solvent and constrained H bonds.
-// Lower is closer to Newtonian dynamics.
-pub const LANGEVIN_GAMMA_DEFAULT: f32 = 1.0;
-pub const LANGEVIN_GAMMA_WATER_INIT: f32 = 15.;
-
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for solvent atoms. Its size and position should be such as to keep the system
 /// solvated. We may move it around during the sim.
@@ -261,8 +248,6 @@ impl Display for Virial {
 pub struct Barostat {
     /// bar (kPa / 100)
     pub pressure_target: f64,
-    /// picoseconds
-    pub tau_pressure: f64,
     /// bar‑1 (≈4.5×10⁻⁵ for solvent at 300K, 1bar)
     pub kappa_t: f64,
     pub virial: Virial,
@@ -274,8 +259,6 @@ impl Default for Barostat {
         Self {
             // Standard atmospheric pressure.
             pressure_target: 1.,
-            // Relaxation time: 1 ps ⇒ gentle volume changes every few steps.
-            tau_pressure: 1.,
             // Isothermal compressibility of solvent at 298 K.
             kappa_t: 4.5e-5,
             virial: Default::default(),
@@ -289,14 +272,20 @@ impl Barostat {
     ///
     /// `temp_k` should be the reference (target) temperature in K.
     /// `vol_a3` is the current simulation-box volume in Å³.
-    pub fn scale_factor(&mut self, p_inst: f64, dt: f64, temp_k: f64, vol_a3: f64) -> f64 {
+    pub fn scale_factor(
+        &mut self,
+        p_inst: f64,
+        dt: f64,
+        temp_k: f64,
+        vol_a3: f64,
+        tau_pressure: f64,
+    ) -> f64 {
         // Deterministic term: ΔlnV_det = (κT/τp)(P_inst − P₀)dt
-        let dlnv_det = (self.kappa_t / self.tau_pressure) * (p_inst - self.pressure_target) * dt;
+        let dlnv_det = (self.kappa_t / tau_pressure) * (p_inst - self.pressure_target) * dt;
 
         // Stochastic term: σ = √(2κT·kB·T·dt / (τp·V))
-        let sigma_lnv = (2.0 * self.kappa_t * KB_BAR_A3_PER_K * temp_k * dt
-            / (self.tau_pressure * vol_a3))
-            .sqrt();
+        let sigma_lnv =
+            (2.0 * self.kappa_t * KB_BAR_A3_PER_K * temp_k * dt / (tau_pressure * vol_a3)).sqrt();
         let xi: f64 = StandardNormal.sample(&mut self.rng);
 
         // Cap per-step volume change (≤10%) before computing λ
@@ -312,6 +301,7 @@ impl Barostat {
         dt_ps: f64,
         p_inst_bar: f64,
         temp_k: f64,
+        tau_pressure: f64,
         simbox: &mut SimBox,
         atoms_dyn: &mut [AtomDynamics],
         waters: &mut [WaterMol],
@@ -320,7 +310,7 @@ impl Barostat {
         return;
 
         let vol_a3 = simbox.volume() as f64;
-        let lam = self.scale_factor(p_inst_bar, dt_ps, temp_k, vol_a3); // λ for lengths (not volume)
+        let lam = self.scale_factor(p_inst_bar, dt_ps, temp_k, vol_a3, tau_pressure); // λ for lengths (not volume)
 
         if !(lam.is_finite() && lam > 0.0) || (lam - 1.0).abs() < 1e-12 {
             return; // no-op

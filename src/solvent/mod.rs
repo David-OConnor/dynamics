@@ -94,6 +94,7 @@ pub(crate) const ACCEL_CONV_WATER_H: f32 = KCAL_TO_NATIVE / H_MASS;
 /// todo a portion by mass, volume, or mol count.
 #[derive(Clone, Debug, Default)]
 pub enum Solvent {
+    None,
     #[default]
     WaterOpc,
     WaterOpcSpecifyMolCount(usize),
@@ -127,7 +128,7 @@ impl bincode::Encode for Solvent {
         encoder: &mut E,
     ) -> Result<(), bincode::error::EncodeError> {
         match self {
-            Self::WaterOpc => {
+            Self::None | Self::WaterOpc => {
                 0u32.encode(encoder)?;
             }
             Self::WaterOpcSpecifyMolCount(count) => {

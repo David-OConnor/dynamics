@@ -129,7 +129,15 @@ use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::{
-    AtomGeneric, BondGeneric, Sdf, dcd::DcdTrajectory, md_params::ForceFieldParams, mol2::Mol2,
+    AtomGeneric, BondGeneric, Sdf,
+    dcd::DcdTrajectory,
+    gromacs,
+    gromacs::{
+        MdpParams,
+        mdp::{ConstraintAlgorithm, CoulombType, Pbc, PressureCouplingType, Thermostat, VdwType},
+    },
+    md_params::ForceFieldParams,
+    mol2::Mol2,
 };
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaContext, CudaFunction, CudaStream};
@@ -146,14 +154,14 @@ use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{ForcesOnWaterMol, Solvent, init::WaterInitTemplate};
 
-pub use crate::barostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
-#[cfg(feature = "cuda")]
-use crate::non_bonded::{EWALD_ALPHA, LONG_RANGE_CUTOFF};
+pub use crate::thermostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 use crate::{
     barostat::Barostat,
-    non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
+    non_bonded::{
+        CHARGE_UNIT_SCALER, CUTOFF_VDW, EWALD_ALPHA, LONG_RANGE_CUTOFF, LjTables, NonBondedPair,
+    },
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{SaveType, Snapshot, SnapshotHandler},
@@ -554,7 +562,6 @@ pub struct MdOverrides {
     pub snapshots_during_equilibration: bool,
     /// Take snapshots during the energy minimization phase. (Not solvent equilibration)
     pub snapshots_during_energy_min: bool,
-    pub skip_water: bool,
 }
 
 /// This is the primary way of configurating an MD run. It's passed at init, along with the
@@ -570,6 +577,8 @@ pub struct MdConfig {
     pub temp_target: f32,
     /// Bar (Pa/100). Defaults to 1 bar.
     pub pressure_target: f32,
+    /// ps. Defaults to 5; this is what GROMACS uses.
+    pub tau_pressure: f32,
     /// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
     /// algorithms. This allows for higher time steps.
     pub hydrogen_constraint: HydrogenConstraint,
@@ -604,8 +613,9 @@ impl Default for MdConfig {
         Self {
             integrator: Default::default(),
             zero_com_drift: false, // todo: True?
-            temp_target: 310.,
+            temp_target: 300.,     // GROMACS uses this.
             pressure_target: 1.,
+            tau_pressure: 5.,
             hydrogen_constraint: Default::default(),
             snapshot_handlers: vec![SnapshotHandler {
                 save_type: SaveType::Memory,
@@ -618,6 +628,83 @@ impl Default for MdConfig {
             overrides: Default::default(),
             water_template_path: None,
             skip_water_pbc_filter: false,
+        }
+    }
+}
+
+impl MdConfig {
+    /// Creates a similar config for use with GROMACS. Attempts to replicate this library's
+    /// settings where we don't have an applicable MdConfig field.
+    pub fn to_gromacs(&self, n_steps: usize, dt: f32) -> MdpParams {
+        // We choose the first handler, for now.
+        // todo: We're currently using a single ratio for all output types.
+        let ratio = {
+            let mut v = 0;
+
+            for handler in &self.snapshot_handlers {
+                v = handler.ratio;
+            }
+            v
+        } as u32;
+
+        let (integrator, tau_t) = match self.integrator {
+            Integrator::LangevinMiddle { gamma: _ } => {
+                // Leap-frog
+                (gromacs::mdp::Integrator::Md, 1.) // GROMACS default.
+            }
+            Integrator::VerletVelocity { thermostat } => {
+                let tau = if let Some(t) = thermostat {
+                    t as f32
+                } else {
+                    1.
+                };
+                (gromacs::mdp::Integrator::MdVv, tau)
+            }
+        };
+
+        let constraints = match self.hydrogen_constraint {
+            HydrogenConstraint::Constrained => gromacs::mdp::Constraints::HBonds,
+            HydrogenConstraint::Flexible => gromacs::mdp::Constraints::None,
+        };
+
+        let barostat = if self.overrides.baro_disabled {
+            gromacs::mdp::Barostat::No
+        } else {
+            gromacs::mdp::Barostat::CRescale
+        };
+
+        const ANGSTROM_TO_NM: f32 = 0.1;
+
+        MdpParams {
+            integrator,
+            nsteps: n_steps as u64,
+            dt,
+            nstxout: ratio,
+            nstvout: ratio,
+            nstxout_compressed: ratio,
+            nstenergy: ratio,
+            nstlog: ratio,
+            coulombtype: CoulombType::Pme,
+            rcoulomb: LONG_RANGE_CUTOFF * ANGSTROM_TO_NM,
+            vdwtype: VdwType::CutOff,
+            rvdw: CUTOFF_VDW * ANGSTROM_TO_NM,
+            fourierspacing: None,
+            thermostat: Thermostat::VRescale,
+            // We only have one temperature-coupling group in this lib.
+            tau_t: vec![tau_t],
+            ref_t: vec![self.temp_target],
+            pcoupl: barostat,
+            pcoupltype: PressureCouplingType::default(),
+            tau_p: self.tau_pressure,
+            ref_p: self.pressure_target,
+            compressibility: 4.5e-5, // Standard water compressibility
+            pbc: Pbc::Xyz,
+            gen_vel: true,
+            gen_temp: self.temp_target,
+            gen_seed: -1, // Default
+            constraints,
+            constraint_algorithm: ConstraintAlgorithm::Lincs,
+            pme_order: 4, // Hard-coded in `ewald`.
         }
     }
 }
@@ -978,7 +1065,7 @@ impl MdState {
             Vec::new()
         } else {
             let count = match &cfg.solvent {
-                Solvent::WaterOpc => None,
+                Solvent::None | Solvent::WaterOpc => None,
                 Solvent::WaterOpcSpecifyMolCount(c) => Some(*c),
                 Solvent::Custom((_, c)) => Some(*c),
             };

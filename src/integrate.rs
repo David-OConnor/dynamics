@@ -12,13 +12,12 @@ use lin_alg::f32::Vec3;
 
 use crate::{
     CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
-    barostat::{
-        LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT, measure_pressure,
-    },
+    barostat::measure_pressure,
     solvent::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
         settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
     },
+    thermostat::{LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT},
 };
 
 const COM_REMOVAL_RATIO_LINEAR: usize = 10;
@@ -35,13 +34,11 @@ const MAX_ACCEL_SQ: f32 = MAX_ACCEL * MAX_ACCEL;
 pub enum Integrator {
     /// The inner value is the temperature-coupling time constant if the thermostat is enabled.
     /// This value is in ps.
-    /// Lower means more sensitive. 1ps is a good default.
+    /// Lower means more sensitive. 0.1ps is a good default.
     VerletVelocity { thermostat: Option<f64> },
     /// Velocity-verlet with a Langevin thermometer. Good temperature control
     /// and ergodicity, but the friction parameter damps real dynamics as it grows.
-    /// γ is friction in 1/ps. Typical values are 1–5. for proteins in implicit/weak solvent.
-    /// With explicit solvents, we can often go lower to 0.1 – 1.
-    /// A higher value has strong damping and is rougher. A lower value is gentler.
+    /// γ is friction in 1/ps. Good initial gamma: 1 - 2.0. Default to 2.
     LangevinMiddle { gamma: f32 },
 }
 
@@ -175,6 +172,7 @@ impl MdState {
                         dt as f64,
                         pressure,
                         self.cfg.temp_target as f64,
+                        self.cfg.tau_pressure as f64,
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
@@ -293,6 +291,7 @@ impl MdState {
                         dt as f64,
                         pressure,
                         self.cfg.temp_target as f64,
+                        self.cfg.tau_pressure as f64,
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
