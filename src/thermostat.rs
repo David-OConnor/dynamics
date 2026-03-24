@@ -25,8 +25,8 @@ pub const TAU_TEMP_DEFAULT: f64 = 0.1; // GROMACS default.
 pub const TAU_TEMP_WATER_INIT: f64 = 0.01; // for CSVR
 
 // These are in 1/ps. 1 ps^-1 is a good default for explicit solvent and constrained H bonds.
-// Lower is closer to Newtonian dynamics. 1-2 are good values.
-pub const LANGEVIN_GAMMA_DEFAULT: f32 = 2.0;
+// Lower is closer to Newtonian dynamics. 0.5-1 are good values.
+pub const LANGEVIN_GAMMA_DEFAULT: f32 = 0.5;
 pub const LANGEVIN_GAMMA_WATER_INIT: f32 = 15.;
 
 impl MdState {

@@ -134,7 +134,7 @@ use bio_files::{
     gromacs,
     gromacs::{
         MdpParams,
-        mdp::{ConstraintAlgorithm, CoulombType, Pbc, PressureCouplingType, Thermostat, VdwType},
+        mdp::{ConstraintAlgorithm, CoulombType, Pbc, PressureCouplingType, VdwType},
     },
     md_params::ForceFieldParams,
     mol2::Mol2,
@@ -636,29 +636,32 @@ impl MdConfig {
     /// Creates a similar config for use with GROMACS. Attempts to replicate this library's
     /// settings where we don't have an applicable MdConfig field.
     pub fn to_gromacs(&self, n_steps: usize, dt: f32) -> MdpParams {
-        // We choose the first handler, for now.
+        // Use the first handler's ratio for all output types.
         // todo: We're currently using a single ratio for all output types.
-        let ratio = {
-            let mut v = 0;
+        let ratio = self.snapshot_handlers.first().map(|h| h.ratio).unwrap_or(0) as u32;
 
-            for handler in &self.snapshot_handlers {
-                v = handler.ratio;
-            }
-            v
-        } as u32;
-
-        let (integrator, tau_t) = match self.integrator {
-            Integrator::LangevinMiddle { gamma: _ } => {
-                // Leap-frog
-                (gromacs::mdp::Integrator::Md, 1.) // GROMACS default.
+        let (integrator, tau_t, thermostat) = match self.integrator {
+            Integrator::LangevinMiddle { gamma } => {
+                // GROMACS `sd` (stochastic dynamics) is the correct counterpart for Langevin.
+                // `tcoupl` must be `no` for `sd`; friction is given via `tau-t` = 1/γ (ps).
+                let tau = if gamma > 0.0 { 1.0 / gamma } else { 1.0 };
+                (
+                    gromacs::mdp::Integrator::Sd,
+                    tau,
+                    gromacs::mdp::Thermostat::No,
+                )
             }
             Integrator::VerletVelocity { thermostat } => {
                 let tau = if let Some(t) = thermostat {
                     t as f32
                 } else {
-                    1.
+                    TAU_TEMP_DEFAULT as f32
                 };
-                (gromacs::mdp::Integrator::MdVv, tau)
+                (
+                    gromacs::mdp::Integrator::MdVv,
+                    tau,
+                    gromacs::mdp::Thermostat::VRescale,
+                )
             }
         };
 
@@ -689,7 +692,7 @@ impl MdConfig {
             vdwtype: VdwType::CutOff,
             rvdw: CUTOFF_VDW * ANGSTROM_TO_NM,
             fourierspacing: None,
-            thermostat: Thermostat::VRescale,
+            thermostat,
             // We only have one temperature-coupling group in this lib.
             tau_t: vec![tau_t],
             ref_t: vec![self.temp_target],
