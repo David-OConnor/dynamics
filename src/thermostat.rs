@@ -93,8 +93,10 @@ impl MdState {
 
             if !self.solvent_only_sim_at_init {
                 for atom in &self.atoms {
-                    if self.cfg.hydrogen_constraint == HydrogenConstraint::Constrained
-                        && atom.element == Element::Hydrogen
+                    if matches!(
+                        self.cfg.hydrogen_constraint,
+                        HydrogenConstraint::Constrained { shake_tolerance: _ }
+                    ) && atom.element == Element::Hydrogen
                         && !atom.static_
                     {
                         c += 1;

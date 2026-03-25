@@ -39,13 +39,10 @@ pub const CUTOFF_VDW: f32 = 12.0;
 // todo: Temporarily set this higher than 10., while we work through some long range problems.
 pub const LONG_RANGE_CUTOFF: f32 = 12.0; // Å
 
-// A bigger α means more damping, and a smaller real-space contribution. (Cheaper real), but larger
-// reciprocal load.
-// Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
-pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff of 10–12 Å.
-
-// Å. Smaller uses a higher-resolution mesh. 1 is a good default.
-pub const SPME_MESH_SPACING: f32 = 1.;
+// // A bigger α means more damping, and a smaller real-space contribution. (Cheaper real), but larger
+// // reciprocal load.
+// // Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
+// pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff of 10–12 Å.
 
 // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
 // "Non-bonded interactions between atoms separated by three consecutive bonds... require a special
@@ -258,6 +255,7 @@ fn calc_force_cpu(
     lj_tables: &LjTables,
     overrides: &MdOverrides,
     mol_start_indices: &[usize],
+    spme_alpha: f32,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>) {
     let n_std = atoms_std.len();
     let n_wat = water.len();
@@ -300,6 +298,7 @@ fn calc_force_cpu(
                     p.calc_lj,
                     p.calc_coulomb,
                     overrides,
+                    spme_alpha,
                 );
 
                 // Convert to f64 prior to summing.
@@ -426,6 +425,7 @@ impl MdState {
                     &self.lj_tables,
                     &self.cfg.overrides,
                     &self.mol_start_indices,
+                    self.cfg.spme_alpha,
                 )
             }
             #[cfg(feature = "cuda")]
@@ -727,24 +727,24 @@ impl MdState {
     pub(crate) fn regen_pme(&mut self, dev: &ComputationDevice) {
         let [lx, ly, lz] = self.cell.extent.to_arr();
         let l = (lx, ly, lz);
-        let n = get_grid_n(l, SPME_MESH_SPACING);
+        let n = get_grid_n(l, self.cfg.spme_mesh_spacing);
 
         self.pme_recip = Some(match dev {
             ComputationDevice::Cpu => {
                 #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                let v = PmeRecip::new(None, n, l, EWALD_ALPHA);
+                let v = PmeRecip::new(None, n, l, self.cfg.spme_alpha);
                 #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
-                let v = PmeRecip::new(n, l, EWALD_ALPHA);
+                let v = PmeRecip::new(n, l, self.cfg.spme_alpha);
 
                 v
             }
             #[cfg(feature = "cuda")]
             ComputationDevice::Gpu(stream) => {
                 #[cfg(any(feature = "vkfft", feature = "cufft"))]
-                let v = PmeRecip::new(Some(stream), n, l, EWALD_ALPHA);
+                let v = PmeRecip::new(Some(stream), n, l, self.cfg.spme_alpha);
 
                 #[cfg(not(any(feature = "vkfft", feature = "cufft")))]
-                let v = PmeRecip::new(n, l, EWALD_ALPHA);
+                let v = PmeRecip::new(n, l, self.cfg.spme_alpha);
 
                 v
             }
@@ -770,6 +770,7 @@ pub fn f_nonbonded_cpu(
     calc_lj: bool,
     calc_coulomb: bool,
     overrides: &MdOverrides,
+    spme_alpha: f32,
 ) -> (Vec3, f32) {
     let diff = cell.min_image(tgt.posit - src.posit);
 
@@ -810,7 +811,7 @@ pub fn f_nonbonded_cpu(
             tgt.partial_charge,
             src.partial_charge,
             LONG_RANGE_CUTOFF,
-            EWALD_ALPHA,
+            spme_alpha,
         )
     };
 

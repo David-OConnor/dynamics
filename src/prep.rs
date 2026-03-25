@@ -31,6 +31,7 @@ use bio_files::md_params::{
 use itertools::Itertools;
 use na_seq::Element::Hydrogen;
 
+use crate::bonded::SHAKE_TOL_DEFAULT;
 use crate::{AtomDynamics, MdState, ParamError, params::ForceFieldParamsIndexed};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
@@ -52,20 +53,27 @@ pub fn merge_params(baseline: &ForceFieldParams, add_this: &ForceFieldParams) ->
 /// We use this variant in the configuration API. Deferrs to `HydrogenConstraintInner` for holding
 /// constraints.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-#[derive(Clone, Copy, Default, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HydrogenConstraint {
     /// Uses Shake and Rattle to fix the hydrogen positions. This allows for a larger timestep,
     /// e.g. 2fs instead of 1fs.
-    #[default]
-    Constrained,
+    Constrained { shake_tolerance: f32 },
     /// Uses the same bonded parameters as elsewhere: A spring model
     Flexible,
 }
 
+impl Default for HydrogenConstraint {
+    fn default() -> Self {
+        HydrogenConstraint::Constrained {
+            shake_tolerance: SHAKE_TOL_DEFAULT,
+        }
+    }
+}
+
 impl fmt::Display for HydrogenConstraint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HydrogenConstraint::Constrained => write!(f, "Constrained"),
+            HydrogenConstraint::Constrained { shake_tolerance: _ } => write!(f, "Constrained"),
             HydrogenConstraint::Flexible => write!(f, "Flexible"),
         }
     }
@@ -241,8 +249,10 @@ impl ForceFieldParamsIndexed {
 
                 // If using fixed hydrogens, don't add these to our bond stretching params;
                 // add to a separate hydrogen rigid param variable.
-                if h_constraint == HydrogenConstraint::Constrained
-                    && (atoms[i0].element == Hydrogen || atoms[i1].element == Hydrogen)
+                if matches!(
+                    h_constraint,
+                    HydrogenConstraint::Constrained { shake_tolerance: _ }
+                ) && (atoms[i0].element == Hydrogen || atoms[i1].element == Hydrogen)
                 {
                     // Set up inverse mass using params directly, so we don't have to have
                     // mass loaded into the atom directly yet.

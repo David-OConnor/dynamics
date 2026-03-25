@@ -13,8 +13,9 @@ const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
 // The tolerance controls how close we get
 // to the target value; lower values are more precise, but require more iterations. `SHAKE_MAX_ITER`
 // constrains the number of iterations.
-const SHAKE_TOL: f32 = 1.0e-4; // Å
 const SHAKE_MAX_IT: usize = 100;
+
+pub const SHAKE_TOL_DEFAULT: f32 = 0.0001;
 
 impl MdState {
     pub(crate) fn apply_bonded_forces(&mut self) {
@@ -135,7 +136,7 @@ impl MdState {
 
     /// This makes the position constraint difference 0; run after drifting positions.
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub(crate) fn shake_hydrogens(&mut self, dt: f32) {
+    pub(crate) fn shake_hydrogens(&mut self, dt: f32, tolerance: f32) {
         // For computing the virial. Store unconstrained positions for atoms involved in constraints
         // (For performance in production, you might want to cache this vector in MdState)
         let mut unconstrained_pos = vec![Vec3::new_zero(); self.atoms.len()];
@@ -169,7 +170,7 @@ impl MdState {
             }
 
             // Converged
-            if max_corr < SHAKE_TOL {
+            if max_corr < tolerance {
                 break;
             }
         }

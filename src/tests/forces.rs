@@ -8,9 +8,11 @@ use na_seq::Element;
 use crate::{
     ComputationDevice, FfMolType, MdConfig, MdOverrides, MdState, MolDynamics, SimBoxInit,
     forces::force_e_lj,
-    non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF},
+    non_bonded::{CHARGE_UNIT_SCALER, LONG_RANGE_CUTOFF},
     params::FfParamSet,
 };
+
+const EWALD_ALPHA: f32 = 0.35;
 
 /// Build two test "ca" carbons positioned symmetrically around (30, 30, 30) in a 60 Å box.
 /// The atoms are given distinct serial numbers so that bonds can refer to them.

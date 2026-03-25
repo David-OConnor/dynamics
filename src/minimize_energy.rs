@@ -4,8 +4,8 @@ use lin_alg::f32::Vec3;
 
 use crate::{ComputationDevice, MdState};
 
-const F_TOL: f32 = 1.0e-3; // stop when max |F| is below this (force units used in your accel pre-division)
-const STEP_INIT: f32 = 1.0e-4; // initial step along +F (Å per force-unit)
+// emtol and emstep come from cfg.energy_minimization; see EnergyMinimization.
+// nstcgsteep (CG) and nbfgscorr (L-BFGS) are not used: this is a steepest-descent minimizer.
 const STEP_MAX: f32 = 0.2; // cap per-atom displacement per iteration (Å)
 const GROW: f32 = 1.2; // expand step if energy decreased
 const SHRINK: f32 = 0.5; // backtrack factor if energy increased
@@ -111,7 +111,7 @@ impl MdState {
 
         compute_forces_and_energy(self, dev, external_force);
 
-        let alpha = STEP_INIT;
+        let alpha = self.cfg.energy_minimization.emstep;
         let e_prev = self.potential_energy;
 
         // Per-atom last step for backtracking
@@ -209,7 +209,7 @@ impl MdState {
                 *alpha = (alpha_try * GROW).min(ALPHA_MAX);
 
                 let (max_f, _rms_f) = force_stats(self);
-                return max_f <= F_TOL;
+                return max_f <= self.cfg.energy_minimization.emtol;
             }
 
             // Reject: revert positions

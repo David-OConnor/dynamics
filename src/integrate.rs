@@ -128,7 +128,10 @@ impl MdState {
                 }
 
                 // Rattle after the thermostat run, as it updates velocities in a non-uniform manner.
-                if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+                if matches!(
+                    self.cfg.hydrogen_constraint,
+                    HydrogenConstraint::Constrained { shake_tolerance: _ }
+                ) {
                     self.rattle_hydrogens(dt);
                 }
 
@@ -390,8 +393,8 @@ impl MdState {
             let _ = integrate_rigid_water(w, dt_drift, &self.cell);
         }
 
-        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-            self.shake_hydrogens(dt_kick);
+        if let HydrogenConstraint::Constrained { shake_tolerance } = self.cfg.hydrogen_constraint {
+            self.shake_hydrogens(dt_kick, shake_tolerance);
             self.rattle_hydrogens(dt_kick);
         }
 
@@ -435,7 +438,10 @@ impl MdState {
             w.h1.vel += w.h1.accel * dt;
         }
 
-        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
+        if matches!(
+            self.cfg.hydrogen_constraint,
+            HydrogenConstraint::Constrained { shake_tolerance: _ }
+        ) {
             self.rattle_hydrogens(dt);
         }
 
@@ -456,8 +462,8 @@ impl MdState {
             let _ = integrate_rigid_water(w, dt, &self.cell);
         }
 
-        if let HydrogenConstraint::Constrained = self.cfg.hydrogen_constraint {
-            self.shake_hydrogens(dt);
+        if let HydrogenConstraint::Constrained { shake_tolerance } = self.cfg.hydrogen_constraint {
+            self.shake_hydrogens(dt, shake_tolerance);
         }
     }
 }
