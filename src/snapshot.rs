@@ -117,8 +117,15 @@ impl Snapshot {
 
             let atoms = self.atom_posits[start..end]
                 .iter()
-                .zip(&self.atom_velocities[start..end])
-                .map(|(&p, &v)| (p, v))
+                .enumerate()
+                .map(|(i, &p)| {
+                    let v = self
+                        .atom_velocities
+                        .get(start + i)
+                        .copied()
+                        .unwrap_or_default();
+                    (p, v)
+                })
                 .collect();
 
             per_mol.push(atoms);
