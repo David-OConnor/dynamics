@@ -157,8 +157,8 @@ impl MdConfig {
             }
             // LINCS maps to the same GROMACS h-bonds constraint type; GROMACS selects LINCS
             // automatically when constraints are enabled with the `md` integrator.
-            HydrogenConstraint::ConstrainedLinear { shake_tolerance } => {
-                (gromacs::mdp::Constraints::HBonds, shake_tolerance)
+            HydrogenConstraint::ConstrainedLinear { .. } => {
+                (gromacs::mdp::Constraints::HBonds, 0.)
             }
             HydrogenConstraint::Flexible => (gromacs::mdp::Constraints::None, 0.),
         };
@@ -207,8 +207,7 @@ impl MdConfig {
             gen_temp: self.temp_target,
             gen_seed: None,
             constraints,
-            // todo: Support LINCS in dynamics?
-            constraint_algorithm: ConstraintAlgorithm::Shake { tol: shake_tol },
+            constraint_algorithm: asfd // todo
             energy_minimization: Some(self.energy_minimization.clone()),
         }
     }

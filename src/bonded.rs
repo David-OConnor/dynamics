@@ -203,17 +203,17 @@ impl MdState {
 
     /// LINCS (LINear Constraint Solver) for hydrogen bond position constraints.
     /// Similar to GROMACS' LINCS algorithm. Unlike SHAKE's iterative approach, LINCS applies a
-    /// direct analytical correction (using the first term of the Neumann series expansion of the
-    /// constraint coupling matrix), followed by `LINCS_ITER` rotational correction passes to
+    /// direct analytical correction using a Neumann series expansion of the constraint coupling
+    /// matrix (controlled by `order`), followed by `iter` rotational correction passes to
     /// compensate for bond lengthening caused by rotation during the integration step.
     ///
+    /// `order` corresponds to GROMACS' `lincs-order` (typically 4 for normal MD).
+    /// `iter` corresponds to GROMACS' `lincs-iter` (typically 1 for normal MD).
+    ///
     /// For hydrogen bonds (each H bonded to exactly one heavy atom), the coupling matrix C ≈ 0,
-    /// so the direct step is already near-exact. Velocity constraints are handled by
+    /// so `order = 1` is already near-exact. Velocity constraints are handled by
     /// `rattle_hydrogens`, which is shared with SHAKE.
-    pub(crate) fn lincs_hydrogens(&mut self, dt: f32) {
-        // GROMACS default: lincs-iter = 1 rotational correction pass.
-        const LINCS_ITER: usize = 1;
-
+    pub(crate) fn lincs_hydrogens(&mut self, dt: f32, order: usize, iter: usize) {
         // Store pre-constraint positions for the virial calculation.
         let mut unconstrained_pos = vec![Vec3::new_zero(); self.atoms.len()];
         for (indices, _) in &self.force_field_params.bond_rigid_constraints {
@@ -221,33 +221,35 @@ impl MdState {
             unconstrained_pos[indices.1] = self.atoms[indices.1].posit;
         }
 
-        // Step 1: Direct correction.
-        // Project along the current unit bond vector (the LINCS reference direction b_k) to
-        // restore the target length. For uncoupled H bonds the coupling matrix is zero, so the
-        // zeroth-order expansion is the full solution.
+        // Step 1: Direct correction — `order` passes of the Neumann expansion.
+        // Each pass projects along the current unit bond vector b_k to restore the target length.
         //   λ = (r₀ − b·d) / w⁻¹,   w⁻¹ = 1/mᵢ + 1/mⱼ
-        for (indices, (r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
-            let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
-            let d = aj.posit - ai.posit;
-            let d_len = d.magnitude().max(f32::EPSILON);
-            let b = d * (1.0 / d_len); // reference unit bond vector
-            let r0 = r0_sq.sqrt();
+        // For uncoupled H bonds the coupling matrix C = 0, so the first pass is already the
+        // full solution; higher `order` helps when constraints share atoms (coupled bonds).
+        for _ in 0..order {
+            for (indices, (r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
+                let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
+                let d = aj.posit - ai.posit;
+                let d_len = d.magnitude().max(f32::EPSILON);
+                let b = d * (1.0 / d_len); // reference unit bond vector
+                let r0 = r0_sq.sqrt();
 
-            let lambda = (r0 - b.dot(d)) / inv_mass;
-            let correction = b * lambda;
+                let lambda = (r0 - b.dot(d)) / inv_mass;
+                let correction = b * lambda;
 
-            if !ai.static_ {
-                ai.posit -= correction / ai.mass;
-            }
-            if !aj.static_ {
-                aj.posit += correction / aj.mass;
+                if !ai.static_ {
+                    ai.posit -= correction / ai.mass;
+                }
+                if !aj.static_ {
+                    aj.posit += correction / aj.mass;
+                }
             }
         }
 
         // Step 2: Rotational correction passes (lincs-iter).
         // The direct step may leave the bond slightly short due to rotation. Each pass applies
         // a SHAKE-style correction for the residual length deviation.
-        for _ in 0..LINCS_ITER {
+        for _ in 0..iter {
             for (indices, (r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
                 let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
                 let d = aj.posit - ai.posit;

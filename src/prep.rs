@@ -60,7 +60,8 @@ pub enum HydrogenConstraint {
     /// and slightly more stable than SHAKE.
     ConstrainedLinear {
         // todo: Shake tolerance still? Investigate
-        shake_tolerance: f32,
+        order: u8,
+        iter: u8,
     },
     ConstrainedShake {
         shake_tolerance: f32,
@@ -82,7 +83,7 @@ impl Default for HydrogenConstraint {
 impl fmt::Display for HydrogenConstraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HydrogenConstraint::ConstrainedLinear { shake_tolerance: _ } => {
+            HydrogenConstraint::ConstrainedLinear { .. } => {
                 write!(f, "Constrained (LINCS)")
             }
             HydrogenConstraint::ConstrainedShake { shake_tolerance: _ } => {
@@ -266,7 +267,7 @@ impl ForceFieldParamsIndexed {
                 if matches!(
                     h_constraint,
                     HydrogenConstraint::ConstrainedShake { shake_tolerance: _ }
-                        | HydrogenConstraint::ConstrainedLinear { shake_tolerance: _ }
+                        | HydrogenConstraint::ConstrainedLinear { .. }
                 ) && (atoms[i0].element == Hydrogen || atoms[i1].element == Hydrogen)
                 {
                     // Set up inverse mass using params directly, so we don't have to have
