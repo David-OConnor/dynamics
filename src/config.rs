@@ -157,9 +157,7 @@ impl MdConfig {
             }
             // LINCS maps to the same GROMACS h-bonds constraint type; GROMACS selects LINCS
             // automatically when constraints are enabled with the `md` integrator.
-            HydrogenConstraint::ConstrainedLinear { .. } => {
-                (gromacs::mdp::Constraints::HBonds, 0.)
-            }
+            HydrogenConstraint::ConstrainedLinear { .. } => (gromacs::mdp::Constraints::HBonds, 0.),
             HydrogenConstraint::Flexible => (gromacs::mdp::Constraints::None, 0.),
         };
 
@@ -206,8 +204,7 @@ impl MdConfig {
             gen_vel: true,
             gen_temp: self.temp_target,
             gen_seed: None,
-            constraints,
-            constraint_algorithm: asfd // todo
+            constraints: self.hydrogen_constraint.to_gromacs(),
             energy_minimization: Some(self.energy_minimization.clone()),
         }
     }

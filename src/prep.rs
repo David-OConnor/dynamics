@@ -25,8 +25,9 @@ use std::{collections::HashSet, fmt};
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::md_params::{
-    AngleBendingParams, BondStretchingParams, ForceFieldParams, LjParams, MassParams,
+use bio_files::{
+    gromacs::mdp::{ConstraintAlgorithm, Constraints},
+    md_params::{AngleBendingParams, BondStretchingParams, ForceFieldParams, LjParams, MassParams},
 };
 use itertools::Itertools;
 use na_seq::Element::Hydrogen;
@@ -73,8 +74,27 @@ pub enum HydrogenConstraint {
 
 impl Default for HydrogenConstraint {
     fn default() -> Self {
-        HydrogenConstraint::ConstrainedShake {
-            shake_tolerance: SHAKE_TOL_DEFAULT,
+        // HydrogenConstraint::ConstrainedShake {
+        //     shake_tolerance: SHAKE_TOL_DEFAULT,
+        // }
+        // GROMACS defaults here.
+        HydrogenConstraint::ConstrainedLinear { order: 4, iter: 1 }
+    }
+}
+
+impl HydrogenConstraint {
+    pub fn to_gromacs(&self) -> Constraints {
+        match self {
+            Self::ConstrainedLinear { order, iter } => {
+                Constraints::HBonds(ConstraintAlgorithm::Lincs {
+                    order: *order,
+                    iter: *iter,
+                })
+            }
+            Self::ConstrainedShake {
+                shake_tolerance: tolerance,
+            } => Constraints::HBonds(ConstraintAlgorithm::Shake { tol: *tolerance }),
+            Self::Flexible => Constraints::None,
         }
     }
 }
