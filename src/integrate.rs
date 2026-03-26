@@ -32,6 +32,9 @@ const MAX_ACCEL_SQ: f32 = MAX_ACCEL * MAX_ACCEL;
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Integrator {
+    // todo: Thermostat A/R for md integrator.
+    /// Similar to GROMACS' `md` integrator.
+    Leapfrog { thermostat: Option<f64> },
     /// The inner value is the temperature-coupling time constant if the thermostat is enabled.
     /// This value is in ps.
     /// Lower means more sensitive. 0.1ps is a good default.
@@ -53,6 +56,7 @@ impl Default for Integrator {
 impl Display for Integrator {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Integrator::Leapfrog { thermostat: _ } => write!(f, "Leap-frog"),
             Integrator::VerletVelocity { thermostat: _ } => write!(f, "Verlet Vel"),
             Integrator::LangevinMiddle { gamma: _ } => write!(f, "Langevin Mid"),
         }
@@ -130,7 +134,8 @@ impl MdState {
                 // Rattle after the thermostat run, as it updates velocities in a non-uniform manner.
                 if matches!(
                     self.cfg.hydrogen_constraint,
-                    HydrogenConstraint::Constrained { shake_tolerance: _ }
+                    HydrogenConstraint::ConstrainedShake { shake_tolerance: _ }
+                        | HydrogenConstraint::ConstrainedLinear { shake_tolerance: _ }
                 ) {
                     self.rattle_hydrogens(dt);
                 }
@@ -310,6 +315,95 @@ impl MdState {
                 }
                 pressure
             }
+            // Leapfrog integration (GROMACS `md` integrator).
+            // Velocities live at half-integer steps; positions at integer steps.
+            //   v(n+½) = v(n−½) + a(n)·dt   (full kick)
+            //   x(n+1) = x(n)   + v(n+½)·dt  (full drift)
+            // Constraints are applied after the drift, then forces are computed at x(n+1)
+            // so that accelerations are ready for the next step's kick.
+            Integrator::Leapfrog { thermostat } => {
+                if log_time {
+                    start = Instant::now();
+                }
+
+                self.barostat.virial.constraints = 0.;
+
+                // Full kick then full drift.
+                self.kick_and_drift(dt, dt);
+
+                let virial_constr = self.barostat.virial.constraints;
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
+                }
+
+                // Optional CSVR thermostat applied to the half-step velocities.
+                if let Some(tau_temp) = thermostat
+                    && !self.cfg.overrides.thermo_disabled
+                    && !self.solvent_only_sim_at_init
+                {
+                    self.kinetic_energy = self.measure_kinetic_energy();
+                    self.apply_thermostat_csvr(dt as f64, tau_temp, self.cfg.temp_target as f64);
+                    self.kinetic_energy = self.measure_kinetic_energy();
+                } else if self.solvent_only_sim_at_init {
+                    self.apply_thermostat_csvr(
+                        dt as f64,
+                        TAU_TEMP_WATER_INIT,
+                        self.cfg.temp_target as f64,
+                    );
+                    self.kinetic_energy = self.measure_kinetic_energy();
+                }
+
+                if log_time {
+                    start = Instant::now();
+                }
+
+                // Compute forces at x(n+1).
+                self.reset_f_acc_pe_virial();
+                self.apply_all_forces(dev, &external_force);
+
+                self.barostat.virial.constraints = virial_constr;
+
+                let pressure = measure_pressure(
+                    self.measure_kinetic_energy_translational(),
+                    &self.cell,
+                    &self.barostat.virial.to_kcal_mol(),
+                );
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.ambient_sum += elapsed;
+                }
+
+                if log_time {
+                    start = Instant::now();
+                }
+
+                // Update accelerations a(n+1) = F(n+1)/m for the next step's kick.
+                // Passing dt = 0 recalculates accels without an additional velocity kick.
+                self.kick_and_calc_accel(0.);
+
+                if log_time {
+                    let elapsed = start.elapsed().as_micros() as u64;
+                    self.computation_time.integration_sum += elapsed;
+                }
+
+                if !self.cfg.overrides.baro_disabled {
+                    self.barostat.apply_isotropic(
+                        dt as f64,
+                        pressure,
+                        self.cfg.temp_target as f64,
+                        self.cfg.tau_pressure as f64,
+                        &mut self.cell,
+                        &mut self.atoms,
+                        &mut self.water,
+                    );
+                    self.regen_pme(dev);
+                }
+
+                pressure
+            }
         };
 
         if self.cfg.zero_com_drift {
@@ -393,9 +487,16 @@ impl MdState {
             let _ = integrate_rigid_water(w, dt_drift, &self.cell);
         }
 
-        if let HydrogenConstraint::Constrained { shake_tolerance } = self.cfg.hydrogen_constraint {
-            self.shake_hydrogens(dt_kick, shake_tolerance);
-            self.rattle_hydrogens(dt_kick);
+        match self.cfg.hydrogen_constraint {
+            HydrogenConstraint::ConstrainedShake { shake_tolerance } => {
+                self.shake_hydrogens(dt_kick, shake_tolerance);
+                self.rattle_hydrogens(dt_kick);
+            }
+            HydrogenConstraint::ConstrainedLinear { .. } => {
+                self.lincs_hydrogens(dt_kick);
+                self.rattle_hydrogens(dt_kick);
+            }
+            HydrogenConstraint::Flexible => {}
         }
 
         self.kinetic_energy = self.measure_kinetic_energy();
@@ -440,7 +541,8 @@ impl MdState {
 
         if matches!(
             self.cfg.hydrogen_constraint,
-            HydrogenConstraint::Constrained { shake_tolerance: _ }
+            HydrogenConstraint::ConstrainedShake { shake_tolerance: _ }
+                | HydrogenConstraint::ConstrainedLinear { shake_tolerance: _ }
         ) {
             self.rattle_hydrogens(dt);
         }
@@ -462,8 +564,14 @@ impl MdState {
             let _ = integrate_rigid_water(w, dt, &self.cell);
         }
 
-        if let HydrogenConstraint::Constrained { shake_tolerance } = self.cfg.hydrogen_constraint {
-            self.shake_hydrogens(dt, shake_tolerance);
+        match self.cfg.hydrogen_constraint {
+            HydrogenConstraint::ConstrainedShake { shake_tolerance } => {
+                self.shake_hydrogens(dt, shake_tolerance);
+            }
+            HydrogenConstraint::ConstrainedLinear { .. } => {
+                self.lincs_hydrogens(dt);
+            }
+            HydrogenConstraint::Flexible => {}
         }
     }
 }

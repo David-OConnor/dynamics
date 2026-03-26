@@ -95,7 +95,7 @@ impl MdState {
                 for atom in &self.atoms {
                     if matches!(
                         self.cfg.hydrogen_constraint,
-                        HydrogenConstraint::Constrained { shake_tolerance: _ }
+                        HydrogenConstraint::ConstrainedShake { shake_tolerance: _ }
                     ) && atom.element == Element::Hydrogen
                         && !atom.static_
                     {

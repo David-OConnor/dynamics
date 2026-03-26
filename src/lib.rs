@@ -121,8 +121,6 @@ use std::{
     time::Instant,
 };
 
-pub use bonded::SHAKE_TOL_DEFAULT;
-
 pub use add_hydrogens::{
     add_hydrogens_2::Dihedral,
     bond_vecs::{find_planar_posit, find_tetra_posit_final, find_tetra_posits},
@@ -134,6 +132,7 @@ use bincode::{Decode, Encode};
 use bio_files::{
     AtomGeneric, BondGeneric, Sdf, dcd::DcdTrajectory, md_params::ForceFieldParams, mol2::Mol2,
 };
+pub use bonded::SHAKE_TOL_DEFAULT;
 pub use config::MdConfig;
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaContext, CudaFunction, CudaStream};

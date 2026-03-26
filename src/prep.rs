@@ -31,8 +31,9 @@ use bio_files::md_params::{
 use itertools::Itertools;
 use na_seq::Element::Hydrogen;
 
-use crate::bonded::SHAKE_TOL_DEFAULT;
-use crate::{AtomDynamics, MdState, ParamError, params::ForceFieldParamsIndexed};
+use crate::{
+    AtomDynamics, MdState, ParamError, bonded::SHAKE_TOL_DEFAULT, params::ForceFieldParamsIndexed,
+};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
 /// the baseline.
@@ -55,16 +56,24 @@ pub fn merge_params(baseline: &ForceFieldParams, add_this: &ForceFieldParams) ->
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HydrogenConstraint {
+    /// A linear constraint solver. Similar to GROMACS' LINCS. This is slightly faster,
+    /// and slightly more stable than SHAKE.
+    ConstrainedLinear {
+        // todo: Shake tolerance still? Investigate
+        shake_tolerance: f32,
+    },
+    ConstrainedShake {
+        shake_tolerance: f32,
+    },
     /// Uses Shake and Rattle to fix the hydrogen positions. This allows for a larger timestep,
     /// e.g. 2fs instead of 1fs.
-    Constrained { shake_tolerance: f32 },
     /// Uses the same bonded parameters as elsewhere: A spring model
     Flexible,
 }
 
 impl Default for HydrogenConstraint {
     fn default() -> Self {
-        HydrogenConstraint::Constrained {
+        HydrogenConstraint::ConstrainedShake {
             shake_tolerance: SHAKE_TOL_DEFAULT,
         }
     }
@@ -73,7 +82,12 @@ impl Default for HydrogenConstraint {
 impl fmt::Display for HydrogenConstraint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HydrogenConstraint::Constrained { shake_tolerance: _ } => write!(f, "Constrained"),
+            HydrogenConstraint::ConstrainedLinear { shake_tolerance: _ } => {
+                write!(f, "Constrained (LINCS)")
+            }
+            HydrogenConstraint::ConstrainedShake { shake_tolerance: _ } => {
+                write!(f, "Constrained (SHAKE)")
+            }
             HydrogenConstraint::Flexible => write!(f, "Flexible"),
         }
     }
@@ -251,7 +265,8 @@ impl ForceFieldParamsIndexed {
                 // add to a separate hydrogen rigid param variable.
                 if matches!(
                     h_constraint,
-                    HydrogenConstraint::Constrained { shake_tolerance: _ }
+                    HydrogenConstraint::ConstrainedShake { shake_tolerance: _ }
+                        | HydrogenConstraint::ConstrainedLinear { shake_tolerance: _ }
                 ) && (atoms[i0].element == Hydrogen || atoms[i1].element == Hydrogen)
                 {
                     // Set up inverse mass using params directly, so we don't have to have

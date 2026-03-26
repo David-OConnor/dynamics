@@ -1,3 +1,16 @@
+use std::{io, path::Path};
+
+#[cfg(feature = "encode")]
+use bincode::{Decode, Encode};
+use bio_files::{
+    gromacs,
+    gromacs::mdp::{
+        Barostat, ConstraintAlgorithm, Constraints, CoulombType, EnergyMinimization,
+        Integrator as MdpIntegrator, MdpParams, Pbc, PmeConfig, PressureCouplingType, Thermostat,
+        VdwType,
+    },
+};
+
 use crate::{
     MdOverrides, SimBoxInit,
     integrate::Integrator,
@@ -7,18 +20,6 @@ use crate::{
     solvent::Solvent,
     thermostat::TAU_TEMP_DEFAULT,
 };
-#[cfg(feature = "encode")]
-use bincode::{Decode, Encode};
-use bio_files::gromacs::mdp::PmeConfig;
-use bio_files::{
-    gromacs,
-    gromacs::mdp::{
-        Barostat, ConstraintAlgorithm, Constraints, CoulombType, EnergyMinimization,
-        Integrator as MdpIntegrator, MdpParams, Pbc, PressureCouplingType, Thermostat, VdwType,
-    },
-};
-use std::io;
-use std::path::Path;
 
 /// This is the primary way of configurating an MD run. It's passed at init, along with the
 /// molecule list and FF params.
@@ -136,10 +137,27 @@ impl MdConfig {
                     gromacs::mdp::Thermostat::VRescale,
                 )
             }
+            Integrator::Leapfrog { thermostat } => {
+                let tau = if let Some(t) = thermostat {
+                    t as f32
+                } else {
+                    TAU_TEMP_DEFAULT as f32
+                };
+                (
+                    gromacs::mdp::Integrator::Md,
+                    tau,
+                    gromacs::mdp::Thermostat::VRescale,
+                )
+            }
         };
 
         let (constraints, shake_tol) = match self.hydrogen_constraint {
-            HydrogenConstraint::Constrained { shake_tolerance } => {
+            HydrogenConstraint::ConstrainedShake { shake_tolerance } => {
+                (gromacs::mdp::Constraints::HBonds, shake_tolerance)
+            }
+            // LINCS maps to the same GROMACS h-bonds constraint type; GROMACS selects LINCS
+            // automatically when constraints are enabled with the `md` integrator.
+            HydrogenConstraint::ConstrainedLinear { shake_tolerance } => {
                 (gromacs::mdp::Constraints::HBonds, shake_tolerance)
             }
             HydrogenConstraint::Flexible => (gromacs::mdp::Constraints::None, 0.),
@@ -237,7 +255,7 @@ impl From<MdpParams> for MdConfig {
         };
         let hydrogen_constraint = match p.constraints {
             Constraints::HBonds | Constraints::AllBonds => {
-                HydrogenConstraint::Constrained { shake_tolerance }
+                HydrogenConstraint::ConstrainedShake { shake_tolerance }
             }
             Constraints::None => HydrogenConstraint::Flexible,
         };
