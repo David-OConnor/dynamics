@@ -59,7 +59,6 @@ pub enum HydrogenConstraint {
     /// A linear constraint solver. Similar to GROMACS' LINCS. This is slightly faster,
     /// and slightly more stable than SHAKE.
     ConstrainedLinear {
-        // todo: Shake tolerance still? Investigate
         order: u8,
         iter: u8,
     },
