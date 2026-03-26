@@ -472,7 +472,7 @@ fn generate_water_30a_template() {
 
     let out_path = PathBuf::from("src/param_data/water_30A.water_init_template");
     let bounds = (md.cell.bounds_low, md.cell.bounds_high);
-    WaterInitTemplate::save(&md.water, bounds, &out_path).unwrap();
+    WaterInitTemplate::create_and_save(&md.water, bounds, &out_path).unwrap();
     println!(
         "Saved 30 Å water template ({} molecules) to {:?}",
         md.water.len(),

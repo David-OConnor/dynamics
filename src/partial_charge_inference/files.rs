@@ -42,7 +42,7 @@ pub fn find_mol2_paths(geostd_dir: &Path) -> io::Result<Vec<PathBuf>> {
 }
 
 /// Load from file, using Bincode. We currently use this for preference files.
-pub(crate) fn load_from_bytes<T: Decode<()>>(buffer: &[u8]) -> io::Result<T> {
+pub(crate) fn load_from_bytes_bincode<T: Decode<()>>(buffer: &[u8]) -> io::Result<T> {
     let config = bincode::config::standard();
 
     let (decoded, _len) = match bincode::decode_from_slice(buffer, config) {

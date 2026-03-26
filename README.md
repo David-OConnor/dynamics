@@ -35,6 +35,8 @@ in memory using the [data structures](https://docs.rs/dynamics/latest/dynamics/)
 Our API goal is to both provide a default terse syntax with safe defaults, and allow customization and flexibility that
 facilitates integration into bigger systems.
 
+It can save and load its MD configuration data in GROMACS's MDP format.
+
 ## Goals
 
 - Runs Newtonian MD algorithms accurately

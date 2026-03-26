@@ -3,10 +3,14 @@
 //! Code for initializing solvent molecules, including assigning quantity, initial positions, and
 //! velocities. Set up to meet density, pressure, and or temperature targets. Not specific to the
 //! solvent model used.
+//!
+//! This involves creating, saving and loading templates, and generating water molecules given a template,
+//! sim box, and solute.
 
 use std::{f32::consts::TAU, fs, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
+use bio_files::gromacs;
 use lin_alg::{
     f32::{Mat3 as Mat3F32, Quaternion, Vec3},
     f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
@@ -17,7 +21,7 @@ use rand_distr::{Distribution, Normal};
 use crate::{
     AtomDynamics, ComputationDevice, MdState, MolDynamics, NATIVE_TO_KCAL,
     barostat::SimBox,
-    partial_charge_inference::{files::load_from_bytes, save},
+    partial_charge_inference::{files::load_from_bytes_bincode, save},
     sa_surface,
     solvent::WaterMol,
     thermostat::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU},
@@ -66,12 +70,14 @@ const PBC_MIN_WATER_O_O_DIST_SQ: f32 = PBC_MIN_WATER_O_O_DIST * PBC_MIN_WATER_O_
 // Higher is more accurate, but slower. After hydrogen bond networks are settled, higher doensn't
 // improve things. Note that we initialize from a pre-equilibrated template, so we shouldn't
 // need many effects. This mainly deals with template tiling effects, and solvent-solute conflicts.
-const NUM_SIM_STEPS: usize = 200;
+const NUM_EQUILIBRATION_STEPS: usize = 200;
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 // We seem to get better settling results with a low dt.
-const SIM_DT: f32 = 0.0005;
+const DT_EQUILIBRATION: f32 = 0.0005;
 
-const INIT_TEMPLATE: &[u8] = include_bytes!("../../param_data/water_60A.water_init_template");
+// We use this externally, for example, when passing it to GROMACS in Molchanica.
+pub const WATER_TEMPLATE_60A: &[u8] =
+    include_bytes!("../../param_data/water_60A.water_init_template");
 
 /// We store pre-equilibrated solvent molecules in a template, and use it to initialize solvent for a simulation.
 /// This keeps the equilibration steps relatively low. Note that edge effects from tiling will require
@@ -84,19 +90,14 @@ const INIT_TEMPLATE: &[u8] = include_bytes!("../../param_data/water_60A.water_in
 /// 80Å/side: 1.20Mb.
 #[derive(Encode, Decode)]
 pub struct WaterInitTemplate {
-    // todo: This could be made more compact by storing positions and orientations, but this would
-    // todo require some care. (7 numerical vals vs 9 per mol). Similar concept for storing angular
-    // velocity and o velocity, instead of 3 separate velocities
-    // posits: Vec<Vec3>,
+    // velocity is o velocity, instead of 3 separate velocities
     o_posits: Vec<Vec3>,
     h0_posits: Vec<Vec3>,
     h1_posits: Vec<Vec3>,
-    // todo: Is this OK,
-    // orientations: Vec<Quaternion>,
     o_velocities: Vec<Vec3>,
     h0_velocities: Vec<Vec3>,
     h1_velocities: Vec<Vec3>,
-    // todo: Cache these, or ifer?
+    // todo: Cache these, or infer?
     /// This must correspond to the positions. Cached.
     bounds: (Vec3, Vec3),
 }
@@ -105,12 +106,20 @@ impl WaterInitTemplate {
     /// Load a previously-saved template from a file path.
     pub fn load(path: &Path) -> io::Result<Self> {
         let bytes = fs::read(path)?;
-        load_from_bytes(&bytes)
+        load_from_bytes_bincode(&bytes)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        load_from_bytes_bincode(bytes)
     }
 
     /// Construct from the current state, and save to file.
     /// Call this explicitly. (todo: Determine a formal or informal approach)
-    pub fn save(water: &[WaterMol], bounds: (Vec3, Vec3), path: &Path) -> io::Result<()> {
+    pub fn create_and_save(
+        water: &[WaterMol],
+        bounds: (Vec3, Vec3),
+        path: &Path,
+    ) -> io::Result<()> {
         let n = water.len();
 
         let mut o_posits = Vec::with_capacity(n);
@@ -163,11 +172,27 @@ impl WaterInitTemplate {
 
         save(path, &result)
     }
+
+    // todo: Identical structs; we could consolidate.
+    /// Note: `gmx solvate`` handles tiling, centering, and solute deconfliction; we can
+    /// send it the raw template.
+    pub fn to_gromacs(&self) -> gromacs::solvate::WaterInitTemplate {
+        gromacs::solvate::WaterInitTemplate {
+            o_posits: self.o_posits.clone(),
+            h0_posits: self.h0_posits.clone(),
+            h1_posits: self.h1_posits.clone(),
+            o_velocities: self.o_velocities.clone(),
+            h0_velocities: self.h0_velocities.clone(),
+            h1_velocities: self.h1_velocities.clone(),
+            bounds: self.bounds,
+        }
+    }
 }
 
-fn calc_n_mols(cell: &SimBox, atoms: &[AtomDynamics]) -> usize {
+/// Determine the number of solvent molecules to add, based on box size and solute.
+fn n_water_mols(cell: &SimBox, solute_atoms: &[AtomDynamics]) -> usize {
     let cell_volume = cell.volume();
-    let mol_volume = sa_surface::vol_take_up_by_atoms(atoms);
+    let mol_volume = sa_surface::vol_take_up_by_atoms(solute_atoms);
     let free_vol = cell_volume - mol_volume;
 
     let dims = format!(
@@ -191,17 +216,14 @@ fn calc_n_mols(cell: &SimBox, atoms: &[AtomDynamics]) -> usize {
 /// Works for any cell size: smaller than, equal to, or larger than the template.
 ///
 /// The template is always centered on the cell. For cells smaller than the template only tile
-/// (0,0,0) contributes; for larger cells neighbouring tiles fill in the rest.
+/// (0,0,0) contributes; for larger cells neighboring tiles fill in the rest.
 /// Water-solvent conflict detection uses min-image distances so molecules are never placed too
 /// close to a PBC image of an already-placed molecule.
 ///
 /// `template_override`: if provided, use this template instead of the built-in 60 Å one.
-/// A 30 Å pre-equilibrated template gives correct initial pressures for a 30 Å box.
 pub fn make_water_mols(
     cell: &SimBox,
-    _temperature_tgt: f32,
     atoms: &[AtomDynamics],
-    _zero_com_drift: bool,
     specify_num_water: Option<usize>,
     template_override: Option<&WaterInitTemplate>,
     // When true, skip the PBC-boundary proximity check (the 2.8 Å cross-boundary filter).
@@ -215,15 +237,16 @@ pub fn make_water_mols(
     let start = Instant::now();
 
     let default_template;
+
     let template: &WaterInitTemplate = match template_override {
         Some(t) => t,
         None => {
-            default_template = load_from_bytes(INIT_TEMPLATE).unwrap();
+            default_template = load_from_bytes_bincode(WATER_TEMPLATE_60A).unwrap();
             &default_template
         }
     };
 
-    let n_mols = specify_num_water.unwrap_or_else(|| calc_n_mols(cell, atoms));
+    let n_mols = specify_num_water.unwrap_or_else(|| n_water_mols(cell, atoms));
     let mut result = Vec::with_capacity(n_mols);
 
     if n_mols == 0 {
@@ -568,46 +591,36 @@ pub(crate) fn pack_custom_solvent(
     result
 }
 
+#[allow(unused)]
+/// Creates a regular lattice of water molecules. We use this as the first part of creating
+/// a solvent template. Use this,  run a sim with thermostat and barostat, then store the result
+/// in a `WaterInitTemplate`. We can save and load this to disk as binary, or in `.gro` format.
+///
 /// Generate solvent molecules to meet a temperature target, using standard density assumptions.
 /// We deconflict with (solute) atoms in the simulation, and base the number of molecules to add
 /// on the free space, not the total cell volume.
 ///
 /// Process:
-/// - Compute the solvent-free volume using an isosurface
 /// - Compute the number of molecules to add
 /// - Add them on a regular grid with random orientations, and velocities in a random distribution
 ///   that matches the target temperature. Move molecules to the edge that are too close to
 ///   solute atoms.
-/// - Run a brief simulation with the solute
-///   atoms as static, to intially position solvent molecules realistically. This
-///   takes advantage of our simulations' acceleration limits to set up realistic geometry using
-///   hydrogen bond networks, and breaks the crystal lattice.
 ///
 /// Note: If we're able to place most, but not all waters, the barostat should adjust the sim box size
 /// to account for the lower-than-specific pressure.
-///
-/// Note: We no longer use this directly, but keep it as it's used to initialize the template we do use.
-pub fn _make_water_mols_grid(
+pub fn make_water_mols_grid(
     cell: &SimBox,
     temperature_tgt: f32,
-    atoms: &[AtomDynamics],
     zero_com_drift: bool,
 ) -> Vec<WaterMol> {
-    println!("Initializing solvent molecules...");
-    let start = Instant::now();
-
+    println!("Initializing a solvent grid, as part of template preparation...");
     // Initialize an RNG for orientations.
     let mut rng = rand::rng();
     let distro = Uniform::<f32>::new(0.0, 1.0).unwrap();
 
-    let n_mols = calc_n_mols(cell, atoms);
+    let n_mols = n_water_mols(cell, &[]);
 
-    let mut result = Vec::with_capacity(n_mols);
-
-    if n_mols == 0 {
-        println!("Complete in {} ms.", start.elapsed().as_millis());
-        return result;
-    }
+    let mut result: Vec<WaterMol> = Vec::with_capacity(n_mols);
 
     // Initialize the correct number of solvent molecules on a uniform grid. We ignore the solute for
     let lx = cell.bounds_high.x - cell.bounds_low.x;
@@ -623,9 +636,6 @@ pub fn _make_water_mols_grid(
     let spacing_y = ly / n_y as f32;
     let spacing_z = lz / n_z as f32;
 
-    // Solute
-    let atom_posits: Vec<_> = atoms.iter().map(|a| a.posit).collect();
-
     // Prevents unbounded looping. A higher value means we're more likely to succed,
     // but the run time could be higher.
     let fault_ratio = 3;
@@ -637,22 +647,12 @@ pub fn _make_water_mols_grid(
         let a = i % n_x;
         let b = (i / n_x) % n_y;
         let c = (i / (n_x * n_y)) % n_z;
-        // let c = i / (n_x * n_y);
 
         let posit = Vec3::new(
             cell.bounds_low.x + (a as f32 + 0.5) * spacing_x,
             cell.bounds_low.y + (b as f32 + 0.5) * spacing_y,
             cell.bounds_low.z + (c as f32 + 0.5) * spacing_z,
         );
-
-        // If overlapping with a solute atom, don't place. We'll catch it at the end.
-        for atom_p in &atom_posits {
-            let dist_sq = (*atom_p - posit).magnitude_squared();
-            if dist_sq < MIN_NONWATER_DIST_SQ {
-                loops_used += 1;
-                continue 'outer;
-            }
-        }
 
         // Check for an overlap with existing solvent molecules.
         for w in &result {
@@ -666,7 +666,7 @@ pub fn _make_water_mols_grid(
         result.push(WaterMol::new(
             posit,
             Vec3::new_zero(),
-            _random_quaternion(&mut rng, distro),
+            random_quaternion(&mut rng, distro),
         ));
         num_added += 1;
 
@@ -677,20 +677,21 @@ pub fn _make_water_mols_grid(
     }
 
     // Set velocities consistent with the temperature target.
-    _init_velocities(&mut result, temperature_tgt, zero_com_drift, &mut rng);
+    init_velocities(&mut result, temperature_tgt, zero_com_drift, &mut rng);
 
-    let elapsed = start.elapsed().as_millis();
     println!(
-        "Added {} / {n_mols} solvent mols in {elapsed} ms. Used {loops_used} loops",
+        "Added {} / {n_mols} solvent mols. Used {loops_used} loops",
         result.len()
     );
     result
 }
 
+/// We use this as part of our water template generation.
+///
 /// Note: This sets a reasonable default, but our thermostat, applied notably during
 /// our initial solvent simulation, determines the actual temperature set at proper sim init.
 /// Note: We've deprecated this in favor of velocities pre-initialized in the template.
-fn _init_velocities(
+fn init_velocities(
     mols: &mut [WaterMol],
     t_target: f32,
     zero_com_drift: bool,
@@ -819,7 +820,8 @@ fn atoms_mut(mols: &mut [WaterMol]) -> impl Iterator<Item = &mut AtomDynamics> {
         .flat_map(|m| [&mut m.o, &mut m.h0, &mut m.h1].into_iter())
 }
 
-/// Removes center-of-mass drift.
+#[allow(unused)]
+/// Removes center-of-mass drift. Use in template generation
 fn remove_com_velocity(mols: &mut [WaterMol]) {
     let mut p = Vec3::new_zero();
     let mut m_tot = 0.0;
@@ -834,9 +836,11 @@ fn remove_com_velocity(mols: &mut [WaterMol]) {
     }
 }
 
+#[allow(unused)]
+/// Used in template generation
 // todo: It might be nice to have this in lin_alg, although I don't want to add the rand
 // todo dependency to it.
-fn _random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
+fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
     let (u1, u2, u3) = (rng.sample(distro), rng.sample(distro), rng.sample(distro));
     let sqrt1_minus_u1 = (1.0 - u1).sqrt();
     let sqrt_u1 = u1.sqrt();
@@ -875,8 +879,8 @@ impl MdState {
             a.static_ = true;
         }
 
-        for _ in 0..NUM_SIM_STEPS {
-            self.step(dev, SIM_DT, None);
+        for _ in 0..NUM_EQUILIBRATION_STEPS {
+            self.step(dev, DT_EQUILIBRATION, None);
         }
 
         // Restore the original static state.

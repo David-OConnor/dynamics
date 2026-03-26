@@ -134,8 +134,8 @@ impl MdState {
                 // Rattle after the thermostat run, as it updates velocities in a non-uniform manner.
                 if matches!(
                     self.cfg.hydrogen_constraint,
-                    HydrogenConstraint::ConstrainedShake { shake_tolerance: _ }
-                        | HydrogenConstraint::ConstrainedLinear { .. }
+                    HydrogenConstraint::Shake { shake_tolerance: _ }
+                        | HydrogenConstraint::Linear { .. }
                 ) {
                     self.rattle_hydrogens(dt);
                 }
@@ -488,11 +488,11 @@ impl MdState {
         }
 
         match self.cfg.hydrogen_constraint {
-            HydrogenConstraint::ConstrainedShake { shake_tolerance } => {
+            HydrogenConstraint::Shake { shake_tolerance } => {
                 self.shake_hydrogens(dt_kick, shake_tolerance);
                 self.rattle_hydrogens(dt_kick);
             }
-            HydrogenConstraint::ConstrainedLinear { order, iter } => {
+            HydrogenConstraint::Linear { order, iter } => {
                 self.lincs_hydrogens(dt_kick, order as usize, iter as usize);
                 self.rattle_hydrogens(dt_kick);
             }
@@ -541,8 +541,7 @@ impl MdState {
 
         if matches!(
             self.cfg.hydrogen_constraint,
-            HydrogenConstraint::ConstrainedShake { shake_tolerance: _ }
-                | HydrogenConstraint::ConstrainedLinear { .. }
+            HydrogenConstraint::Shake { shake_tolerance: _ } | HydrogenConstraint::Linear { .. }
         ) {
             self.rattle_hydrogens(dt);
         }
@@ -565,10 +564,10 @@ impl MdState {
         }
 
         match self.cfg.hydrogen_constraint {
-            HydrogenConstraint::ConstrainedShake { shake_tolerance } => {
+            HydrogenConstraint::Shake { shake_tolerance } => {
                 self.shake_hydrogens(dt, shake_tolerance);
             }
-            HydrogenConstraint::ConstrainedLinear { order, iter } => {
+            HydrogenConstraint::Linear { order, iter } => {
                 self.lincs_hydrogens(dt, order as usize, iter as usize);
             }
             HydrogenConstraint::Flexible => {}

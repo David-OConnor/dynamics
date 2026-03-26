@@ -21,7 +21,7 @@ use candle_core::{DType, Device, IndexOp, Module, Tensor};
 use candle_nn as nn;
 use candle_nn::{Embedding, Linear, VarBuilder, ops::sigmoid};
 
-use crate::partial_charge_inference::files::load_from_bytes;
+use crate::partial_charge_inference::files::load_from_bytes_bincode;
 
 // Load the model and vocab from bytes. Note: This has implications for the portability
 // of this library.
@@ -355,7 +355,7 @@ pub fn infer_charge(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> candle_core
     let model_bytes = PARAM_INFERENCE_MODEL;
     let vocab_bytes = PARAM_INFERENCE_VOCAB;
 
-    let vocabs: AtomVocab = load_from_bytes(vocab_bytes)?;
+    let vocabs: AtomVocab = load_from_bytes_bincode(vocab_bytes)?;
 
     let n_elems = vocabs.el.len();
     let n_atom_types = vocabs.atom_type.len();

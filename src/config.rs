@@ -5,7 +5,7 @@ use bincode::{Decode, Encode};
 use bio_files::{
     gromacs,
     gromacs::mdp::{
-        Barostat, ConstraintAlgorithm, Constraints, CoulombType, EnergyMinimization,
+        Barostat, BarostatCfg, ConstraintAlgorithm, Constraints, CoulombType, EnergyMinimization,
         Integrator as MdpIntegrator, MdpParams, Pbc, PmeConfig, PressureCouplingType, Thermostat,
         VdwType,
     },
@@ -14,7 +14,6 @@ use bio_files::{
 use crate::{
     MdOverrides, SimBoxInit,
     integrate::Integrator,
-    non_bonded::{CUTOFF_VDW, LONG_RANGE_CUTOFF},
     prep::HydrogenConstraint,
     snapshot::{SaveType, SnapshotHandler},
     solvent::Solvent,
@@ -73,6 +72,11 @@ pub struct MdConfig {
     /// Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
     /// Å^-1. 0.35 is good for cutoff of 10–12 Å.
     pub spme_alpha: f32,
+    /// The distance at which we cut off short-range (Direct) Coulomb operations, and transtion
+    /// to SPME reciprical forces. Å
+    pub coulomb_cutoff: f32,
+    /// A hard distance cutoff for VDW forces. Å
+    pub lj_cutoff: f32,
 }
 
 impl Default for MdConfig {
@@ -100,6 +104,8 @@ impl Default for MdConfig {
             // Å⁻¹. Chosen so erfc(α × r_c) ≈ 1e-5 at r_c = 12 Å, matching GROMACS' default
             // ewald-rtol. (0.35 Å⁻¹ gives ~2.9e-9 — accurate but pushes k-space costs up.)
             spme_alpha: 0.26,
+            coulomb_cutoff: 10.,
+            lj_cutoff: 10.,
         }
     }
 }
@@ -151,20 +157,31 @@ impl MdConfig {
             }
         };
 
-        let (constraints, shake_tol) = match self.hydrogen_constraint {
-            HydrogenConstraint::ConstrainedShake { shake_tolerance } => {
-                (gromacs::mdp::Constraints::HBonds, shake_tolerance)
-            }
+        let constraints = match self.hydrogen_constraint {
             // LINCS maps to the same GROMACS h-bonds constraint type; GROMACS selects LINCS
             // automatically when constraints are enabled with the `md` integrator.
-            HydrogenConstraint::ConstrainedLinear { .. } => (gromacs::mdp::Constraints::HBonds, 0.),
-            HydrogenConstraint::Flexible => (gromacs::mdp::Constraints::None, 0.),
+            HydrogenConstraint::Linear { order, iter } => {
+                Constraints::HBonds(ConstraintAlgorithm::Lincs { order, iter })
+            }
+            HydrogenConstraint::Shake { shake_tolerance } => {
+                Constraints::HBonds(ConstraintAlgorithm::Shake {
+                    tol: shake_tolerance,
+                })
+            }
+            HydrogenConstraint::Flexible => Constraints::None,
         };
 
-        let barostat = if self.overrides.baro_disabled {
+        let pcoupl = if self.overrides.bonded_disabled {
             gromacs::mdp::Barostat::No
         } else {
-            gromacs::mdp::Barostat::CRescale
+            gromacs::mdp::Barostat::CRescale(BarostatCfg {
+                // Standard water compressibility
+                pcoupltype: PressureCouplingType::Isotropic {
+                    ref_p: self.pressure_target,
+                    compressibility: 4.5e-5,
+                },
+                tau_p: self.tau_pressure,
+            })
         };
 
         const ANGSTROM_TO_NM: f32 = 0.1;
@@ -188,18 +205,14 @@ impl MdConfig {
                 alpha: self.spme_alpha / ANGSTROM_TO_NM,
                 ..Default::default()
             }),
-            rcoulomb: LONG_RANGE_CUTOFF * ANGSTROM_TO_NM,
+            rcoulomb: self.coulomb_cutoff * ANGSTROM_TO_NM,
             vdwtype: VdwType::CutOff,
-            rvdw: CUTOFF_VDW * ANGSTROM_TO_NM,
+            rvdw: self.lj_cutoff * ANGSTROM_TO_NM,
             thermostat,
             // We only have one temperature-coupling group in this lib.
             tau_t: vec![tau_t],
             ref_t: vec![self.temp_target],
-            pcoupl: barostat,
-            pcoupltype: PressureCouplingType::default(),
-            tau_p: self.tau_pressure,
-            ref_p: self.pressure_target,
-            compressibility: 4.5e-5, // Standard water compressibility
+            pcoupl,
             pbc: Pbc::Xyz,
             gen_vel: true,
             gen_temp: self.temp_target,
@@ -244,16 +257,20 @@ impl From<MdpParams> for MdConfig {
             }
         };
 
-        // Extract shake tolerance from the constraint algorithm, falling back to the default.
-        let shake_tolerance = match p.constraint_algorithm {
-            ConstraintAlgorithm::Shake { tol } => tol,
-            ConstraintAlgorithm::Lincs { .. } => 0.0001, // SHAKE default tolerance
-        };
         let hydrogen_constraint = match p.constraints {
-            Constraints::HBonds | Constraints::AllBonds => {
-                HydrogenConstraint::ConstrainedShake { shake_tolerance }
-            }
+            Constraints::HBonds(ca) => match ca {
+                ConstraintAlgorithm::Lincs { order, iter } => {
+                    HydrogenConstraint::Linear { order, iter }
+                }
+                ConstraintAlgorithm::Shake { tol } => HydrogenConstraint::Shake {
+                    shake_tolerance: tol,
+                },
+            },
             Constraints::None => HydrogenConstraint::Flexible,
+            _ => {
+                eprintln!("Can't use this GROMACS' bond constraint; reverting to a safe default");
+                Default::default()
+            }
         };
 
         let mut overrides = MdOverrides::default();
@@ -270,6 +287,7 @@ impl From<MdpParams> for MdConfig {
         };
 
         const NM_TO_ANGSTROM: f32 = 10.0;
+
         let (mesh_spacing, spme_alpha) = match &p.coulombtype {
             CoulombType::Pme(pme) => {
                 let spacing = pme.fourierspacing * NM_TO_ANGSTROM;
@@ -280,12 +298,35 @@ impl From<MdpParams> for MdConfig {
             _ => (1.0, 0.35),
         };
 
+        let (pressure_target, tau_pressure) = match p.pcoupl {
+            Barostat::No => (0.0, 0.0),
+            Barostat::Berendsen(v)
+            | Barostat::CRescale(v)
+            | Barostat::ParrinelloRahman(v)
+            | Barostat::Mtkk(v) => {
+                let ref_p = match v.pcoupltype {
+                    PressureCouplingType::Isotropic {
+                        ref_p,
+                        compressibility: _,
+                    } => ref_p,
+                    _ => {
+                        eprintln!(
+                            "Unsupported GROMACS pressure coupling type; reverting to a default"
+                        );
+                        300.
+                    }
+                };
+
+                (ref_p, v.tau_p)
+            }
+        };
+
         Self {
             integrator,
             zero_com_drift: false,
             temp_target: p.ref_t.first().copied().unwrap_or(300.0),
-            pressure_target: p.ref_p,
-            tau_pressure: p.tau_p,
+            pressure_target,
+            tau_pressure,
             hydrogen_constraint,
             snapshot_handlers,
             sim_box: Default::default(),
@@ -298,6 +339,8 @@ impl From<MdpParams> for MdConfig {
             energy_minimization: p.energy_minimization.unwrap_or_default(),
             spme_mesh_spacing: mesh_spacing,
             spme_alpha,
+            coulomb_cutoff: p.rcoulomb * NM_TO_ANGSTROM,
+            lj_cutoff: p.rvdw * NM_TO_ANGSTROM,
         }
     }
 }

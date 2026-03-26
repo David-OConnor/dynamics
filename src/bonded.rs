@@ -15,6 +15,8 @@ const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
 // constrains the number of iterations.
 const SHAKE_MAX_IT: usize = 100;
 
+pub const LINCS_ORDER_DEFAULT: u8 = 4;
+pub const LINCS_ITER_DEFAULT: u8 = 1;
 pub const SHAKE_TOL_DEFAULT: f32 = 0.0001;
 
 impl MdState {

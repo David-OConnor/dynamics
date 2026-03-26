@@ -132,7 +132,7 @@ use bincode::{Decode, Encode};
 use bio_files::{
     AtomGeneric, BondGeneric, Sdf, dcd::DcdTrajectory, md_params::ForceFieldParams, mol2::Mol2,
 };
-pub use bonded::SHAKE_TOL_DEFAULT;
+pub use bonded::{LINCS_ITER_DEFAULT, LINCS_ORDER_DEFAULT, SHAKE_TOL_DEFAULT};
 pub use config::MdConfig;
 #[cfg(feature = "cuda")]
 use cudarc::driver::{CudaContext, CudaFunction, CudaStream};
@@ -147,14 +147,17 @@ use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
-pub use solvent::{ForcesOnWaterMol, Solvent, init::WaterInitTemplate};
+pub use solvent::{
+    ForcesOnWaterMol, Solvent,
+    init::{WATER_TEMPLATE_60A, WaterInitTemplate},
+};
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
 pub use crate::thermostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 use crate::{
     barostat::Barostat,
-    non_bonded::{CHARGE_UNIT_SCALER, LONG_RANGE_CUTOFF, LjTables, NonBondedPair},
+    non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::{FfParamSet, ForceFieldParamsIndexed},
     snapshot::{SaveType, Snapshot},
@@ -900,7 +903,7 @@ impl MdState {
         // as that also sets up the GPU-struct LJ data.
         result.lj_tables = LjTables::new(&result.atoms);
 
-        result.neighbors_nb = NeighborsNb::new(result.cfg.neighbor_skin);
+        result.neighbors_nb = NeighborsNb::new(result.cfg.neighbor_skin, result.cfg.coulomb_cutoff);
 
         result.barostat.pressure_target = cfg.pressure_target as f64;
 
@@ -935,9 +938,7 @@ impl MdState {
 
             make_water_mols(
                 &result.cell,
-                cfg.temp_target,
                 &result.atoms,
-                cfg.zero_com_drift,
                 count,
                 water_template_override.as_ref(),
                 cfg.skip_water_pbc_filter,
@@ -971,7 +972,7 @@ impl MdState {
                 stream,
                 result.atoms.len(),
                 result.water.len(),
-                LONG_RANGE_CUTOFF,
+                result.cfg.coulomb_cutoff,
                 result.cfg.spme_alpha,
             ));
 

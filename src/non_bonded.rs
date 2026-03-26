@@ -21,9 +21,9 @@ use crate::{
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
-// Å. 9-12 should be fine; there is very little VDW force > this range due to
-// the ^-7 falloff.
-pub const CUTOFF_VDW: f32 = 12.0;
+// // Å. 9-12 should be fine; there is very little VDW force > this range due to
+// // the ^-7 falloff.
+// pub const CUTOFF_VDW: f32 = 12.0;
 
 // Ewald SPME approximation for Coulomb force
 
@@ -36,8 +36,7 @@ pub const CUTOFF_VDW: f32 = 12.0;
 // We don't use a taper, for now.
 // const LONG_RANGE_SWITCH_START: f64 = 8.0; // start switching (Å)
 
-// todo: Temporarily set this higher than 10., while we work through some long range problems.
-pub const LONG_RANGE_CUTOFF: f32 = 12.0; // Å
+// pub const LONG_RANGE_CUTOFF: f32 = 12.0; // Å
 
 // // A bigger α means more damping, and a smaller real-space contribution. (Cheaper real), but larger
 // // reciprocal load.
@@ -256,6 +255,8 @@ fn calc_force_cpu(
     overrides: &MdOverrides,
     mol_start_indices: &[usize],
     spme_alpha: f32,
+    coulomb_cutoff: f32,
+    lj_cutoff: f32,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>) {
     let n_std = atoms_std.len();
     let n_wat = water.len();
@@ -299,6 +300,8 @@ fn calc_force_cpu(
                     p.calc_coulomb,
                     overrides,
                     spme_alpha,
+                    coulomb_cutoff,
+                    lj_cutoff,
                 );
 
                 // Convert to f64 prior to summing.
@@ -426,6 +429,8 @@ impl MdState {
                     &self.cfg.overrides,
                     &self.mol_start_indices,
                     self.cfg.spme_alpha,
+                    self.cfg.coulomb_cutoff,
+                    self.cfg.lj_cutoff,
                 )
             }
             #[cfg(feature = "cuda")]
@@ -771,6 +776,8 @@ pub fn f_nonbonded_cpu(
     calc_coulomb: bool,
     overrides: &MdOverrides,
     spme_alpha: f32,
+    coulomb_cutoff: f32,
+    lj_cutoff: f32,
 ) -> (Vec3, f32) {
     let diff = cell.min_image(tgt.posit - src.posit);
 
@@ -786,7 +793,7 @@ pub fn f_nonbonded_cpu(
     let inv_dist = 1.0 / dist;
     let dir = diff * inv_dist;
 
-    let (f_lj, energy_lj) = if !calc_lj || dist > CUTOFF_VDW || overrides.lj_disabled {
+    let (f_lj, energy_lj) = if !calc_lj || dist > lj_cutoff || overrides.lj_disabled {
         (Vec3::new_zero(), 0.)
     } else {
         let (σ, ε) = lj_tables.lookup(lj_indices);
@@ -810,7 +817,7 @@ pub fn f_nonbonded_cpu(
             inv_dist,
             tgt.partial_charge,
             src.partial_charge,
-            LONG_RANGE_CUTOFF,
+            coulomb_cutoff,
             spme_alpha,
         )
     };

@@ -13,7 +13,7 @@ use rayon::prelude::*;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::PerNeighborGpu;
-use crate::{ComputationDevice, MdState, barostat::SimBox, non_bonded::LONG_RANGE_CUTOFF};
+use crate::{ComputationDevice, MdState, barostat::SimBox};
 
 /// By index for fast lookups; separate fields, as these indices are applied differently for non-solvent atoms
 /// and solvent.
@@ -43,10 +43,10 @@ pub struct NeighborsNb {
 }
 
 impl NeighborsNb {
-    pub fn new(skin: f32) -> Self {
+    pub fn new(skin: f32, cutoff: f32) -> Self {
         Self {
             half_skin_sq: (skin * 0.5).powi(2),
-            skin_sq_w_cutoff: (LONG_RANGE_CUTOFF + skin) * (LONG_RANGE_CUTOFF + skin),
+            skin_sq_w_cutoff: (cutoff + skin) * (cutoff + skin),
             ..Default::default()
         }
     }
