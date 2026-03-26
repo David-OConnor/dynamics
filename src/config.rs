@@ -20,28 +20,6 @@ use bio_files::{
 use std::io;
 use std::path::Path;
 
-/// Abramowitz & Stegun 7.1.26 — max error 1.5×10⁻⁷.
-fn erfc_approx(x: f32) -> f32 {
-    let t = 1.0 / (1.0 + 0.3275911 * x);
-    let poly = t * (0.254829592
-        + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-    poly * (-x * x).exp()
-}
-
-/// Invert erfc via bisection. Only called at setup time so performance is irrelevant.
-fn erfc_inv_approx(y: f32) -> f32 {
-    let (mut lo, mut hi) = (0.0_f32, 6.0_f32); // erfc(6) ≈ 2e-17, covers all practical rtol
-    for _ in 0..60 {
-        let mid = 0.5 * (lo + hi);
-        if erfc_approx(mid) > y {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    0.5 * (lo + hi)
-}
-
 /// This is the primary way of configurating an MD run. It's passed at init, along with the
 /// molecule list and FF params.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -118,7 +96,9 @@ impl Default for MdConfig {
             skip_water_pbc_filter: false,
             energy_minimization: Default::default(),
             spme_mesh_spacing: 1.0,
-            spme_alpha: 0.35,
+            // Å⁻¹. Chosen so erfc(α × r_c) ≈ 1e-5 at r_c = 12 Å, matching GROMACS' default
+            // ewald-rtol. (0.35 Å⁻¹ gives ~2.9e-9 — accurate but pushes k-space costs up.)
+            spme_alpha: 0.26,
         }
     }
 }
@@ -187,7 +167,9 @@ impl MdConfig {
             coulombtype: CoulombType::Pme(PmeConfig {
                 fourierspacing: self.spme_mesh_spacing * ANGSTROM_TO_NM,
                 order: 4, // Hard-coded in `ewald`.
-                rtol: erfc_approx(self.spme_alpha * LONG_RANGE_CUTOFF),
+                // Convert internal Å⁻¹ to GROMACS nm⁻¹ (1 Å⁻¹ = 10 nm⁻¹).
+                // PmeConfig::make_inp() derives ewald-rtol = erfc(alpha × rcoulomb).
+                alpha: self.spme_alpha / ANGSTROM_TO_NM,
                 ..Default::default()
             }),
             rcoulomb: LONG_RANGE_CUTOFF * ANGSTROM_TO_NM,
@@ -205,7 +187,7 @@ impl MdConfig {
             pbc: Pbc::Xyz,
             gen_vel: true,
             gen_temp: self.temp_target,
-            gen_seed: -1, // Default
+            gen_seed: None,
             constraints,
             // todo: Support LINCS in dynamics?
             constraint_algorithm: ConstraintAlgorithm::Shake { tol: shake_tol },
@@ -277,8 +259,8 @@ impl From<MdpParams> for MdConfig {
         let (mesh_spacing, spme_alpha) = match &p.coulombtype {
             CoulombType::Pme(pme) => {
                 let spacing = pme.fourierspacing * NM_TO_ANGSTROM;
-                let rc = p.rcoulomb * NM_TO_ANGSTROM;
-                let alpha = erfc_inv_approx(pme.rtol) / rc;
+                // Convert nm⁻¹ back to Å⁻¹ (1 nm⁻¹ = 0.1 Å⁻¹).
+                let alpha = pme.alpha / NM_TO_ANGSTROM;
                 (spacing, alpha)
             }
             _ => (1.0, 0.35),
