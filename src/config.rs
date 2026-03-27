@@ -6,8 +6,8 @@ use bio_files::{
     gromacs,
     gromacs::mdp::{
         Barostat, BarostatCfg, ConstraintAlgorithm, Constraints, CoulombType, EnergyMinimization,
-        Integrator as MdpIntegrator, MdpParams, Pbc, PmeConfig, PressureCouplingType, Thermostat,
-        VdwType,
+        Integrator as MdpIntegrator, MdpParams, OutputControl, Pbc, PmeConfig,
+        PressureCouplingType, Thermostat, VdwType,
     },
 };
 
@@ -120,6 +120,17 @@ impl MdConfig {
         // todo: We're currently using a single ratio for all output types.
         let ratio = self.snapshot_handlers.first().map(|h| h.ratio).unwrap_or(0) as u32;
 
+        let output_control = OutputControl {
+            nstxout: Some(ratio),
+            nstvout: Some(ratio),
+            nstfout: None,
+            nstlog: Some(ratio),
+            nstcalcenergy: None,
+            nstenergy: Some(ratio),
+            nstxout_compressed: Some(ratio),
+            compressed_x_precision: 1_000,
+        };
+
         let (integrator, tau_t, thermostat) = match self.integrator {
             Integrator::LangevinMiddle { gamma } => {
                 // GROMACS `sd` (stochastic dynamics) is the correct counterpart for Langevin.
@@ -192,11 +203,7 @@ impl MdConfig {
             integrator,
             nsteps: n_steps as u64,
             dt,
-            nstxout: ratio,
-            nstvout: ratio,
-            nstxout_compressed: ratio,
-            nstenergy: ratio,
-            nstlog: ratio,
+            output_control,
             coulombtype: CoulombType::Pme(PmeConfig {
                 fourierspacing: self.spme_mesh_spacing * ANGSTROM_TO_NM,
                 order: 4, // Hard-coded in `ewald`.
@@ -219,6 +226,7 @@ impl MdConfig {
             gen_seed: None,
             constraints: self.hydrogen_constraint.to_gromacs(),
             energy_minimization: Some(self.energy_minimization.clone()),
+            free_energy_calculations: Default::default(),
         }
     }
 
@@ -277,10 +285,11 @@ impl From<MdpParams> for MdConfig {
         overrides.baro_disabled = p.pcoupl == Barostat::No;
 
         // Use nstlog as the snapshot cadence — it's the natural output ratio.
-        let snapshot_handlers = if p.nstlog > 0 {
+        let nstlog = p.output_control.nstlog.unwrap_or(0);
+        let snapshot_handlers = if nstlog > 0 {
             vec![SnapshotHandler {
                 save_type: SaveType::Memory,
-                ratio: p.nstlog as usize,
+                ratio: nstlog as usize,
             }]
         } else {
             MdConfig::default().snapshot_handlers
