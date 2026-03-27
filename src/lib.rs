@@ -130,7 +130,9 @@ use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::{
-    AtomGeneric, BondGeneric, Sdf, dcd::DcdTrajectory, md_params::ForceFieldParams, mol2::Mol2,
+    AtomGeneric, BondGeneric, Sdf, dcd::DcdTrajectory,
+    md_params::{ForceFieldParams, LjParams, MassParams},
+    mol2::Mol2,
 };
 pub use bonded::{LINCS_ITER_DEFAULT, LINCS_ORDER_DEFAULT, SHAKE_TOL_DEFAULT};
 pub use config::MdConfig;
@@ -855,6 +857,11 @@ impl MdState {
             atom_ct_prior_to_this_mol += atoms.len();
         }
 
+        // Compute net charge from all solute atoms (internal Amber charge units → elementary).
+        let net_q_e: f32 =
+            atoms_md.iter().map(|a| a.partial_charge).sum::<f32>() / CHARGE_UNIT_SCALER;
+        let n_ions = net_q_e.abs().round() as usize;
+
         let force_field_params = ForceFieldParamsIndexed::new(
             &params,
             &atoms_md,
@@ -944,6 +951,72 @@ impl MdState {
                 cfg.skip_water_pbc_filter,
             )
         };
+
+        // Add counter-ions to neutralize any net charge.
+        // Joung–Cheatham parameters tuned for OPC water (Amber frcmod.ionsjc_opc).
+        // sigma = 2 * R_MIN_HALF / 2^(1/6)
+        if n_ions > 0 && !result.water.is_empty() {
+            // Positive net → add Cl⁻;  negative net → add Na⁺.
+            let (ff_type, elem, mass, q_scaled, sigma, eps): (&str, Element, f32, f32, f32, f32) =
+                if net_q_e > 0.0 {
+                    ("Cl-", Element::Chlorine, 35.45, -CHARGE_UNIT_SCALER, 4.478, 0.0073)
+                } else {
+                    ("Na+", Element::Sodium, 22.99, CHARGE_UNIT_SCALER, 2.439, 0.1065)
+                };
+
+            let stride = (result.water.len() / n_ions).max(1);
+            let mut water_to_remove: Vec<usize> = (0..n_ions)
+                .map(|i| (i * stride).min(result.water.len() - 1))
+                .collect();
+
+            for (k, &w_idx) in water_to_remove.iter().enumerate() {
+                let atom_idx = result.atoms.len() + k;
+                let posit = result.water[w_idx].o.posit;
+
+                result.atoms.push(AtomDynamics {
+                    serial_number: atom_idx as u32,
+                    force_field_type: ff_type.to_string(),
+                    element: elem,
+                    posit,
+                    mass,
+                    partial_charge: q_scaled,
+                    lj_sigma: sigma,
+                    lj_eps: eps,
+                    ..Default::default()
+                });
+                result.force_field_params.mass.insert(
+                    atom_idx,
+                    MassParams { atom_type: ff_type.to_string(), mass, comment: None },
+                );
+                result.force_field_params.lennard_jones.insert(
+                    atom_idx,
+                    LjParams { atom_type: ff_type.to_string(), sigma, eps },
+                );
+                result.adjacency_list.push(Vec::new());
+                result.mass_accel_factor.push(KCAL_TO_NATIVE / mass);
+                result.mol_start_indices.push(atom_idx);
+            }
+            // Expand per-mol energy tracking for the new ion "molecules".
+            let n_mols = result.mol_start_indices.len();
+            result.potential_energy_between_mols.resize(n_mols.pow(2), 0.0);
+
+            // Remove displaced water molecules (in reverse index order).
+            water_to_remove.sort_unstable_by(|a, b| b.cmp(a));
+            water_to_remove.dedup();
+            for idx in water_to_remove {
+                result.water.remove(idx);
+            }
+
+            eprintln!(
+                "Added {n_ions} {} ion(s) to neutralize net charge ({net_q_e:+.3}e).",
+                ff_type
+            );
+        } else if n_ions > 0 {
+            eprintln!(
+                "Warning: net charge {net_q_e:+.3}e detected but no solvent available to \
+                 displace; skipping ion insertion."
+            );
+        }
 
         // Calc DOF only after all atoms and solvent are initialized.
         result.thermo_dof = result.dof_for_thermo();
