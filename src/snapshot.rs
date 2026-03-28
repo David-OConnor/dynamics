@@ -11,14 +11,12 @@ use std::{
 use bincode::{Decode, Encode};
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
-    dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
-    gromacs::OutputControl,
+    dcd::{DcdFrame, DcdTrajectory, DcdUnitCell, write_xtc},
+    gromacs::{GromacsFrame, OutputControl, output::write_trr},
     md_params::{ForceFieldParams, LjParams, MassParams},
 };
-
 #[cfg(feature = "cuda")]
 use cudarc::{driver::CudaContext, nvrtc::Ptx};
-use itertools::Itertools;
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 
@@ -46,16 +44,19 @@ use crate::{
     solvent::init::{make_water_mols, pack_custom_solvent},
     util::{ComputationTime, build_adjacency_list},
 };
-
 #[cfg(feature = "cuda")]
 use crate::{
     PTX,
     gpu_interface::{ForcesPositsGpu, PerNeighborGpu},
 };
 
-// // Append to any snapshot-saving files every this number of snapshots.
-// // todo:  Update A/R. Likely higher.
-// pub(crate) const FILE_SAVE_INTERVAL: usize = 100;
+// Append to any snapshot-saving files every this number of snapshots. E.g.
+// DCD, TRR, XTC. We want this to be such that we don't experience too much memory use.
+// // todo:  Update A/R. Likely higher. Lower now just to test.
+pub(crate) const TRAJ_FILE_SAVE_INTERVAL: usize = 100;
+// pub(crate) const TRAJ_FILE_SAVE_INTERVAL: usize = 3_000;
+
+const TRAJ_OUT_PATH: &str = "./md_out";
 
 // #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 // #[derive(Clone, PartialEq, Debug, Default)]
@@ -86,7 +87,10 @@ use crate::{
 pub struct SnapshotHandlers {
     pub memory: Option<usize>,
     pub dcd: Option<usize>,
-    /// This includes detailed data for saving positions, velocities, forces eetc separately
+    /// Native XTC writer via MDTraj.  Saves every Nth step.  Requires Python 3
+    /// and `mdtraj` (`pip install mdtraj`) to be available on the system PATH.
+    pub xtc: Option<usize>,
+    /// This includes detailed data for saving positions, velocities, forces etc separately
     /// to TRR files, and saving energy data to EDR files. Also can write XTC,
     pub gromacs: Option<OutputControl>,
 }
@@ -96,6 +100,7 @@ impl Default for SnapshotHandlers {
         Self {
             memory: Some(1),
             dcd: None,
+            xtc: None,
             gromacs: None,
         }
     }
@@ -1026,6 +1031,12 @@ impl MdState {
             self.snapshot_queue_for_dcd.push(Snapshot::new(self));
         }
 
+        if let Some(ratio) = self.cfg.snapshot_handlers.xtc
+            && i.is_multiple_of(ratio)
+        {
+            self.snapshot_queue_for_xtc.push(Snapshot::new(self));
+        }
+
         if let Some(oc) = &self.cfg.snapshot_handlers.gromacs {
             if let Some(ratio) = oc.nstxout
                 && i.is_multiple_of(ratio as usize)
@@ -1058,142 +1069,82 @@ impl MdState {
                 self.snapshot_queue_for_trr.push(ss);
             }
         }
+
+        self.handle_ss_file_writes();
     }
 
-    /// For calling by the applicastion. Saves in-memory snapshots to file, e.g. DCD, XTC, or MDT.
-    // pub fn save_snapshots_to_file(&self, path: &Path, ratio: usize) -> Result<(), io::Error> {
-    pub fn save_snapshots_to_file(&self, path: &Path, ratio: usize) -> Result<(), io::Error> {
-        // todo: Sort out how you'll handle ratio, and even this path vs saving during the MD run.
-        let ratio = 1;
+    /// Peridically offloads the in-memory snapshot queues for various file-handlers onto disk.
+    /// Clear the queues. Appends to DCD and TRR files.
+    fn handle_ss_file_writes(&mut self) {
+        if self.step_count == 0 {
+            // Choose the lowest run index N for which no trajectory files exist yet, so
+            // that each fresh MD run writes to its own set of files (traj_N.dcd etc.)
+            // while periodic saves within the same run keep appending to those files.
+            let out = Path::new(TRAJ_OUT_PATH);
+            self.run_index = (0..)
+                .find(|&n| {
+                    !out.join(format!("traj_{n}.dcd")).exists()
+                        && !out.join(format!("traj_{n}.trr")).exists()
+                        && !out.join(format!("traj_{n}.xtc")).exists()
+                })
+                .unwrap_or(0);
 
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_ascii_lowercase())
-            .ok_or_else(|| io::Error::other("Output path must have a file extension"))?;
-
-        let mut snaps_to_save = Vec::with_capacity(self.snapshots.len() / ratio);
-        for (i, snap) in self.snapshots.iter().enumerate() {
-            if i.is_multiple_of(ratio) {
-                snaps_to_save.push(snap.clone());
-            }
+            return;
         }
 
-        let result = match ext.as_ref() {
-            "dcd" => {
-                let frames: Vec<_> = snaps_to_save
-                    .iter()
-                    .map(|ss| ss.to_dcd(&self.cell, false))
-                    .collect();
-
-                let dcd = DcdTrajectory { frames };
-                dcd.save(path)
-            }
-            "xtc" => {
-                // Note: Requires MDConvert
-                let frames: Vec<_> = snaps_to_save
-                    .iter()
-                    .map(|ss| ss.to_dcd(&self.cell, false))
-                    .collect();
-
-                let dcd = DcdTrajectory { frames };
-                dcd.save_xtc(path)
-            }
-            "trr" => {
-                let frames: Vec<_> = snaps_to_save
-                    .iter()
-                    .map(|ss| ss.to_dcd(&self.cell, false))
-                    .collect();
-
-                let dcd = DcdTrajectory { frames };
-                dcd.save(path)
-            }
-            // "mdt" => save_mdt(&snaps_to_save, path),
-            "mdt" => Ok(()),
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Invalid file extension for saving snapshots.",
-                ));
-            }
-        };
-
-        if let Err(e) = result {
-            eprintln!("Error saving snapshot as DCD: {e:?}");
+        // Clear queues as required.
+        if !self.step_count.is_multiple_of(TRAJ_FILE_SAVE_INTERVAL) {
+            return;
         }
 
-        Ok(())
-    }
+        let n = self.run_index;
 
-    /// Create a snapshot from the current atom and solvent positions. Include
-    /// temperature and pressure as-required.
-    ///
-    /// We pass in pressure, as we calculate each step as part of the barostat.
-    /// todo: Deprecated
-    fn _take_snapshot(
-        &self,
-        pressure: Option<f64>,
-        temperature: Option<f32>,
-        store_velocities: bool,
-        store_energy: bool,
-    ) -> Snapshot {
-        let mut water_o_posits = Vec::with_capacity(self.water.len());
-        let mut water_h0_posits = Vec::with_capacity(self.water.len());
-        let mut water_h1_posits = Vec::with_capacity(self.water.len());
-        let mut water_velocities = Vec::with_capacity(self.water.len());
-
-        for water in &self.water {
-            water_o_posits.push(water.o.posit);
-            water_h0_posits.push(water.h0.posit);
-            water_h1_posits.push(water.h1.posit);
-            water_velocities.push(water.o.vel); // Can be from any atom; they should be the same.
-        }
-
-        let atom_posits = self.atoms.iter().map(|a| a.posit).collect();
-
-        let (atom_velocities, water_velocities) = if store_velocities {
-            (
-                Some(self.atoms.iter().map(|a| a.vel).collect()),
-                Some(water_velocities),
-            )
-        } else {
-            (None, None)
-        };
-
-        let energy_data = if store_energy {
-            let energy_potential_between_mols = self
-                .potential_energy_between_mols
+        if !self.snapshot_queue_for_dcd.is_empty() {
+            let frames: Vec<_> = self
+                .snapshot_queue_for_dcd
                 .iter()
-                .map(|v| *v as f32)
+                .map(|ss| ss.to_dcd(&self.cell, false))
                 .collect();
 
-            Some(SnapshotEnergyData {
-                energy_kinetic: self.kinetic_energy as f32,
-                energy_potential: self.potential_energy as f32,
-                energy_potential_between_mols,
-                energy_potential_nonbonded: self.potential_energy_nonbonded as f32,
-                energy_potential_bonded: self.potential_energy_bonded as f32,
-                hydrogen_bonds: Vec::new(), // Populated later A/R.
-                temperature: temperature.unwrap_or(0.0), // Ideally this doens't occur.
-                pressure: pressure.unwrap_or_default() as f32,
-                dh_dl: self.compute_dh_dl() as f32,
-            })
-        } else {
-            None
-        };
+            let dcd = DcdTrajectory { frames };
 
-        Snapshot {
-            time: self.time,
-            atom_posits,
-            atom_velocities,
-            water_o_posits,
-            water_h0_posits,
-            water_h1_posits,
-            water_velocities,
-            energy_data,
+            let path = Path::new(TRAJ_OUT_PATH).join(format!("traj_{n}.dcd"));
+            if let Err(e) = dcd.save(&path) {
+                eprintln!("Error writing DCD: {e:?}");
+            }
+
+            self.snapshot_queue_for_dcd.clear();
+        }
+
+        if !self.snapshot_queue_for_trr.is_empty() {
+            let path = Path::new(TRAJ_OUT_PATH).join(format!("traj_{n}.trr"));
+            let frames = ss_to_gromacs_frames(&self.snapshot_queue_for_trr);
+            if let Err(e) = write_trr(&path, &frames) {
+                eprintln!("Error writing TRR: {e:?}");
+            }
+
+            self.snapshot_queue_for_trr.clear();
+        }
+
+        // todo: Make sure this fails gracefully if python3 or mdtraj isn't available.
+        if !self.snapshot_queue_for_xtc.is_empty() {
+            let frames: Vec<_> = self
+                .snapshot_queue_for_xtc
+                .iter()
+                .map(|ss| ss.to_dcd(&self.cell, false))
+                .collect();
+
+            let path = Path::new(TRAJ_OUT_PATH).join(format!("traj_{n}.xtc"));
+            if let Err(e) = write_xtc(&path, &frames) {
+                eprintln!("Error writing XTC: {e:?}");
+            }
+
+            self.snapshot_queue_for_xtc.clear();
         }
     }
+}
 
+impl MdState {
     /// Compute the instantaneous ∂H/∂λ in kcal/mol for the current alchemical molecule.
     ///
     /// For linear coupling/decoupling:
@@ -1228,4 +1179,128 @@ impl MdState {
 
         -u_interact
     }
+} // impl MdState (compute_dh_dl)
+
+/// Convert GROMACS trajectory frames into `Snapshot` values.
+/// This converts positions in nm and velocities in nm/ps to Å, and Å/ps
+///
+/// `solute_atom_count` is the number of non-water atoms (computed before solvation).
+/// Atoms beyond that index are OPC water molecules, laid out as groups of 4:
+/// OW, HW1, HW2, MW (virtual site). MW positions are discarded since `Snapshot`
+/// has no field for them and the virtual site carries no mass.
+pub fn gromacs_frames_to_ss(frames: &[GromacsFrame], solute_atom_count: usize) -> Vec<Snapshot> {
+    // OPC water has 4 sites per molecule (OW, HW1, HW2, MW virtual site).
+    const OPC_SITES_PER_MOL: usize = 4;
+
+    frames
+        .iter()
+        .map(|frame| {
+            let n = frame.atom_posits.len();
+            let solute_end = solute_atom_count.min(n);
+
+            let atom_posits: Vec<Vec3> = frame.atom_posits[..solute_end]
+                .iter()
+                .map(|p| {
+                    Vec3::new(
+                        (p.x * 10.0) as f32,
+                        (p.y * 10.0) as f32,
+                        (p.z * 10.0) as f32,
+                    )
+                })
+                .collect();
+
+            let water_block = &frame.atom_posits[solute_end..];
+            let n_water_mols = water_block.len() / OPC_SITES_PER_MOL;
+
+            let mut water_o_posits = Vec::with_capacity(n_water_mols);
+            let mut water_h0_posits = Vec::with_capacity(n_water_mols);
+            let mut water_h1_posits = Vec::with_capacity(n_water_mols);
+
+            for i in 0..n_water_mols {
+                let base = i * OPC_SITES_PER_MOL;
+                let to_vec3 = |p: &lin_alg::f64::Vec3| {
+                    Vec3::new(
+                        (p.x * 10.0) as f32,
+                        (p.y * 10.0) as f32,
+                        (p.z * 10.0) as f32,
+                    )
+                };
+
+                water_o_posits.push(to_vec3(&water_block[base]));
+                water_h0_posits.push(to_vec3(&water_block[base + 1]));
+                water_h1_posits.push(to_vec3(&water_block[base + 2]));
+                // base + 3 is the MW virtual site — no Snapshot field for it.
+            }
+
+            Snapshot {
+                time: frame.time,
+                atom_posits,
+                water_o_posits,
+                water_h0_posits,
+                water_h1_posits,
+                ..Snapshot::default()
+            }
+        })
+        .collect()
+}
+
+/// Convert `Snapshot` values into GROMACS trajectory frames.
+///
+/// This is the inverse of `gromacs_frames_to_ss`:
+/// - Positions are converted from Å → nm (÷ 10).
+/// - Velocities are converted from Å/ps → nm/ps (÷ 10), when present.
+/// - Solute atoms come first, followed by water molecules laid out as
+///   [OW, HW1, HW2] per molecule.  The OPC MW virtual site is omitted
+///   because it was discarded on load and its position is unknown.
+/// - Water velocities (one COM velocity per molecule) are replicated to
+///   all three sites (OW, HW1, HW2) when available.
+pub fn ss_to_gromacs_frames(ss: &[Snapshot]) -> Vec<GromacsFrame> {
+    let to_nm = |p: &Vec3| -> lin_alg::f64::Vec3 {
+        lin_alg::f64::Vec3 {
+            x: p.x as f64 / 10.0,
+            y: p.y as f64 / 10.0,
+            z: p.z as f64 / 10.0,
+        }
+    };
+
+    ss.iter()
+        .map(|snap| {
+            // Solute atoms (Å → nm).
+            let mut atom_posits: Vec<lin_alg::f64::Vec3> =
+                snap.atom_posits.iter().map(to_nm).collect();
+
+            // Water sites: OW, HW1, HW2 per molecule (no MW virtual site).
+            let n_water = snap.water_o_posits.len();
+            for i in 0..n_water {
+                atom_posits.push(to_nm(&snap.water_o_posits[i]));
+                atom_posits.push(to_nm(&snap.water_h0_posits[i]));
+                atom_posits.push(to_nm(&snap.water_h1_posits[i]));
+            }
+
+            // Velocities: solute then water, all Å/ps → nm/ps.
+            let atom_velocities = if let Some(vels) = &snap.atom_velocities {
+                let mut all_vels: Vec<lin_alg::f64::Vec3> = vels.iter().map(to_nm).collect();
+
+                if let Some(water_vels) = &snap.water_velocities {
+                    for wv in water_vels {
+                        let v = to_nm(wv);
+                        all_vels.push(v); // OW
+                        all_vels.push(v); // HW1
+                        all_vels.push(v); // HW2
+                    }
+                }
+
+                all_vels
+            } else {
+                Vec::new()
+            };
+
+            GromacsFrame {
+                time: snap.time,
+                atom_posits,
+                atom_velocities,
+                energy: None,
+            }
+        })
+        .collect()
 }

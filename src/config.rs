@@ -268,6 +268,7 @@ impl From<MdpParams> for MdConfig {
         let snapshot_handlers = SnapshotHandlers {
             memory: None,
             dcd: None,
+            xtc: None,
             gromacs: Some(p.output_control.clone()),
         };
 
