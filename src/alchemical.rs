@@ -73,18 +73,24 @@ pub fn collect_window(lambda: f64, snapshots: &[Snapshot]) -> LambdaWindow {
     );
 
     let n = snapshots.len() as f64;
-    let mean = snapshots.iter().map(|s| s.dh_dl as f64).sum::<f64>() / n;
 
-    let sem = if snapshots.len() > 1 {
-        let variance = snapshots
-            .iter()
-            .map(|s| (s.dh_dl as f64 - mean).powi(2))
-            .sum::<f64>()
-            / (n - 1.0);
-        Some((variance / n).sqrt())
-    } else {
-        None
-    };
+    // todo: Put back. removed temp after snapshot restructure.
+    // let mean = snapshots.iter().map(|s| s.dh_dl as f64).sum::<f64>() / n;
+    //
+    // let sem = if snapshots.len() > 1 {
+    //     let variance = snapshots
+    //         .iter()
+    //         .map(|s| (s.dh_dl as f64 - mean).powi(2))
+    //         .sum::<f64>()
+    //         / (n - 1.0);
+    //     Some((variance / n).sqrt())
+    // } else {
+    //     None
+    // };
+
+    // todo temp
+    let mean = 0.;
+    let sem = Some(0.);
 
     LambdaWindow {
         lambda,

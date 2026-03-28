@@ -200,7 +200,7 @@ impl MdState {
             let e_new = self.potential_energy;
 
             if self.cfg.overrides.snapshots_during_energy_min {
-                self.take_snapshot_if_required(self.cfg.pressure_target as f64); // Pressure: todo?
+                self.handle_snapshots(self.cfg.pressure_target as f64); // Pressure: todo?
             }
 
             if e_new <= *e_prev {

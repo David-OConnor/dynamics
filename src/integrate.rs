@@ -446,7 +446,7 @@ impl MdState {
             }
 
             let start = Instant::now(); // Not sure how else to handle. (Option would work)
-            self.take_snapshot_if_required(pressure);
+            self.handle_snapshots(pressure);
 
             if log_time {
                 let elapsed = start.elapsed().as_micros() as u64;
@@ -460,7 +460,7 @@ impl MdState {
         }
 
         if self.cfg.overrides.snapshots_during_equilibration && self.solvent_only_sim_at_init {
-            self.take_snapshot_if_required(pressure);
+            self.handle_snapshots(pressure);
         }
     }
 

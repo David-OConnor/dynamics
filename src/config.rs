@@ -12,12 +12,8 @@ use bio_files::{
 };
 
 use crate::{
-    MdOverrides, SimBoxInit,
-    integrate::Integrator,
-    prep::HydrogenConstraint,
-    snapshot::{SaveType, SnapshotHandler},
-    solvent::Solvent,
-    thermostat::TAU_TEMP_DEFAULT,
+    MdOverrides, SimBoxInit, integrate::Integrator, prep::HydrogenConstraint,
+    snapshot::SnapshotHandlers, solvent::Solvent, thermostat::TAU_TEMP_DEFAULT,
 };
 
 /// This is the primary way of configurating an MD run. It's passed at init, along with the
@@ -38,7 +34,7 @@ pub struct MdConfig {
     /// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
     /// algorithms. This allows for higher time steps.
     pub hydrogen_constraint: HydrogenConstraint,
-    pub snapshot_handlers: Vec<SnapshotHandler>,
+    pub snapshot_handlers: SnapshotHandlers,
     pub sim_box: SimBoxInit,
     pub solvent: Solvent,
     /// Prior to the first integrator step, we attempt to relax energy in the system.
@@ -88,10 +84,7 @@ impl Default for MdConfig {
             pressure_target: 1.,
             tau_pressure: 5.,
             hydrogen_constraint: Default::default(),
-            snapshot_handlers: vec![SnapshotHandler {
-                save_type: SaveType::Memory,
-                ratio: 1,
-            }],
+            snapshot_handlers: Default::default(),
             sim_box: Default::default(),
             solvent: Default::default(),
             max_init_relaxation_iters: Some(1_000), // todo: A/R
@@ -116,21 +109,6 @@ impl MdConfig {
     ///
     /// Not `From` trait: This lib depends on `bio_files`, but not the other way around.
     pub fn to_gromacs(&self, n_steps: usize, dt: f32) -> MdpParams {
-        // Use the first handler's ratio for all output types.
-        // todo: We're currently using a single ratio for all output types.
-        let ratio = self.snapshot_handlers.first().map(|h| h.ratio).unwrap_or(0) as u32;
-
-        let output_control = OutputControl {
-            nstxout: Some(ratio),
-            nstvout: Some(ratio),
-            nstfout: None,
-            nstlog: Some(ratio),
-            nstcalcenergy: None,
-            nstenergy: Some(ratio),
-            nstxout_compressed: Some(ratio),
-            compressed_x_precision: 1_000,
-        };
-
         let (integrator, tau_t, thermostat) = match self.integrator {
             Integrator::LangevinMiddle { gamma } => {
                 // GROMACS `sd` (stochastic dynamics) is the correct counterpart for Langevin.
@@ -203,7 +181,7 @@ impl MdConfig {
             integrator,
             nsteps: n_steps as u64,
             dt,
-            output_control,
+            output_control: self.snapshot_handlers.gromacs.clone().unwrap_or_default(),
             coulombtype: CoulombType::Pme(PmeConfig {
                 fourierspacing: self.spme_mesh_spacing * ANGSTROM_TO_NM,
                 order: 4, // Hard-coded in `ewald`.
@@ -286,13 +264,11 @@ impl From<MdpParams> for MdConfig {
 
         // Use nstlog as the snapshot cadence — it's the natural output ratio.
         let nstlog = p.output_control.nstlog.unwrap_or(0);
-        let snapshot_handlers = if nstlog > 0 {
-            vec![SnapshotHandler {
-                save_type: SaveType::Memory,
-                ratio: nstlog as usize,
-            }]
-        } else {
-            MdConfig::default().snapshot_handlers
+
+        let snapshot_handlers = SnapshotHandlers {
+            memory: None,
+            dcd: None,
+            gromacs: Some(p.output_control.clone()),
         };
 
         const NM_TO_ANGSTROM: f32 = 10.0;
