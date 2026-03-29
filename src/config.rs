@@ -5,11 +5,13 @@ use bincode::{Decode, Encode};
 use bio_files::{
     gromacs,
     gromacs::mdp::{
-        Barostat, BarostatCfg, ConstraintAlgorithm, Constraints, CoulombType, EnergyMinimization,
-        Integrator as MdpIntegrator, MdpParams, OutputControl, Pbc, PmeConfig,
-        PressureCouplingType, Thermostat, VdwType,
+        Barostat, BarostatCfg, ConstraintAlgorithm, Constraints, CoulombType,
+        Integrator as MdpIntegrator, MdpParams, Pbc, PmeConfig, PressureCouplingType, Thermostat,
+        VdwType,
     },
 };
+
+use bio_files::gromacs::mdp::VdwModifier;
 
 use crate::{
     MdOverrides, SimBoxInit, integrate::Integrator, prep::HydrogenConstraint,
@@ -58,8 +60,8 @@ pub struct MdConfig {
     /// density: the ~88 boundary molecules that the filter would otherwise reject are needed to
     /// reach 1 g/cm³, and the MD equilibration run will push them to their natural distances.
     pub skip_water_pbc_filter: bool,
-    /// We use the GROMACS struct unaltered.
-    pub energy_minimization: EnergyMinimization,
+    // /// We use the GROMACS struct unaltered.
+    // pub energy_minimization: EnergyMinimization,
     /// SPME mesh spacing in **Å**. Smaller = higher-resolution reciprocal mesh, more accurate
     /// but slower. 1.0 Å is a good default; equivalent to GROMACS `fourierspacing = 0.1 nm`.
     pub spme_mesh_spacing: f32,
@@ -73,6 +75,8 @@ pub struct MdConfig {
     pub coulomb_cutoff: f32,
     /// A hard distance cutoff for VDW forces. Å
     pub lj_cutoff: f32,
+    /// Simliar to GROMACS' emtol. kcal mol⁻¹ Å⁻¹
+    pub energy_minimization_tolerance: f32,
 }
 
 impl Default for MdConfig {
@@ -92,13 +96,15 @@ impl Default for MdConfig {
             overrides: Default::default(),
             water_template_path: None,
             skip_water_pbc_filter: false,
-            energy_minimization: Default::default(),
+            // energy_minimization: Default::default(),
             spme_mesh_spacing: 1.0,
             // Å⁻¹. Chosen so erfc(α × r_c) ≈ 1e-5 at r_c = 12 Å, matching GROMACS' default
             // ewald-rtol. (0.35 Å⁻¹ gives ~2.9e-9 — accurate but pushes k-space costs up.)
             spme_alpha: 0.26,
             coulomb_cutoff: 10.,
             lj_cutoff: 10.,
+            // GROMACS nstcgsteep default.
+            energy_minimization_tolerance: 0.2390,
         }
     }
 }
@@ -181,7 +187,7 @@ impl MdConfig {
             integrator,
             nsteps: n_steps as u64,
             dt,
-            output_control: self.snapshot_handlers.gromacs.clone().unwrap_or_default(),
+            output_control: self.snapshot_handlers.gromacs.clone(),
             coulombtype: CoulombType::Pme(PmeConfig {
                 fourierspacing: self.spme_mesh_spacing * ANGSTROM_TO_NM,
                 order: 4, // Hard-coded in `ewald`.
@@ -192,6 +198,7 @@ impl MdConfig {
             }),
             rcoulomb: self.coulomb_cutoff * ANGSTROM_TO_NM,
             vdwtype: VdwType::CutOff,
+            vdw_modifier: VdwModifier::default(),
             rvdw: self.lj_cutoff * ANGSTROM_TO_NM,
             thermostat,
             // We only have one temperature-coupling group in this lib.
@@ -203,7 +210,7 @@ impl MdConfig {
             gen_temp: self.temp_target,
             gen_seed: None,
             constraints: self.hydrogen_constraint.to_gromacs(),
-            energy_minimization: Some(self.energy_minimization.clone()),
+            // energy_minimization: Some(self.energy_minimization.clone()),
             free_energy_calculations: Default::default(),
         }
     }
@@ -268,8 +275,7 @@ impl From<MdpParams> for MdConfig {
         let snapshot_handlers = SnapshotHandlers {
             memory: None,
             dcd: None,
-            xtc: None,
-            gromacs: Some(p.output_control.clone()),
+            gromacs: p.output_control.clone(),
         };
 
         const NM_TO_ANGSTROM: f32 = 10.0;
@@ -307,6 +313,8 @@ impl From<MdpParams> for MdConfig {
             }
         };
 
+        let def = Self::default();
+
         Self {
             integrator,
             zero_com_drift: false,
@@ -317,16 +325,17 @@ impl From<MdpParams> for MdConfig {
             snapshot_handlers,
             sim_box: Default::default(),
             solvent: Default::default(),
-            max_init_relaxation_iters: Some(1_000),
-            neighbor_skin: 4.0,
+            max_init_relaxation_iters: def.max_init_relaxation_iters,
+            neighbor_skin: def.neighbor_skin,
             overrides,
             water_template_path: None,
             skip_water_pbc_filter: false,
-            energy_minimization: p.energy_minimization.unwrap_or_default(),
+            // energy_minimization: p.energy_minimization.unwrap_or_default(),
             spme_mesh_spacing: mesh_spacing,
             spme_alpha,
             coulomb_cutoff: p.rcoulomb * NM_TO_ANGSTROM,
             lj_cutoff: p.rvdw * NM_TO_ANGSTROM,
+            energy_minimization_tolerance: def.energy_minimization_tolerance,
         }
     }
 }

@@ -111,7 +111,7 @@ impl MdState {
 
         compute_forces_and_energy(self, dev, external_force);
 
-        let alpha = self.cfg.energy_minimization.emstep;
+        let alpha = 0.01;
         let e_prev = self.potential_energy;
 
         // Per-atom last step for backtracking
@@ -209,7 +209,7 @@ impl MdState {
                 *alpha = (alpha_try * GROW).min(ALPHA_MAX);
 
                 let (max_f, _rms_f) = force_stats(self);
-                return max_f <= self.cfg.energy_minimization.emtol;
+                return max_f <= self.cfg.energy_minimization_tolerance;
             }
 
             // Reject: revert positions

@@ -11,9 +11,10 @@ use std::{
 use bincode::{Decode, Encode};
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
-    dcd::{DcdFrame, DcdTrajectory, DcdUnitCell, write_xtc},
+    dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
     gromacs::{GromacsFrame, OutputControl, output::write_trr},
     md_params::{ForceFieldParams, LjParams, MassParams},
+    xtc::write_xtc,
 };
 #[cfg(feature = "cuda")]
 use cudarc::{driver::CudaContext, nvrtc::Ptx};
@@ -58,50 +59,28 @@ pub(crate) const TRAJ_FILE_SAVE_INTERVAL: usize = 100;
 
 const TRAJ_OUT_PATH: &str = "./md_out";
 
-// #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-// #[derive(Clone, PartialEq, Debug, Default)]
-// pub enum SaveType {
-//     /// Includes positions, velocities, and force data.
-//     #[default]
-//     Memory,
-//     Dcd(PathBuf),
-//     /// GROMACS; full-precision
-//     TrrCoordinates(PathBuf),
-//     TrrVelocities(PathBuf),
-//     TrrForces(PathBuf),
-//     /// GROMACS; compressed
-//     Xtc(PathBuf),
-// }
-//
-// #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-// #[derive(Clone, Debug, PartialEq)]
-// pub struct SnapshotHandler {
-//     pub save_type: SaveType,
-//     /// Save every this many steps.
-//     pub ratio: usize,
-// }
-
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 /// For saving snapshots.
 pub struct SnapshotHandlers {
     pub memory: Option<usize>,
     pub dcd: Option<usize>,
-    /// Native XTC writer via MDTraj.  Saves every Nth step.  Requires Python 3
-    /// and `mdtraj` (`pip install mdtraj`) to be available on the system PATH.
-    pub xtc: Option<usize>,
     /// This includes detailed data for saving positions, velocities, forces etc separately
     /// to TRR files, and saving energy data to EDR files. Also can write XTC,
-    pub gromacs: Option<OutputControl>,
+    pub gromacs: OutputControl,
 }
 
 impl Default for SnapshotHandlers {
     fn default() -> Self {
         Self {
-            memory: Some(1),
+            memory: Some(10),
             dcd: None,
-            xtc: None,
-            gromacs: None,
+            gromacs: OutputControl {
+                // Not the GROMACS default, but to use this in our workflows that parse TRR,
+                // we need something here.
+                nstxout: Some(10),
+                ..Default::default()
+            },
         }
     }
 }
@@ -1031,43 +1010,42 @@ impl MdState {
             self.snapshot_queue_for_dcd.push(Snapshot::new(self));
         }
 
-        if let Some(ratio) = self.cfg.snapshot_handlers.xtc
-            && i.is_multiple_of(ratio)
+        let oc = &self.cfg.snapshot_handlers.gromacs;
+        if let Some(ratio) = oc.nstxout
+            && i.is_multiple_of(ratio as usize)
         {
-            self.snapshot_queue_for_xtc.push(Snapshot::new(self));
+            let ss = {
+                let mut v = Snapshot::new(self);
+
+                if let Some(ratio_v) = oc.nstvout
+                    && i.is_multiple_of(ratio_v as usize)
+                {
+                    v.update_with_velocities(self);
+                }
+
+                // We are ignoring `nstcalcenergy`.
+                if let Some(ratio_e) = oc.nstenergy
+                    && i.is_multiple_of(ratio_e as usize)
+                {
+                    if temperature.is_none() {
+                        temperature = Some(self.measure_temperature() as f32);
+                    }
+
+                    v.update_with_energy(self, pressure as f32, temperature.unwrap());
+                }
+
+                // todo: Handle force writing (`nstfout`).
+
+                v
+            };
+
+            self.snapshot_queue_for_trr.push(ss);
         }
 
-        if let Some(oc) = &self.cfg.snapshot_handlers.gromacs {
-            if let Some(ratio) = oc.nstxout
-                && i.is_multiple_of(ratio as usize)
-            {
-                let ss = {
-                    let mut v = Snapshot::new(self);
-
-                    if let Some(ratio_v) = oc.nstvout
-                        && i.is_multiple_of(ratio_v as usize)
-                    {
-                        v.update_with_velocities(self);
-                    }
-
-                    // We are ignoring `nstcalcenergy`.
-                    if let Some(ratio_e) = oc.nstenergy
-                        && i.is_multiple_of(ratio_e as usize)
-                    {
-                        if temperature.is_none() {
-                            temperature = Some(self.measure_temperature() as f32);
-                        }
-
-                        v.update_with_energy(self, pressure as f32, temperature.unwrap());
-                    }
-
-                    // todo: Handle force writing (`nstfout`).
-
-                    v
-                };
-
-                self.snapshot_queue_for_trr.push(ss);
-            }
+        if let Some(ratio) = oc.nstxout_compressed
+            && i.is_multiple_of(ratio as usize)
+        {
+            self.snapshot_queue_for_xtc.push(Snapshot::new(self));
         }
 
         self.handle_ss_file_writes();
