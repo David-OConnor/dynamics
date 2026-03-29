@@ -12,7 +12,7 @@ use bio_files::{
 };
 
 use crate::{
-    MdOverrides, SimBoxInit,
+    MdOverrides, SimBoxInit, barostat,
     barostat::PRESSURE_DEFAULT,
     integrate::Integrator,
     prep::HydrogenConstraint,
@@ -32,10 +32,8 @@ pub struct MdConfig {
     pub zero_com_drift: bool,
     /// Kelvin. Defaults to 310 K.
     pub temp_target: f32,
-    /// Bar (Pa/100). Defaults to 1 bar. None to disable it.
-    pub pressure_target: Option<f32>,
-    /// ps. Defaults to 5; this is what GROMACS uses.
-    pub tau_pressure: f32,
+    /// None to disable it.
+    pub barostat_cfg: Option<barostat::BarostatCfg>,
     /// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
     /// algorithms. This allows for higher time steps.
     pub hydrogen_constraint: HydrogenConstraint,
@@ -88,8 +86,7 @@ impl Default for MdConfig {
             integrator: Default::default(),
             zero_com_drift: false,     // todo: True?
             temp_target: TEMP_DEFAULT, // GROMACS uses this.
-            pressure_target: Some(PRESSURE_DEFAULT),
-            tau_pressure: 5.,
+            barostat_cfg: Some(Default::default()),
             hydrogen_constraint: Default::default(),
             snapshot_handlers: Default::default(),
             sim_box: Default::default(),
@@ -156,28 +153,14 @@ impl MdConfig {
             }
         };
 
-        let constraints = match self.hydrogen_constraint {
-            // LINCS maps to the same GROMACS h-bonds constraint type; GROMACS selects LINCS
-            // automatically when constraints are enabled with the `md` integrator.
-            HydrogenConstraint::Linear { order, iter } => {
-                Constraints::HBonds(ConstraintAlgorithm::Lincs { order, iter })
-            }
-            HydrogenConstraint::Shake { shake_tolerance } => {
-                Constraints::HBonds(ConstraintAlgorithm::Shake {
-                    tol: shake_tolerance,
-                })
-            }
-            HydrogenConstraint::Flexible => Constraints::None,
-        };
-
-        let pcoupl = match self.pressure_target {
-            Some(ref_p) => gromacs::mdp::Barostat::CRescale(BarostatCfg {
+        let pcoupl = match &self.barostat_cfg {
+            Some(bc) => gromacs::mdp::Barostat::CRescale(BarostatCfg {
                 // Standard water compressibility
                 pcoupltype: PressureCouplingType::Isotropic {
-                    ref_p: ref_p,
-                    compressibility: 4.5e-5,
+                    ref_p: bc.pressure_target,
+                    compressibility: bc.solvent_compressibility,
                 },
-                tau_p: self.tau_pressure,
+                tau_p: bc.tau,
             }),
             None => gromacs::mdp::Barostat::No,
         };
@@ -292,27 +275,25 @@ impl From<MdpParams> for MdConfig {
             _ => (1.0, 0.35),
         };
 
-        let (pressure_target, tau_pressure) = match p.pcoupl {
-            Barostat::No => (None, 0.0),
+        let barostat_cfg = match p.pcoupl {
+            Barostat::No => None,
             Barostat::Berendsen(v)
             | Barostat::CRescale(v)
             | Barostat::ParrinelloRahman(v)
-            | Barostat::Mtkk(v) => {
-                let ref_p = match v.pcoupltype {
-                    PressureCouplingType::Isotropic {
-                        ref_p,
-                        compressibility: _,
-                    } => ref_p,
-                    _ => {
-                        eprintln!(
-                            "Unsupported GROMACS pressure coupling type; reverting to a default"
-                        );
-                        PRESSURE_DEFAULT
-                    }
-                };
-
-                (Some(ref_p), v.tau_p)
-            }
+            | Barostat::Mtkk(v) => match v.pcoupltype {
+                PressureCouplingType::Isotropic {
+                    ref_p,
+                    compressibility,
+                } => Some(barostat::BarostatCfg {
+                    tau: v.tau_p,
+                    pressure_target: ref_p,
+                    solvent_compressibility: compressibility,
+                }),
+                _ => {
+                    eprintln!("Unsupported GROMACS pressure coupling type; reverting to a default");
+                    Some(barostat::BarostatCfg::default())
+                }
+            },
         };
 
         let def = Self::default();
@@ -321,8 +302,7 @@ impl From<MdpParams> for MdConfig {
             integrator,
             zero_com_drift: true,
             temp_target: p.ref_t.first().copied().unwrap_or(300.0),
-            pressure_target,
-            tau_pressure,
+            barostat_cfg,
             hydrogen_constraint,
             snapshot_handlers,
             sim_box: Default::default(),

@@ -9,6 +9,7 @@
 
 use std::fmt::Display;
 
+use bincode::{Decode, Encode};
 use lin_alg::f32::Vec3;
 use rand::prelude::ThreadRng;
 use rand_distr::{Distribution, StandardNormal};
@@ -21,8 +22,8 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 /// Used for the stochastic term in the C-rescale barostat.
 const KB_BAR_A3_PER_K: f64 = 138.064_9;
 
-// Bar
-pub const PRESSURE_DEFAULT: f32 = 1.;
+pub const PRESSURE_DEFAULT: f32 = 1.; // Bar
+pub const TAU_PRESSURE_DEFAULT: f32 = 5.; // ps
 
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for solvent atoms. Its size and position should be such as to keep the system
@@ -32,6 +33,28 @@ pub struct SimBox {
     pub bounds_low: Vec3,
     pub bounds_high: Vec3,
     pub extent: Vec3,
+}
+
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarostatCfg {
+    /// The barostat attempts to maintain this paressure. Bar (Pa/100).
+    pub pressure_target: f32,
+    /// The time constant for pressure coupling. ps.
+    pub tau: f32,
+    /// Also known as kappa_t. bar^‑1 (≈4.5×10⁻⁵ for solvent at 300K, 1bar)
+    pub solvent_compressibility: f64,
+}
+
+impl Default for BarostatCfg {
+    fn default() -> Self {
+        // Same as GROMACS defaults.
+        Self {
+            pressure_target: PRESSURE_DEFAULT,
+            tau: TAU_PRESSURE_DEFAULT,
+            solvent_compressibility: 4.5e-5,
+        }
+    }
 }
 
 impl SimBox {
@@ -238,6 +261,7 @@ impl Display for Virial {
     }
 }
 
+/// Barostat state.
 /// Isotropic C-rescale (stochastic cell rescaling) barostat — GROMACS `pcoupl = C-rescale`.
 ///
 /// Reference: Bernetti & Bussi, J. Chem. Phys. 153, 114107 (2020).
@@ -249,10 +273,6 @@ impl Display for Virial {
 /// The deterministic part is identical to Berendsen; the stochastic term restores the
 /// correct NpT fluctuations that Berendsen suppresses.
 pub struct Barostat {
-    /// bar (kPa / 100)
-    pub pressure_target: f64,
-    /// bar‑1 (≈4.5×10⁻⁵ for solvent at 300K, 1bar)
-    pub kappa_t: f64,
     pub virial: Virial,
     pub rng: ThreadRng,
 }
@@ -260,10 +280,6 @@ pub struct Barostat {
 impl Default for Barostat {
     fn default() -> Self {
         Self {
-            // Standard atmospheric pressure.
-            pressure_target: 1.,
-            // Isothermal compressibility of solvent at 298 K.
-            kappa_t: 4.5e-5,
             virial: Default::default(),
             rng: rand::rng(),
         }
@@ -281,17 +297,20 @@ impl Barostat {
         dt: f64,
         temp_k: f64,
         vol_a3: f64,
-        tau_pressure: f64,
+        cfg: &BarostatCfg,
     ) -> f64 {
         // Deterministic term: ΔlnV_det = (κT/τp)(P_inst − P₀)dt
-        let dlnv_det = (self.kappa_t / tau_pressure) * (p_inst - self.pressure_target) * dt;
+        let dlnv_det = (cfg.solvent_compressibility / cfg.tau as f64)
+            * (p_inst - cfg.pressure_target as f64)
+            * dt;
 
         // Stochastic term: σ = √(2κT·kB·T·dt / (τp·V))
-        let sigma_lnv =
-            (2.0 * self.kappa_t * KB_BAR_A3_PER_K * temp_k * dt / (tau_pressure * vol_a3)).sqrt();
+        let sigma_lnv = (2.0 * cfg.solvent_compressibility * KB_BAR_A3_PER_K * temp_k * dt
+            / (cfg.tau as f64 * vol_a3))
+            .sqrt();
         let xi: f64 = StandardNormal.sample(&mut self.rng);
 
-        // Cap per-step volume change (≤10%) before computing λ
+        // Cap per-step volume change (≤10%) befsore computing λ
         const MAX_DLNV: f64 = 0.10;
         let dlnv = (dlnv_det + sigma_lnv * xi).clamp(-MAX_DLNV, MAX_DLNV);
 
@@ -304,7 +323,7 @@ impl Barostat {
         dt_ps: f64,
         p_inst_bar: f64,
         temp_k: f64,
-        tau_pressure: f64,
+        cfg: &BarostatCfg,
         simbox: &mut SimBox,
         atoms_dyn: &mut [AtomDynamics],
         waters: &mut [WaterMol],
@@ -313,7 +332,7 @@ impl Barostat {
         return;
 
         let vol_a3 = simbox.volume() as f64;
-        let lam = self.scale_factor(p_inst_bar, dt_ps, temp_k, vol_a3, tau_pressure); // λ for lengths (not volume)
+        let lam = self.scale_factor(p_inst_bar, dt_ps, temp_k, vol_a3, cfg); // λ for lengths (not volume)
 
         if !(lam.is_finite() && lam > 0.0) || (lam - 1.0).abs() < 1e-12 {
             return; // no-op

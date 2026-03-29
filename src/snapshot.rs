@@ -578,10 +578,7 @@ impl MdState {
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
         result.lj_tables = LjTables::new(&result.atoms);
-
         result.neighbors_nb = NeighborsNb::new(result.cfg.neighbor_skin, result.cfg.coulomb_cutoff);
-
-        result.barostat.pressure_target = cfg.pressure_target.unwrap_or_default() as f64;
 
         // Custom solvent molecules were pre-packed and added to `all_mols` before the atom-
         // processing loop above, so their atoms are already in `result.atoms` and their

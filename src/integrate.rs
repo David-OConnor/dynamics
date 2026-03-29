@@ -175,12 +175,12 @@ impl MdState {
                     &self.barostat.virial.to_kcal_mol(),
                 );
 
-                if self.cfg.pressure_target.is_some() {
+                if let Some(bc) = &self.cfg.barostat_cfg {
                     self.barostat.apply_isotropic(
                         dt as f64,
                         pressure,
                         self.cfg.temp_target as f64,
-                        self.cfg.tau_pressure as f64,
+                        bc,
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
@@ -294,12 +294,12 @@ impl MdState {
                 // Barostat runs last in VV: velocities are fully updated and the thermostat has
                 // already set the correct KE, so the box/coordinate scaling happens cleanly.
                 // Scaled positions feed into the next step's force computation.
-                if self.cfg.pressure_target.is_some() {
+                if let Some(bc) = &self.cfg.barostat_cfg {
                     self.barostat.apply_isotropic(
                         dt as f64,
                         pressure,
                         self.cfg.temp_target as f64,
-                        self.cfg.tau_pressure as f64,
+                        bc,
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
@@ -388,13 +388,13 @@ impl MdState {
                     self.computation_time.integration_sum += elapsed;
                 }
 
-                if false {
+                if let Some(bc) = &self.cfg.barostat_cfg {
                     // todo temp
                     self.barostat.apply_isotropic(
                         dt as f64,
                         pressure,
                         self.cfg.temp_target as f64,
-                        self.cfg.tau_pressure as f64,
+                        bc,
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
