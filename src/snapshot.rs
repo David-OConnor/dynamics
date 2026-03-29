@@ -9,9 +9,11 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
+use bio_files::gromacs::GromacsOutput;
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
     dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
+    gromacs,
     gromacs::{GromacsFrame, OutputControl, output::write_trr},
     md_params::{ForceFieldParams, LjParams, MassParams},
     xtc::write_xtc,
@@ -21,6 +23,7 @@ use cudarc::{driver::CudaContext, nvrtc::Ptx};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use na_seq::Element;
 
+use crate::solvent::MASS_WATER_MOL;
 use crate::{
     AtomDynamics,
     COMPUTATION_TIME_RATIO,
@@ -110,7 +113,33 @@ pub struct SnapshotEnergyData {
     /// this equals the negative of the solute–solvent interaction energy at the
     /// current configuration.  Average this over a λ window's trajectory and pass
     /// the result to `alchemical::collect_window` / `alchemical::free_energy_ti`.
-    pub dh_dl: f32,
+    pub dh_dl: Option<f32>,
+    /// Simulation box volume in **Å³**.
+    pub volume: f32,
+    /// System density in **kg/m³**.
+    pub density: f32,
+}
+
+impl From<gromacs::OutputEnergy> for SnapshotEnergyData {
+    fn from(e: gromacs::OutputEnergy) -> Self {
+        Self {
+            // todo: Consider modifyying SnapshotEnergyData to make these fields optional,
+            // todo: to handle them being optional for GROMACS.
+            //
+            // todo: And consider
+            energy_kinetic: e.kinetic_energy.unwrap_or_default(),
+            energy_potential: e.potential_energy.unwrap_or_default(),
+            energy_potential_between_mols: Vec::new(),
+            energy_potential_nonbonded: 0.,
+            energy_potential_bonded: 0.,
+            hydrogen_bonds: Vec::new(),
+            temperature: e.temperature.unwrap_or_default(),
+            pressure: e.pressure.unwrap_or_default(),
+            dh_dl: None,
+            volume: e.volume.unwrap_or_default(),
+            density: e.density.unwrap_or_default(),
+        }
+    }
 }
 
 /// This stores the positions and velocities of all atoms in the system, and the total energy.
@@ -173,6 +202,15 @@ impl Snapshot {
             .map(|v| *v as f32)
             .collect();
 
+        let mut mass = 0.;
+        for atom in &state.atoms {
+            mass += atom.mass as f64;
+        }
+        mass += MASS_WATER_MOL as f64 * state.water.len() as f64;
+
+        let volume = state.cell.volume();
+        let density = mass as f32 / volume;
+
         self.energy_data = Some(SnapshotEnergyData {
             energy_kinetic: state.kinetic_energy as f32,
             energy_potential: state.potential_energy as f32,
@@ -182,7 +220,9 @@ impl Snapshot {
             hydrogen_bonds: Vec::new(), // Populated later A/R.
             temperature,
             pressure,
-            dh_dl: state.compute_dh_dl() as f32,
+            dh_dl: Some(state.compute_dh_dl() as f32),
+            volume,
+            density,
         });
     }
 
@@ -1161,23 +1201,24 @@ impl MdState {
 /// Atoms beyond that index are OPC water molecules, laid out as groups of 4:
 /// OW, HW1, HW2, MW (virtual site). MW positions are discarded since `Snapshot`
 /// has no field for them and the virtual site carries no mass.
-pub fn gromacs_frames_to_ss(frames: &[GromacsFrame], solute_atom_count: usize) -> Vec<Snapshot> {
+pub fn gromacs_frames_to_ss(out: &GromacsOutput) -> Vec<Snapshot> {
     // OPC water has 4 sites per molecule (OW, HW1, HW2, MW virtual site).
     const OPC_SITES_PER_MOL: usize = 4;
+    const NM_TO_ANGSTROM: f64 = 10.;
 
-    frames
+    out.trajectory
         .iter()
         .map(|frame| {
             let n = frame.atom_posits.len();
-            let solute_end = solute_atom_count.min(n);
+            let solute_end = out.solute_atom_count.min(n);
 
             let atom_posits: Vec<Vec3> = frame.atom_posits[..solute_end]
                 .iter()
                 .map(|p| {
                     Vec3::new(
-                        (p.x * 10.0) as f32,
-                        (p.y * 10.0) as f32,
-                        (p.z * 10.0) as f32,
+                        (p.x * NM_TO_ANGSTROM) as f32,
+                        (p.y * NM_TO_ANGSTROM) as f32,
+                        (p.z * NM_TO_ANGSTROM) as f32,
                     )
                 })
                 .collect();
@@ -1193,9 +1234,9 @@ pub fn gromacs_frames_to_ss(frames: &[GromacsFrame], solute_atom_count: usize) -
                 let base = i * OPC_SITES_PER_MOL;
                 let to_vec3 = |p: &lin_alg::f64::Vec3| {
                     Vec3::new(
-                        (p.x * 10.0) as f32,
-                        (p.y * 10.0) as f32,
-                        (p.z * 10.0) as f32,
+                        (p.x * NM_TO_ANGSTROM) as f32,
+                        (p.y * NM_TO_ANGSTROM) as f32,
+                        (p.z * NM_TO_ANGSTROM) as f32,
                     )
                 };
 
@@ -1205,12 +1246,18 @@ pub fn gromacs_frames_to_ss(frames: &[GromacsFrame], solute_atom_count: usize) -
                 // base + 3 is the MW virtual site — no Snapshot field for it.
             }
 
+            let energy_data = frame
+                .energy
+                .as_ref()
+                .map(|f| SnapshotEnergyData::from(f.clone()));
+
             Snapshot {
                 time: frame.time,
                 atom_posits,
                 water_o_posits,
                 water_h0_posits,
                 water_h1_posits,
+                energy_data,
                 ..Snapshot::default()
             }
         })
