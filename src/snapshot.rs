@@ -9,12 +9,11 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::gromacs::GromacsOutput;
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
     dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
     gromacs,
-    gromacs::{GromacsFrame, OutputControl, output::write_trr},
+    gromacs::{GromacsFrame, GromacsOutput, OutputControl, output::write_trr},
     md_params::{ForceFieldParams, LjParams, MassParams},
     xtc::write_xtc,
 };
@@ -89,8 +88,10 @@ impl Default for SnapshotHandlers {
 }
 
 /// Pressure, temperature, energy, etc. Could also be described as thermodynamic properties.
+/// All energies are in kcal / mol
 #[derive(Clone, Debug)]
 pub struct SnapshotEnergyData {
+    /// kcal / mol
     pub energy_kinetic: f32,
     pub energy_potential: f32,
     /// Used to track which molecule each atom is associated with in our flattened structures.
@@ -116,28 +117,33 @@ pub struct SnapshotEnergyData {
     pub dh_dl: Option<f32>,
     /// Simulation box volume in **Å³**.
     pub volume: f32,
-    /// System density in **kg/m³**.
+    // System density in **kg/m³**.
+    /// System density in **amu/Å³3**.
     pub density: f32,
 }
 
 impl From<gromacs::OutputEnergy> for SnapshotEnergyData {
     fn from(e: gromacs::OutputEnergy) -> Self {
+        // kJ/mol → kcal/mol
+        const KJ_TO_KCAL: f32 = 1.0 / 4.184;
+        // nm³ → Å³ (1 nm = 10 Å, so 1 nm³ = 1000 Å³)
+        const NM3_TO_ANG3: f32 = 1000.0;
+        // kg/m³ → amu/Å³ (1 kg = 1/1.66054e-27 amu; 1 m³ = 1e30 Å³)
+        const KG_M3_TO_AMU_ANG3: f32 = 6.02214076e-4;
+
         Self {
-            // todo: Consider modifyying SnapshotEnergyData to make these fields optional,
-            // todo: to handle them being optional for GROMACS.
-            //
-            // todo: And consider
-            energy_kinetic: e.kinetic_energy.unwrap_or_default(),
-            energy_potential: e.potential_energy.unwrap_or_default(),
+            energy_kinetic: e.kinetic_energy.unwrap_or_default() * KJ_TO_KCAL,
+            energy_potential: e.potential_energy.unwrap_or_default() * KJ_TO_KCAL,
             energy_potential_between_mols: Vec::new(),
             energy_potential_nonbonded: 0.,
             energy_potential_bonded: 0.,
             hydrogen_bonds: Vec::new(),
+            // K and bar need no conversion.
             temperature: e.temperature.unwrap_or_default(),
             pressure: e.pressure.unwrap_or_default(),
             dh_dl: None,
-            volume: e.volume.unwrap_or_default(),
-            density: e.density.unwrap_or_default(),
+            volume: e.volume.unwrap_or_default() * NM3_TO_ANG3,
+            density: e.density.unwrap_or_default() * KG_M3_TO_AMU_ANG3,
         }
     }
 }

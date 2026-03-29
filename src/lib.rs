@@ -151,7 +151,6 @@ pub use solvent::{
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
-pub use crate::thermostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT};
 use crate::{
     barostat::Barostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
@@ -160,8 +159,10 @@ use crate::{
     solvent::{WaterMol, WaterMolx8, WaterMolx16},
     util::ComputationTimeSums,
 };
-
-pub use crate::barostat::{BarostatCfg, PRESSURE_DEFAULT, TAU_PRESSURE_DEFAULT};
+pub use crate::{
+    barostat::{BarostatCfg, PRESSURE_DEFAULT, TAU_PRESSURE_DEFAULT},
+    thermostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT},
+};
 
 // Note: If you haven't generated this file yet when compiling (e.g. from a freshly-cloned repo),
 // make an edit to one of the CUDA files (e.g. add a newline), then run, to create this file.
