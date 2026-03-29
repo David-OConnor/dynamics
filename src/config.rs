@@ -7,15 +7,18 @@ use bio_files::{
     gromacs::mdp::{
         Barostat, BarostatCfg, ConstraintAlgorithm, Constraints, CoulombType,
         Integrator as MdpIntegrator, MdpParams, Pbc, PmeConfig, PressureCouplingType, Thermostat,
-        VdwType,
+        VdwModifier, VdwType,
     },
 };
 
-use bio_files::gromacs::mdp::VdwModifier;
-
 use crate::{
-    MdOverrides, SimBoxInit, integrate::Integrator, prep::HydrogenConstraint,
-    snapshot::SnapshotHandlers, solvent::Solvent, thermostat::TAU_TEMP_DEFAULT,
+    MdOverrides, SimBoxInit,
+    barostat::PRESSURE_DEFAULT,
+    integrate::Integrator,
+    prep::HydrogenConstraint,
+    snapshot::SnapshotHandlers,
+    solvent::Solvent,
+    thermostat::{TAU_TEMP_DEFAULT, TEMP_DEFAULT},
 };
 
 /// This is the primary way of configurating an MD run. It's passed at init, along with the
@@ -29,8 +32,8 @@ pub struct MdConfig {
     pub zero_com_drift: bool,
     /// Kelvin. Defaults to 310 K.
     pub temp_target: f32,
-    /// Bar (Pa/100). Defaults to 1 bar.
-    pub pressure_target: f32,
+    /// Bar (Pa/100). Defaults to 1 bar. None to disable it.
+    pub pressure_target: Option<f32>,
     /// ps. Defaults to 5; this is what GROMACS uses.
     pub tau_pressure: f32,
     /// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
@@ -43,11 +46,12 @@ pub struct MdConfig {
     /// Use no more than this many iterations to do so. Higher can produce better results,
     /// but is slower. If None, don't relax.
     pub max_init_relaxation_iters: Option<usize>,
+    /// Simliar to GROMACS' emtol. kcal mol⁻¹ Å⁻¹
+    pub energy_minimization_tolerance: f32,
     /// Distance threshold, in Å, used to determine when we rebuild neighbor lists.
     /// 2-4Å are common values. Higher values rebuild less often, and have more computationally-intense
     /// rebuilds. Rebuild the list if an atom moved > skin/2.
     pub neighbor_skin: f32,
-    pub overrides: MdOverrides,
     /// Optional path to a pre-equilibrated water template file.
     /// When set, this template is used instead of the built-in 60 Å template.
     /// A box-specific template (e.g. 30 Å) is required for accurate initial pressures,
@@ -75,36 +79,36 @@ pub struct MdConfig {
     pub coulomb_cutoff: f32,
     /// A hard distance cutoff for VDW forces. Å
     pub lj_cutoff: f32,
-    /// Simliar to GROMACS' emtol. kcal mol⁻¹ Å⁻¹
-    pub energy_minimization_tolerance: f32,
+    pub overrides: MdOverrides,
 }
 
 impl Default for MdConfig {
     fn default() -> Self {
         Self {
             integrator: Default::default(),
-            zero_com_drift: false, // todo: True?
-            temp_target: 300.,     // GROMACS uses this.
-            pressure_target: 1.,
+            zero_com_drift: false,     // todo: True?
+            temp_target: TEMP_DEFAULT, // GROMACS uses this.
+            pressure_target: Some(PRESSURE_DEFAULT),
             tau_pressure: 5.,
             hydrogen_constraint: Default::default(),
             snapshot_handlers: Default::default(),
             sim_box: Default::default(),
             solvent: Default::default(),
             max_init_relaxation_iters: Some(1_000), // todo: A/R
+            // GROMACS emtol = 1000, converted to our units. This is not the same as its default
+            // of 10: It's loose, for this initial energy minimization. We are converting from
+            // kJ mol-1 nm-1 to KCal Mol-1 Angstrom-1
+            energy_minimization_tolerance: 1_000. * 0.0239005,
             neighbor_skin: 4.0,
-            overrides: Default::default(),
             water_template_path: None,
             skip_water_pbc_filter: false,
-            // energy_minimization: Default::default(),
             spme_mesh_spacing: 1.0,
             // Å⁻¹. Chosen so erfc(α × r_c) ≈ 1e-5 at r_c = 12 Å, matching GROMACS' default
             // ewald-rtol. (0.35 Å⁻¹ gives ~2.9e-9 — accurate but pushes k-space costs up.)
             spme_alpha: 0.26,
             coulomb_cutoff: 10.,
             lj_cutoff: 10.,
-            // GROMACS nstcgsteep default.
-            energy_minimization_tolerance: 0.2390,
+            overrides: Default::default(),
         }
     }
 }
@@ -166,17 +170,16 @@ impl MdConfig {
             HydrogenConstraint::Flexible => Constraints::None,
         };
 
-        let pcoupl = if self.overrides.bonded_disabled {
-            gromacs::mdp::Barostat::No
-        } else {
-            gromacs::mdp::Barostat::CRescale(BarostatCfg {
+        let pcoupl = match self.pressure_target {
+            Some(ref_p) => gromacs::mdp::Barostat::CRescale(BarostatCfg {
                 // Standard water compressibility
                 pcoupltype: PressureCouplingType::Isotropic {
-                    ref_p: self.pressure_target,
+                    ref_p: ref_p,
                     compressibility: 4.5e-5,
                 },
                 tau_p: self.tau_pressure,
-            })
+            }),
+            None => gromacs::mdp::Barostat::No,
         };
 
         const ANGSTROM_TO_NM: f32 = 0.1;
@@ -267,7 +270,6 @@ impl From<MdpParams> for MdConfig {
         };
 
         let mut overrides = MdOverrides::default();
-        overrides.baro_disabled = p.pcoupl == Barostat::No;
 
         // Use nstlog as the snapshot cadence — it's the natural output ratio.
         let nstlog = p.output_control.nstlog.unwrap_or(0);
@@ -291,7 +293,7 @@ impl From<MdpParams> for MdConfig {
         };
 
         let (pressure_target, tau_pressure) = match p.pcoupl {
-            Barostat::No => (0.0, 0.0),
+            Barostat::No => (None, 0.0),
             Barostat::Berendsen(v)
             | Barostat::CRescale(v)
             | Barostat::ParrinelloRahman(v)
@@ -305,11 +307,11 @@ impl From<MdpParams> for MdConfig {
                         eprintln!(
                             "Unsupported GROMACS pressure coupling type; reverting to a default"
                         );
-                        300.
+                        PRESSURE_DEFAULT
                     }
                 };
 
-                (ref_p, v.tau_p)
+                (Some(ref_p), v.tau_p)
             }
         };
 
@@ -317,7 +319,7 @@ impl From<MdpParams> for MdConfig {
 
         Self {
             integrator,
-            zero_com_drift: false,
+            zero_com_drift: true,
             temp_target: p.ref_t.first().copied().unwrap_or(300.0),
             pressure_target,
             tau_pressure,
@@ -326,6 +328,7 @@ impl From<MdpParams> for MdConfig {
             sim_box: Default::default(),
             solvent: Default::default(),
             max_init_relaxation_iters: def.max_init_relaxation_iters,
+            energy_minimization_tolerance: def.energy_minimization_tolerance,
             neighbor_skin: def.neighbor_skin,
             overrides,
             water_template_path: None,
@@ -335,7 +338,6 @@ impl From<MdpParams> for MdConfig {
             spme_alpha,
             coulomb_cutoff: p.rcoulomb * NM_TO_ANGSTROM,
             lj_cutoff: p.rvdw * NM_TO_ANGSTROM,
-            energy_minimization_tolerance: def.energy_minimization_tolerance,
         }
     }
 }

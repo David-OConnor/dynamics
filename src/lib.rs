@@ -534,9 +534,8 @@ impl Default for SimBoxInit {
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 /// These are primarily used for debugging and testing, but may be used
 /// for specific scenarios as well, e.g. if wishing to speed up computations for real-time use
-/// by removing long range forces.
+/// by removing long range forces. These are not standard MD config parameters.
 pub struct MdOverrides {
-    pub skip_solvent: bool,
     /// Skips the initial solvent relaxation, where a simulation is run until
     /// hydrogen bonds are established, and temperature is initialized.
     pub skip_water_relaxation: bool,
@@ -544,12 +543,11 @@ pub struct MdOverrides {
     pub coulomb_disabled: bool,
     pub lj_disabled: bool,
     pub long_range_recip_disabled: bool,
-    pub thermo_disabled: bool,
-    pub baro_disabled: bool,
     /// Run this block if we wish to, for dev purposes, take snapshots during the
     /// solvent equilibration phase, e.g. for tuning it.
     pub snapshots_during_equilibration: bool,
     /// Take snapshots during the energy minimization phase. (Not solvent equilibration)
+    /// This can be used to visually QC this process.
     pub snapshots_during_energy_min: bool,
 }
 
@@ -739,10 +737,7 @@ pub fn compute_energy_snapshot(
         integrator: Integrator::VerletVelocity { thermostat: None },
         hydrogen_constraint: HydrogenConstraint::Flexible,
         max_init_relaxation_iters: None,
-        overrides: MdOverrides {
-            skip_solvent: true,
-            ..Default::default()
-        },
+        solvent: Solvent::None,
         ..Default::default()
     };
 

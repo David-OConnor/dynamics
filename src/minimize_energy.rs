@@ -172,6 +172,23 @@ impl MdState {
         loop {
             self.neighbors_nb.max_displacement_sq = 0.0;
 
+            // Normalize by the global max force (GROMACS `steep` convention): the highest-force
+            // atom moves exactly `step_size`, all others proportionally less. This prevents
+            // low-force atoms from over-shooting when a high-force atom is capped at STEP_MAX.
+            let f_max = self
+                .atoms
+                .iter()
+                .filter(|a| !a.static_)
+                .map(|a| a.force.magnitude())
+                .filter(|m| m.is_finite())
+                .fold(0.0_f32, f32::max);
+
+            if f_max == 0.0 {
+                return true;
+            }
+
+            let step_size = (alpha_try * f_max).min(STEP_MAX);
+
             for (i, a) in self.atoms.iter_mut().enumerate() {
                 last_step[i] = Vec3::new_zero();
                 if a.static_ {
@@ -183,8 +200,7 @@ impl MdState {
                     continue;
                 }
 
-                let step_mag = (alpha_try * f_mag).min(STEP_MAX);
-                let s = a.force * (step_mag / f_mag);
+                let s = a.force * (step_size / f_max);
                 a.posit += s;
                 last_step[i] = s;
 
@@ -200,7 +216,7 @@ impl MdState {
             let e_new = self.potential_energy;
 
             if self.cfg.overrides.snapshots_during_energy_min {
-                self.handle_snapshots(self.cfg.pressure_target as f64); // Pressure: todo?
+                self.handle_snapshots(0.); // Pressure: Not required here.e
             }
 
             if e_new <= *e_prev {

@@ -581,16 +581,14 @@ impl MdState {
 
         result.neighbors_nb = NeighborsNb::new(result.cfg.neighbor_skin, result.cfg.coulomb_cutoff);
 
-        result.barostat.pressure_target = cfg.pressure_target as f64;
+        result.barostat.pressure_target = cfg.pressure_target.unwrap_or_default() as f64;
 
         // Custom solvent molecules were pre-packed and added to `all_mols` before the atom-
         // processing loop above, so their atoms are already in `result.atoms` and their
         // parameters are already included in `force_field_params`.  Water (below) will avoid
         // them automatically because `make_water_mols` checks against `result.atoms`.
 
-        result.water = if cfg.overrides.skip_solvent {
-            Vec::new()
-        } else {
+        result.water = {
             let count = match &cfg.solvent {
                 Solvent::None | Solvent::WaterOpc => None,
                 Solvent::WaterOpcSpecifyMolCount(c) => Some(*c),
@@ -756,7 +754,7 @@ impl MdState {
         #[cfg(target_arch = "x86_64")]
         result.pack_atoms();
 
-        if !result.cfg.overrides.skip_solvent && !result.cfg.overrides.skip_water_relaxation {
+        if !result.cfg.overrides.skip_water_relaxation {
             result.md_on_water_only(dev);
         }
 
@@ -979,7 +977,7 @@ impl MdState {
 
     /// Run this each step: For each enabled snapshot handler, store to memory, or save to
     /// disk as required.
-    pub(crate) fn handle_snapshots(&mut self, pressure: f64) {
+    pub(crate) fn handle_snapshots(&mut self, pressure: f32) {
         let i = self.step_count;
 
         // Compute temperature a maximum of once in this fn.
@@ -995,7 +993,7 @@ impl MdState {
             let ss = {
                 let mut v = Snapshot::new(self);
                 v.update_with_velocities(self);
-                v.update_with_energy(self, pressure as f32, temperature.unwrap());
+                v.update_with_energy(self, pressure, temperature.unwrap());
 
                 v
             };

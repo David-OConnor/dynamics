@@ -21,6 +21,8 @@ pub(crate) const KB_A2_PS2_PER_K_PER_AMU: f32 = 0.831_446_26;
 // We set an aggressive thermostat during solvent initialization, then a more relaxed one at runtime.
 // This is for the VV/CVSR themostat only.
 // Note: These are publically exposed, for use in applications.
+pub const TEMP_DEFAULT: f32 = 300.; // GROMACS default.
+
 pub const TAU_TEMP_DEFAULT: f64 = 0.1; // GROMACS default.
 pub const TAU_TEMP_WATER_INIT: f64 = 0.01; // for CSVR
 

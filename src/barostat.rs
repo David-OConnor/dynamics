@@ -21,6 +21,9 @@ pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 /// Used for the stochastic term in the C-rescale barostat.
 const KB_BAR_A3_PER_K: f64 = 138.064_9;
 
+// Bar
+pub const PRESSURE_DEFAULT: f32 = 1.;
+
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for solvent atoms. Its size and position should be such as to keep the system
 /// solvated. We may move it around during the sim.

@@ -118,7 +118,7 @@ impl MdState {
                     start = Instant::now();
                 }
 
-                if !self.cfg.overrides.thermo_disabled && !self.solvent_only_sim_at_init {
+                if !self.solvent_only_sim_at_init {
                     self.apply_langevin_thermostat(dt, gamma, self.cfg.temp_target);
                     // Update KE after vel updates from the thermostat, prior to barostat.
                     self.kinetic_energy = self.measure_kinetic_energy();
@@ -175,7 +175,7 @@ impl MdState {
                     &self.barostat.virial.to_kcal_mol(),
                 );
 
-                if !self.cfg.overrides.baro_disabled {
+                if self.cfg.pressure_target.is_some() {
                     self.barostat.apply_isotropic(
                         dt as f64,
                         pressure,
@@ -185,10 +185,11 @@ impl MdState {
                         &mut self.atoms,
                         &mut self.water,
                     );
-                    // The box dimensions changed; update PME so the next force computation
-                    // uses the correct reciprocal lattice vectors.
-                    self.regen_pme(dev);
                 }
+
+                // The box dimensions changed; update PME so the next force computation
+                // uses the correct reciprocal lattice vectors.
+                self.regen_pme(dev);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -272,7 +273,6 @@ impl MdState {
                 // Note: We don't need to RATTLE hydrogens after applying the CSVR thermostat, because
                 // it updates all velocites uniformly.
                 if let Some(tau_temp) = thermostat
-                    && !self.cfg.overrides.thermo_disabled
                     && !self.solvent_only_sim_at_init
                 {
                     // Update KE from the current velocities (after both half-kicks) before
@@ -294,7 +294,7 @@ impl MdState {
                 // Barostat runs last in VV: velocities are fully updated and the thermostat has
                 // already set the correct KE, so the box/coordinate scaling happens cleanly.
                 // Scaled positions feed into the next step's force computation.
-                if !self.cfg.overrides.baro_disabled {
+                if self.cfg.pressure_target.is_some() {
                     self.barostat.apply_isotropic(
                         dt as f64,
                         pressure,
@@ -304,10 +304,10 @@ impl MdState {
                         &mut self.atoms,
                         &mut self.water,
                     );
-                    // The box dimensions changed; update PME so the next force computation
-                    // uses the correct reciprocal lattice vectors.
-                    self.regen_pme(dev);
                 }
+                // The box dimensions changed; update PME so the next force computation
+                // uses the correct reciprocal lattice vectors.
+                self.regen_pme(dev);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -340,7 +340,6 @@ impl MdState {
 
                 // Optional CSVR thermostat applied to the half-step velocities.
                 if let Some(tau_temp) = thermostat
-                    && !self.cfg.overrides.thermo_disabled
                     && !self.solvent_only_sim_at_init
                 {
                     self.kinetic_energy = self.measure_kinetic_energy();
@@ -389,7 +388,8 @@ impl MdState {
                     self.computation_time.integration_sum += elapsed;
                 }
 
-                if !self.cfg.overrides.baro_disabled {
+                if false {
+                    // todo temp
                     self.barostat.apply_isotropic(
                         dt as f64,
                         pressure,
@@ -446,7 +446,7 @@ impl MdState {
             }
 
             let start = Instant::now(); // Not sure how else to handle. (Option would work)
-            self.handle_snapshots(pressure);
+            self.handle_snapshots(pressure as f32);
 
             if log_time {
                 let elapsed = start.elapsed().as_micros() as u64;
@@ -460,7 +460,7 @@ impl MdState {
         }
 
         if self.cfg.overrides.snapshots_during_equilibration && self.solvent_only_sim_at_init {
-            self.handle_snapshots(pressure);
+            self.handle_snapshots(pressure as f32);
         }
     }
 
