@@ -186,6 +186,7 @@ impl Snapshot {
         }
 
         Self {
+            time: state.time,
             atom_posits: state.atoms.iter().map(|a| a.posit).collect(),
             water_o_posits,
             water_h0_posits,
