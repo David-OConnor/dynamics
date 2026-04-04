@@ -195,12 +195,12 @@ impl Snapshot {
     }
 
     pub fn update_with_velocities(&mut self, state: &MdState) {
-        self.atom_posits = state.atoms.iter().map(|a| a.vel).collect();
+        self.atom_velocities = Some(state.atoms.iter().map(|a| a.vel).collect());
         self.water_velocities = Some(state.water.iter().map(|w| w.o.vel).collect());
     }
 
     pub fn update_with_energy(&mut self, state: &MdState, pressure: f32, temperature: f32) {
-        self.atom_posits = state.atoms.iter().map(|a| a.vel).collect();
+        self.atom_velocities = Some(state.atoms.iter().map(|a| a.vel).collect());
         self.water_velocities = Some(state.water.iter().map(|w| w.o.vel).collect());
 
         let energy_potential_between_mols = state
