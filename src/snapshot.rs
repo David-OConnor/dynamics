@@ -127,7 +127,7 @@ impl From<gromacs::OutputEnergy> for SnapshotEnergyData {
         // kJ/mol → kcal/mol
         const KJ_TO_KCAL: f32 = 1.0 / 4.184;
         // nm³ → Å³ (1 nm = 10 Å, so 1 nm³ = 1000 Å³)
-        const NM3_TO_ANG3: f32 = 1000.0;
+        const NM3_TO_ANG3: f32 = 1_000.0;
         // kg/m³ → amu/Å³ (1 kg = 1/1.66054e-27 amu; 1 m³ = 1e30 Å³)
         const KG_M3_TO_AMU_ANG3: f32 = 6.02214076e-4;
 
@@ -232,7 +232,7 @@ impl Snapshot {
         });
     }
 
-    /// Unflatten positions and velocities into a per-molecule basis. `mol_start_indices` may be
+    /// Unflatten positions and velocities on a per-molecule basis. `mol_start_indices` may be
     /// taken directly from `MdState`. Inner: (Posit, Vel). Does not unflatten the solvent, which is placed
     /// after all non-solvent molecules in the flat arrays.
     pub fn unflatten(&self, mol_start_indices: &[usize]) -> io::Result<Vec<Vec<(Vec3, Vec3)>>> {
@@ -322,6 +322,65 @@ impl Snapshot {
         }
 
         result
+    }
+}
+
+impl From<GromacsFrame> for Snapshot {
+    fn from(frame: GromacsFrame) -> Self {
+        // nm → Å
+        let atom_posits = frame
+            .atom_posits
+            .iter()
+            .map(|p| Vec3 {
+                x: (p.x * 10.0) as f32,
+                y: (p.y * 10.0) as f32,
+                z: (p.z * 10.0) as f32,
+            })
+            .collect();
+
+        // nm/ps → Å/ps; absent if the velocity block was empty.
+        let atom_velocities = if frame.atom_velocities.is_empty() {
+            None
+        } else {
+            Some(
+                frame
+                    .atom_velocities
+                    .iter()
+                    .map(|v| Vec3 {
+                        x: (v.x * 10.0) as f32,
+                        y: (v.y * 10.0) as f32,
+                        z: (v.z * 10.0) as f32,
+                    })
+                    .collect(),
+            )
+        };
+
+        Self {
+            time: frame.time,
+            atom_posits,
+            atom_velocities,
+            energy_data: frame.energy.map(SnapshotEnergyData::from),
+            water_o_posits: Vec::new(),
+            water_h0_posits: Vec::new(),
+            water_h1_posits: Vec::new(),
+            water_velocities: None,
+        }
+    }
+}
+
+impl From<DcdFrame> for Snapshot {
+    fn from(frame: DcdFrame) -> Self {
+        // DcdFrame.time is in fs; Snapshot.time is in ps.
+        Self {
+            time: frame.time / 1_000.0,
+            atom_posits: frame.atom_posits,
+            atom_velocities: None,
+            energy_data: None,
+            water_o_posits: Vec::new(),
+            water_h0_posits: Vec::new(),
+            water_h1_posits: Vec::new(),
+            water_velocities: None,
+        }
     }
 }
 

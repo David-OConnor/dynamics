@@ -23,6 +23,11 @@
 //!
 //! Note: H bond average maintenance time: 1-20ps: Use this to validate your solvent model
 
+use std::{
+    fmt,
+    fmt::{Display, Formatter},
+};
+
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16};
@@ -106,6 +111,19 @@ pub enum Solvent {
     ///
     /// For now, we use GAFF2 (Small molecule) force fields for these non-water solvents.
     Custom((Vec<(MolDynamics, usize)>, usize)),
+}
+
+impl Display for Solvent {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let v = match self {
+            Self::None => "None",
+            Self::WaterOpc => "OPC water",
+            Self::WaterOpcSpecifyMolCount(c) => &format!("Water OPC. {c} mols"),
+            Self::Custom(_) => "Custom",
+        };
+
+        write!(f, "{v}")
+    }
 }
 
 impl PartialEq for Solvent {
