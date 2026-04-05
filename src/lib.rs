@@ -1028,6 +1028,11 @@ impl MdState {
             );
         }
 
+        // Rebuild the LJ table to include any ions that were appended after the initial build.
+        if n_ions > 0 && !result.water.is_empty() {
+            result.lj_tables = LjTables::new(&result.atoms);
+        }
+
         // Calc DOF only after all atoms and solvent are initialized.
         result.thermo_dof = result.dof_for_thermo();
 
