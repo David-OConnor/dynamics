@@ -115,7 +115,6 @@ use std::{
     fmt,
     fmt::{Display, Formatter},
     io,
-    path::Path,
     time::Instant,
 };
 
@@ -129,7 +128,6 @@ use barostat::SimBox;
 use bincode::{Decode, Encode};
 use bio_files::{
     AtomGeneric, BondGeneric, Sdf,
-    dcd::DcdTrajectory,
     md_params::{ForceFieldParams, LjParams, MassParams},
     mol2::Mol2,
 };

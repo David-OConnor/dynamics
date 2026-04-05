@@ -1,4 +1,7 @@
-//! For Amber and other parameters.
+//! Data functionality for Forcefield params. Includes Amber parameters built in to binaries
+//! which use this library, and can load params for other sets as required.
+//!
+//! Uses `bio_files` for the base data structures.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -96,8 +99,9 @@ pub struct ParamGeneralPaths {
 }
 
 impl FfParamSet {
-    /// Load general parameter files for proteins, and small organic molecules.
-    /// This also populates ff type and charge for protein atoms.
+    /// Load general parameter files for the most common classes of organic molecules.
+    /// This also populates ff type and charge for protein atoms; these are provided by molecule-specific
+    /// formats for small molecules.
     pub fn new(paths: &ParamGeneralPaths) -> io::Result<Self> {
         let mut result = FfParamSet::default();
 
@@ -363,7 +367,7 @@ pub fn populate_peptide_ff_and_q(
                         {
                             for charge in charges {
                                 if charge.type_in_res == AtomTypeInRes::H("HH22".to_string()) {
-                                    atom.force_field_type = Some("HH22".to_string());
+                                    atom.force_field_type = Some(charge.ff_type.clone());
                                     atom.partial_charge = Some(charge.charge);
 
                                     found = true;

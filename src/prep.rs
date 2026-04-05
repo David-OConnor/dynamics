@@ -32,9 +32,7 @@ use bio_files::{
 use itertools::Itertools;
 use na_seq::Element::Hydrogen;
 
-use crate::{
-    AtomDynamics, MdState, ParamError, bonded::SHAKE_TOL_DEFAULT, params::ForceFieldParamsIndexed,
-};
+use crate::{AtomDynamics, MdState, ParamError, params::ForceFieldParamsIndexed};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
 /// the baseline.

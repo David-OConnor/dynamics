@@ -1,11 +1,10 @@
 //! Related to storing snapshots (also known as trajectories) of MD runs.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     io::{self, ErrorKind},
     path::Path,
-    time::Instant,
 };
 
 #[cfg(feature = "encode")]
@@ -15,39 +14,13 @@ use bio_files::{
     dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
     gromacs,
     gromacs::{GromacsFrame, GromacsOutput, OutputControl, output::write_trr},
-    md_params::{ForceFieldParams, LjParams, MassParams},
     xtc::write_xtc,
 };
 #[cfg(feature = "cuda")]
 use cudarc::{driver::CudaContext, nvrtc::Ptx};
-use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
-use na_seq::Element;
+use lin_alg::f32::Vec3;
 
-use crate::solvent::MASS_WATER_MOL;
-use crate::{
-    AtomDynamics,
-    COMPUTATION_TIME_RATIO,
-    ComputationDevice,
-    FfMolType,
-    KCAL_TO_NATIVE,
-    MdConfig,
-    MdState,
-    MolDynamics,
-    ParamError,
-    SPME_RATIO,
-    SimBoxInit,
-    Solvent,
-    WaterInitTemplate,
-    barostat::SimBox,
-    merge_params,
-    neighbors::NeighborsNb,
-    non_bonded::{CHARGE_UNIT_SCALER, LjTables},
-    param_inference::update_small_mol_params,
-    params::{FfParamSet, ForceFieldParamsIndexed},
-    // snapshot_mdt::save_mdt,
-    solvent::init::{make_water_mols, pack_custom_solvent},
-    util::{ComputationTime, build_adjacency_list},
-};
+use crate::{AtomDynamics, MdState, barostat::SimBox, solvent::MASS_WATER_MOL};
 #[cfg(feature = "cuda")]
 use crate::{
     PTX,

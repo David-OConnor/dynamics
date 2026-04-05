@@ -9,6 +9,7 @@
 
 use std::fmt::Display;
 
+#[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use lin_alg::f32::Vec3;
 use rand::prelude::ThreadRng;

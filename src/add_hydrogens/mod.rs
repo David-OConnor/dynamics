@@ -302,6 +302,16 @@ pub(crate) fn h_type_in_res_sidechain(
                 return Ok(Some(AtomTypeInRes::H(format!("HG{digit}"))));
             }
         }
+        // OE1 is a carbonyl oxygen on GLN (HE21/HE22 belong to NE2, not OE1).
+        // Without this, depth 'E' → [21,22] from the digit map causes HE21 to be
+        // placed on OE1, producing a bogus C-O-H bond and a missing valence angle.
+        AminoAcid::Gln if matches!(parent_tir, AtomTypeInRes::OE1 | AtomTypeInRes::OE2) => {
+            return Ok(None);
+        }
+        // Same issue for ASN: OD1 is carbonyl; HD21/HD22 belong to ND2.
+        AminoAcid::Asn if matches!(parent_tir, AtomTypeInRes::OD1 | AtomTypeInRes::OD2) => {
+            return Ok(None);
+        }
         _ => (),
     }
 
