@@ -938,95 +938,7 @@ impl MdState {
             )
         };
 
-        // Add counter-ions to neutralize any net charge.
-        // Joung–Cheatham parameters tuned for OPC water (Amber frcmod.ionsjc_opc).
-        // sigma = 2 * R_MIN_HALF / 2^(1/6)
-        if n_ions > 0 && !result.water.is_empty() {
-            // Positive net → add Cl⁻;  negative net → add Na⁺.
-            let (ff_type, elem, mass, q_scaled, sigma, eps): (&str, Element, f32, f32, f32, f32) =
-                if net_q_e > 0.0 {
-                    (
-                        "Cl-",
-                        Element::Chlorine,
-                        35.45,
-                        -CHARGE_UNIT_SCALER,
-                        4.478,
-                        0.0073,
-                    )
-                } else {
-                    (
-                        "Na+",
-                        Element::Sodium,
-                        22.99,
-                        CHARGE_UNIT_SCALER,
-                        2.439,
-                        0.1065,
-                    )
-                };
-
-            let stride = (result.water.len() / n_ions).max(1);
-            let mut water_to_remove: Vec<usize> = (0..n_ions)
-                .map(|i| (i * stride).min(result.water.len() - 1))
-                .collect();
-
-            for (k, &w_idx) in water_to_remove.iter().enumerate() {
-                let atom_idx = result.atoms.len() + k;
-                let posit = result.water[w_idx].o.posit;
-
-                result.atoms.push(AtomDynamics {
-                    serial_number: atom_idx as u32,
-                    force_field_type: ff_type.to_string(),
-                    element: elem,
-                    posit,
-                    mass,
-                    partial_charge: q_scaled,
-                    lj_sigma: sigma,
-                    lj_eps: eps,
-                    ..Default::default()
-                });
-                result.force_field_params.mass.insert(
-                    atom_idx,
-                    MassParams {
-                        atom_type: ff_type.to_string(),
-                        mass,
-                        comment: None,
-                    },
-                );
-                result.force_field_params.lennard_jones.insert(
-                    atom_idx,
-                    LjParams {
-                        atom_type: ff_type.to_string(),
-                        sigma,
-                        eps,
-                    },
-                );
-                result.adjacency_list.push(Vec::new());
-                result.mass_accel_factor.push(KCAL_TO_NATIVE / mass);
-                result.mol_start_indices.push(atom_idx);
-            }
-            // Expand per-mol energy tracking for the new ion "molecules".
-            let n_mols = result.mol_start_indices.len();
-            result
-                .potential_energy_between_mols
-                .resize(n_mols.pow(2), 0.0);
-
-            // Remove displaced water molecules (in reverse index order).
-            water_to_remove.sort_unstable_by(|a, b| b.cmp(a));
-            water_to_remove.dedup();
-            for idx in water_to_remove {
-                result.water.remove(idx);
-            }
-
-            eprintln!(
-                "Added {n_ions} {} ion(s) to neutralize net charge ({net_q_e:+.3}e).",
-                ff_type
-            );
-        } else if n_ions > 0 {
-            eprintln!(
-                "Warning: net charge {net_q_e:+.3}e detected but no solvent available to \
-                 displace; skipping ion insertion."
-            );
-        }
+        add_ions(&mut result, net_q_e, n_ions);
 
         // Rebuild the LJ table to include any ions that were appended after the initial build.
         if n_ions > 0 && !result.water.is_empty() {
@@ -1431,37 +1343,95 @@ pub fn compute_energy_snapshot(
     Ok(md_state.snapshots[0].clone())
 }
 
-// todo: Investiate how to handle now that we revamped our snapshot/file system.
-// /// For calling by the application. Loads snapshots from a file (e.g. DCD/XTC/MDT) into memory.
-// pub fn load_snapshots_from_file(path: &Path) -> Result<Vec<Snapshot>, io::Error> {
-//     let ext = path
-//         .extension()
-//         .and_then(|s| s.to_str())
-//         .map(|s| s.to_ascii_lowercase())
-//         .ok_or_else(|| io::Error::other("Input path must have a file extension"))?;
-//
-//     let result: io::Result<Vec<Snapshot>> = match ext.as_ref() {
-//         "dcd" => {
-//             let dcd = DcdTrajectory::load(path)?;
-//             let snaps = Snapshot::from_dcd(&dcd);
-//             Ok(snaps)
-//         }
-//         "xtc" => {
-//             let dcd = DcdTrajectory::load_xtc(path)?;
-//             let snaps = Snapshot::from_dcd(&dcd);
-//             Ok(snaps)
-//         } // "mdt" => load_mdt(path),
-//         _ => Err(io::Error::new(
-//             io::ErrorKind::InvalidInput,
-//             "Invalid file extension for loading snapshots.",
-//         )),
-//     };
-//
-//     match result {
-//         Ok(snaps) => Ok(snaps),
-//         Err(e) => {
-//             eprintln!("Error loading snapshots from file: {e:?}");
-//             Err(e)
-//         }
-//     }
-// }
+// todo: Move this A/R
+fn add_ions(state: &mut MdState, net_q_e: f32, n_ions: usize) {
+    // Add counter-ions to neutralize any net charge.
+    // Joung–Cheatham parameters tuned for OPC water (Amber frcmod.ionsjc_opc).
+    // sigma = 2 * R_MIN_HALF / 2^(1/6)
+    if n_ions > 0 && !state.water.is_empty() {
+        // Positive net → add Cl⁻;  negative net → add Na⁺.
+        let (ff_type, elem, mass, q_scaled, sigma, eps): (&str, Element, f32, f32, f32, f32) =
+            if net_q_e > 0.0 {
+                (
+                    "Cl-",
+                    Element::Chlorine,
+                    35.45,
+                    -CHARGE_UNIT_SCALER,
+                    4.478,
+                    0.0073,
+                )
+            } else {
+                (
+                    "Na+",
+                    Element::Sodium,
+                    22.99,
+                    CHARGE_UNIT_SCALER,
+                    2.439,
+                    0.1065,
+                )
+            };
+
+        let stride = (state.water.len() / n_ions).max(1);
+        let mut water_to_remove: Vec<usize> = (0..n_ions)
+            .map(|i| (i * stride).min(state.water.len() - 1))
+            .collect();
+
+        for (k, &w_idx) in water_to_remove.iter().enumerate() {
+            let atom_idx = state.atoms.len() + k;
+            let posit = state.water[w_idx].o.posit;
+
+            state.atoms.push(AtomDynamics {
+                serial_number: atom_idx as u32,
+                force_field_type: ff_type.to_string(),
+                element: elem,
+                posit,
+                mass,
+                partial_charge: q_scaled,
+                lj_sigma: sigma,
+                lj_eps: eps,
+                ..Default::default()
+            });
+            state.force_field_params.mass.insert(
+                atom_idx,
+                MassParams {
+                    atom_type: ff_type.to_string(),
+                    mass,
+                    comment: None,
+                },
+            );
+            state.force_field_params.lennard_jones.insert(
+                atom_idx,
+                LjParams {
+                    atom_type: ff_type.to_string(),
+                    sigma,
+                    eps,
+                },
+            );
+            state.adjacency_list.push(Vec::new());
+            state.mass_accel_factor.push(KCAL_TO_NATIVE / mass);
+            state.mol_start_indices.push(atom_idx);
+        }
+        // Expand per-mol energy tracking for the new ion "molecules".
+        let n_mols = state.mol_start_indices.len();
+        state
+            .potential_energy_between_mols
+            .resize(n_mols.pow(2), 0.0);
+
+        // Remove displaced water molecules (in reverse index order).
+        water_to_remove.sort_unstable_by(|a, b| b.cmp(a));
+        water_to_remove.dedup();
+        for idx in water_to_remove {
+            state.water.remove(idx);
+        }
+
+        eprintln!(
+            "Added {n_ions} {} ion(s) to neutralize net charge ({net_q_e:+.3}e).",
+            ff_type
+        );
+    } else if n_ions > 0 {
+        eprintln!(
+            "Warning: net charge {net_q_e:+.3}e detected but no solvent available to \
+                 displace; skipping ion insertion."
+        );
+    }
+}
