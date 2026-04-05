@@ -126,10 +126,9 @@ pub use add_hydrogens::{
 use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-use bio_files::md_params::ForceFieldParamsIndexed;
 use bio_files::{
     AtomGeneric, BondGeneric, Sdf,
-    md_params::{ForceFieldParams, LjParams, MassParams},
+    md_params::{ForceFieldParams, ForceFieldParamsIndexed, LjParams, MassParams},
     mol2::Mol2,
 };
 pub use bonded::{LINCS_ITER_DEFAULT, LINCS_ORDER_DEFAULT, SHAKE_TOL_DEFAULT};
@@ -159,7 +158,7 @@ use crate::{
     barostat::Barostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
-    params::{FfParamSet, ForceFieldParamsIndexed},
+    params::FfParamSet,
     snapshot::Snapshot,
     solvent::{
         WaterMol, WaterMolx8, WaterMolx16,
@@ -447,6 +446,18 @@ impl AtomDynamics {
         self.mass = ff_params.mass[&i].mass;
         self.lj_sigma = ff_params.lennard_jones[&i].sigma;
         self.lj_eps = ff_params.lennard_jones[&i].eps;
+    }
+}
+
+impl bio_files::md_params::AtomFfSource for AtomDynamics {
+    fn ff_type(&self) -> Option<&str> {
+        Some(&self.force_field_type)
+    }
+    fn element(&self) -> na_seq::Element {
+        self.element
+    }
+    fn serial_number(&self) -> u32 {
+        self.serial_number
     }
 }
 
@@ -854,12 +865,10 @@ impl MdState {
             atoms_md.iter().map(|a| a.partial_charge).sum::<f32>() / CHARGE_UNIT_SCALER;
         let n_ions = net_q_e.abs().round() as usize;
 
-        let force_field_params = ForceFieldParamsIndexed::new(
-            &params,
-            &atoms_md,
-            &adjacency_list,
-            cfg.hydrogen_constraint,
-        )?;
+        let h_constrained = !matches!(cfg.hydrogen_constraint, HydrogenConstraint::Flexible);
+        let force_field_params =
+            ForceFieldParamsIndexed::new(&params, &atoms_md, &adjacency_list, h_constrained)
+                .map_err(|e| ParamError::new(&e.to_string()))?;
 
         let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());
 

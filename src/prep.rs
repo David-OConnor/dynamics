@@ -27,12 +27,15 @@ use std::{collections::HashSet, fmt};
 use bincode::{Decode, Encode};
 use bio_files::{
     gromacs::mdp::{ConstraintAlgorithm, Constraints},
-    md_params::{AngleBendingParams, BondStretchingParams, ForceFieldParams, LjParams, MassParams},
+    md_params::{
+        AngleBendingParams, BondStretchingParams, ForceFieldParams, ForceFieldParamsIndexed,
+        LjParams, MassParams,
+    },
 };
 use itertools::Itertools;
 use na_seq::Element::Hydrogen;
 
-use crate::{AtomDynamics, MdState, ParamError, params::ForceFieldParamsIndexed};
+use crate::{AtomDynamics, MdState, ParamError};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
 /// the baseline.
