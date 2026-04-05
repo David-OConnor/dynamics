@@ -126,6 +126,7 @@ pub use add_hydrogens::{
 use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
+use bio_files::md_params::ForceFieldParamsIndexed;
 use bio_files::{
     AtomGeneric, BondGeneric, Sdf,
     md_params::{ForceFieldParams, LjParams, MassParams},
