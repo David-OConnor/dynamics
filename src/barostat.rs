@@ -9,7 +9,6 @@
 
 use std::fmt::Display;
 
-#[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use lin_alg::f32::Vec3;
 use rand::prelude::ThreadRng;
@@ -31,10 +30,11 @@ pub const TAU_PRESSURE_DEFAULT: f32 = 5.; // ps
 /// This bounds the area where atoms are wrapped. For now at least, it is only
 /// used for solvent atoms. Its size and position should be such as to keep the system
 /// solvated. We may move it around during the sim.
-#[derive(Clone, Copy, Default, PartialEq, Debug)]
+#[derive(Clone, Copy, Default, PartialEq, Debug, Encode, Decode)]
 pub struct SimBox {
     pub bounds_low: Vec3,
     pub bounds_high: Vec3,
+    /// Cached; bounds_high - bounds_low
     pub extent: Vec3,
 }
 
@@ -61,8 +61,19 @@ impl Default for BarostatCfg {
 }
 
 impl SimBox {
-    /// Set up to surround all atoms, with a pad, or with fixed dimensions. `atoms` is whichever we use to center the bix.
-    pub fn new(atoms: &[AtomDynamics], box_type: &SimBoxInit) -> Self {
+    pub fn new(bounds_low: Vec3, bounds_high: Vec3) -> Self {
+        Self {
+            bounds_low,
+            bounds_high,
+            extent: bounds_high - bounds_low,
+        }
+    }
+
+    /// Set up to surround all atoms, with a pad, or with fixed dimensions. `atoms` is whichever we
+    /// use to center the bix.
+    ///
+    /// `atoms` is only used when initializing from a pad.
+    pub fn from_atoms(atoms: &[AtomDynamics], box_type: &SimBoxInit) -> Self {
         match box_type {
             SimBoxInit::Pad(pad) => {
                 let (mut min, mut max) =
@@ -89,11 +100,8 @@ impl SimBox {
             SimBoxInit::Fixed((bounds_low, bounds_high)) => {
                 let bounds_low: Vec3 = *bounds_low;
                 let bounds_high: Vec3 = *bounds_high;
-                Self {
-                    bounds_low,
-                    bounds_high,
-                    extent: bounds_high - bounds_low,
-                }
+
+                Self::new(bounds_low, bounds_high)
             }
         }
     }

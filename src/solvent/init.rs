@@ -10,7 +10,7 @@
 use std::{fs, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
-use bio_files::gromacs;
+use bio_files::{gromacs, gromacs::gro::Gro};
 use lin_alg::{
     f32::{Quaternion, Vec3},
     f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
@@ -72,9 +72,29 @@ const NUM_EQUILIBRATION_STEPS: usize = 200;
 // We seem to get better settling results with a low dt.
 const DT_EQUILIBRATION: f32 = 0.0005;
 
-// We use this externally, for example, when passing it to GROMACS in Molchanica.
+// We generate and use this externally, for example, when passing it to GROMACS in Molchanica.
 pub const WATER_TEMPLATE_60A: &[u8] =
     include_bytes!("../../param_data/water_60A.water_init_template");
+
+// From GROMACS. 4-point water model.
+pub const WATER_TEMPLATE_TIP4: &str = include_str!("../../param_data/tip4p.gro");
+
+#[derive(Clone, Debug)]
+pub enum SolventTemplateType {
+    Water60A,
+    Tip4Gromacs,
+    // todo: A/R
+    // Custom(WaterInitTemplate)
+}
+
+impl SolventTemplateType {
+    pub fn get_template(&self) -> io::Result<WaterInitTemplate> {
+        match self {
+            Self::Water60A => load_from_bytes_bincode(WATER_TEMPLATE_60A),
+            Self::Tip4Gromacs => WaterInitTemplate::from_gro(WATER_TEMPLATE_TIP4),
+        }
+    }
+}
 
 /// We store pre-equilibrated solvent molecules in a template, and use it to initialize solvent for a simulation.
 /// This keeps the equilibration steps relatively low. Note that edge effects from tiling will require
@@ -85,7 +105,9 @@ pub const WATER_TEMPLATE_60A: &[u8] =
 ///
 /// 108 bytes/mol. Size on disk/mem: for a 60Å side len: ~780kb. (Hmm: We're getting a bit less)
 /// 80Å/side: 1.20Mb.
-#[derive(Encode, Decode)]
+///
+/// M/EP positions are not included: They can be inferred after.
+#[derive(Clone, Debug, Encode, Decode)]
 pub struct WaterInitTemplate {
     // velocity is o velocity, instead of 3 separate velocities
     o_posits: Vec<Vec3>,
@@ -94,13 +116,13 @@ pub struct WaterInitTemplate {
     o_velocities: Vec<Vec3>,
     h0_velocities: Vec<Vec3>,
     h1_velocities: Vec<Vec3>,
-    // todo: Cache these, or infer?
-    /// This must correspond to the positions. Cached.
-    bounds: (Vec3, Vec3),
+    /// One corner; the opposite. This must correspond to the positions.
+    cell: SimBox,
 }
 
 impl WaterInitTemplate {
-    /// Load a previously-saved template from a file path.
+    /// Load a previously-saved template from a file path. Currently, this saves using bincode.
+    /// todo: Make it save as a .gro as well.
     pub fn load(path: &Path) -> io::Result<Self> {
         let bytes = fs::read(path)?;
         load_from_bytes_bincode(&bytes)
@@ -110,13 +132,72 @@ impl WaterInitTemplate {
         load_from_bytes_bincode(bytes)
     }
 
+    pub fn from_gro(gro_text: &str) -> io::Result<Self> {
+        // todo: I believe this template may already be in Å.
+
+        // const NM_TO_ANGSTROM: f32 = 0.1;
+        const NM_TO_ANGSTROM: f32 = 1.;
+
+        let gro = Gro::new(gro_text)?;
+
+        let mut o_posits = Vec::new();
+        let mut h0_posits = Vec::new();
+        let mut h1_posits = Vec::new();
+
+        let mut o_velocities = Vec::new();
+        let mut h0_velocities = Vec::new();
+        let mut h1_velocities = Vec::new();
+
+        for atom in gro.atoms {
+            match atom.atom_type.as_ref() {
+                "OW" => {
+                    let p: Vec3 = atom.posit.into();
+                    o_posits.push(p * NM_TO_ANGSTROM);
+                    let Some(vel) = &atom.velocity else {
+                        return Err(io::Error::other("Missing velocity on tip4 water template"));
+                    };
+                    let v: Vec3 = (*vel).into();
+                    o_velocities.push(v * NM_TO_ANGSTROM.into());
+                }
+                "HW1" => {
+                    let p: Vec3 = atom.posit.into();
+                    h0_posits.push(p * NM_TO_ANGSTROM);
+                    let Some(vel) = &atom.velocity else {
+                        return Err(io::Error::other("Missing velocity on tip4 water template"));
+                    };
+                    let v: Vec3 = (*vel).into();
+                    h0_velocities.push(v * NM_TO_ANGSTROM);
+                }
+                "HW2" => {
+                    let p: Vec3 = atom.posit.into();
+                    h1_posits.push(p * NM_TO_ANGSTROM);
+                    let Some(vel) = &atom.velocity else {
+                        return Err(io::Error::other("Missing velocity on tip4 water template"));
+                    };
+                    let v: Vec3 = (*vel).into();
+                    h1_velocities.push(v * NM_TO_ANGSTROM);
+                }
+                _ => (),
+            }
+        }
+
+        Ok(Self {
+            o_posits,
+            h0_posits,
+            h1_posits,
+            o_velocities,
+            h0_velocities,
+            h1_velocities,
+            cell: SimBox::new(
+                (-gro.box_vec * NM_TO_ANGSTROM as f64 / 2.).into(),
+                (gro.box_vec * NM_TO_ANGSTROM as f64 / 2.).into(),
+            ), // todo: Is this right??
+        })
+    }
+
     /// Construct from the current state, and save to file.
     /// Call this explicitly. (todo: Determine a formal or informal approach)
-    pub fn create_and_save(
-        water: &[WaterMolOpc],
-        bounds: (Vec3, Vec3),
-        path: &Path,
-    ) -> io::Result<()> {
+    pub fn create_and_save(water: &[WaterMolOpc], cell: SimBox, path: &Path) -> io::Result<()> {
         let n = water.len();
 
         let mut o_posits = Vec::with_capacity(n);
@@ -132,7 +213,7 @@ impl WaterInitTemplate {
         // Sort solvent by position so that it iterates out from the center. This makes initialization
         // easier for cases where this template is larger than the target sim box.
         let water = {
-            let ctr = (bounds.1 + bounds.0) / 2.;
+            let ctr = cell.center();
 
             let mut w = water.to_vec();
             w.sort_by(|a, b| {
@@ -164,7 +245,7 @@ impl WaterInitTemplate {
             o_velocities,
             h0_velocities,
             h1_velocities,
-            bounds,
+            cell,
         };
 
         save(path, &result)
@@ -181,7 +262,7 @@ impl WaterInitTemplate {
             o_velocities: self.o_velocities.clone(),
             h0_velocities: self.h0_velocities.clone(),
             h1_velocities: self.h1_velocities.clone(),
-            bounds: self.bounds,
+            bounds: (self.cell.bounds_low, self.cell.bounds_high),
         }
     }
 }
@@ -210,17 +291,19 @@ pub(in crate::solvent) fn n_water_mols(cell: &SimBox, solute_atoms: &[AtomDynami
 }
 
 /// Create solvent molecules from a template, tiling it as many times as needed to fill the cell.
-/// Works for any cell size: smaller than, equal to, or larger than the template.
+/// Works for any cell size: smaller than, equal to, or larger than the template. Deconflcits with
+/// solute molecules, and adds the proper amount based on the free volume (Volume of the cell not
+/// taken up by solute).
 ///
 /// The template is always centered on the cell. For cells smaller than the template only tile
 /// (0,0,0) contributes; for larger cells neighboring tiles fill in the rest.
 /// Water-solvent conflict detection uses min-image distances so molecules are never placed too
 /// close to a PBC image of an already-placed molecule.
 ///
-/// `template_override`: if provided, use this template instead of the built-in 60 Å one.
-pub fn make_water_mols(
+/// `template_override`: if provided, use this template instead of the built-in 60 Å water one.
+pub fn water_mols_from_template(
     cell: &SimBox,
-    atoms: &[AtomDynamics],
+    solute: &[AtomDynamics],
     specify_num_water: Option<usize>,
     template_override: Option<&WaterInitTemplate>,
     // When true, skip the PBC-boundary proximity check (the 2.8 Å cross-boundary filter).
@@ -243,7 +326,13 @@ pub fn make_water_mols(
         }
     };
 
-    let n_mols = specify_num_water.unwrap_or_else(|| n_water_mols(cell, atoms));
+    let template_type = SolventTemplateType::Tip4Gromacs; // todo; For now. Pass in A/R.
+    let Ok(template) = template_type.get_template() else {
+        eprintln!("Error initializing water; can't read the template.");
+        return Vec::new();
+    };
+
+    let n_mols = specify_num_water.unwrap_or_else(|| n_water_mols(cell, solute));
     let mut result = Vec::with_capacity(n_mols);
 
     if n_mols == 0 {
@@ -251,10 +340,11 @@ pub fn make_water_mols(
         return result;
     }
 
-    let atom_posits: Vec<_> = atoms.iter().map(|a| a.posit).collect();
+    let solute_posits: Vec<_> = solute.iter().map(|a| a.posit).collect();
 
-    let template_size = template.bounds.1 - template.bounds.0;
-    let template_ctr = (template.bounds.0 + template.bounds.1) / 2.;
+    let template_size = template.cell.extent;
+    let template_ctr = template.cell.center();
+
     let cell_ctr = (cell.bounds_low + cell.bounds_high) / 2.;
 
     // Align tile (0,0,0) center to the cell center.
@@ -290,7 +380,7 @@ pub fn make_water_mols(
                     }
 
                     // Conflict with solute atoms.
-                    for &atom_p in &atom_posits {
+                    for &atom_p in &solute_posits {
                         if (atom_p - o_posit).magnitude_squared() < MIN_NONWATER_DIST_SQ {
                             continue 'mol;
                         }
@@ -329,9 +419,14 @@ pub fn make_water_mols(
                         Vec3::new_zero(),
                         Quaternion::new_identity(),
                     );
+
+                    // todo: I'm not sure how we're handling the M/EP point. I guess it's placed
+                    // todo: automatically during integration.
+
                     mol.o.posit = o_posit;
                     mol.h0.posit = h0_posit;
                     mol.h1.posit = h1_posit;
+
                     mol.o.vel = template.o_velocities[i];
                     mol.h0.vel = template.h0_velocities[i];
                     mol.h1.vel = template.h1_velocities[i];

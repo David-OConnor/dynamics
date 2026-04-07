@@ -162,7 +162,7 @@ use crate::{
     snapshot::Snapshot,
     solvent::{
         WaterMolOpc, WaterMolx8, WaterMolx16,
-        init::{make_water_mols, pack_custom_solvent},
+        init::{pack_custom_solvent, water_mols_from_template},
     },
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
 };
@@ -878,7 +878,7 @@ impl MdState {
             mass_accel_factor.push(KCAL_TO_NATIVE / atom.mass);
         }
 
-        let cell = SimBox::new(&atoms_md, &cfg.sim_box);
+        let cell = SimBox::from_atoms(&atoms_md, &cfg.sim_box);
 
         let num_static_atoms = atoms_md.iter().filter(|a| !a.static_).count();
 
@@ -942,7 +942,7 @@ impl MdState {
                     }
                 });
 
-            make_water_mols(
+            water_mols_from_template(
                 &result.cell,
                 &result.atoms,
                 count,
