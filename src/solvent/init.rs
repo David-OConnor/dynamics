@@ -79,12 +79,12 @@ pub const WATER_TEMPLATE_60A: &[u8] =
 // From GROMACS. 4-point water model.
 pub const WATER_TEMPLATE_TIP4: &str = include_str!("../../param_data/tip4p.gro");
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub enum SolventTemplateType {
     Water60A,
+    #[default]
     Tip4Gromacs,
-    // todo: A/R
-    // Custom(WaterInitTemplate)
+    Custom(WaterInitTemplate),
 }
 
 impl SolventTemplateType {
@@ -92,6 +92,7 @@ impl SolventTemplateType {
         match self {
             Self::Water60A => load_from_bytes_bincode(WATER_TEMPLATE_60A),
             Self::Tip4Gromacs => WaterInitTemplate::from_gro(WATER_TEMPLATE_TIP4),
+            Self::Custom(t) => Ok(t.clone()),
         }
     }
 }
@@ -107,7 +108,7 @@ impl SolventTemplateType {
 /// 80Å/side: 1.20Mb.
 ///
 /// M/EP positions are not included: They can be inferred after.
-#[derive(Clone, Debug, Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct WaterInitTemplate {
     // velocity is o velocity, instead of 3 separate velocities
     o_posits: Vec<Vec3>,
@@ -133,10 +134,8 @@ impl WaterInitTemplate {
     }
 
     pub fn from_gro(gro_text: &str) -> io::Result<Self> {
-        // todo: I believe this template may already be in Å.
-
-        // const NM_TO_ANGSTROM: f32 = 0.1;
-        const NM_TO_ANGSTROM: f32 = 1.;
+        const NM_TO_ANGSTROM: f32 = 10.;
+        // const NM_TO_ANGSTROM: f32 = 1.;
 
         let gro = Gro::new(gro_text)?;
 
@@ -305,7 +304,7 @@ pub fn water_mols_from_template(
     cell: &SimBox,
     solute: &[AtomDynamics],
     specify_num_water: Option<usize>,
-    template_override: Option<&WaterInitTemplate>,
+    template_type: &SolventTemplateType,
     // When true, skip the PBC-boundary proximity check (the 2.8 Å cross-boundary filter).
     // Only the hard-overlap 1.7 Å direct-distance check remains.  Use this when generating
     // a template at the correct equilibrium density: the ~88 boundary molecules that the PBC
@@ -316,17 +315,6 @@ pub fn water_mols_from_template(
     println!("Initializing solvent molecules...");
     let start = Instant::now();
 
-    let default_template;
-
-    let template: &WaterInitTemplate = match template_override {
-        Some(t) => t,
-        None => {
-            default_template = load_from_bytes_bincode(WATER_TEMPLATE_60A).unwrap();
-            &default_template
-        }
-    };
-
-    let template_type = SolventTemplateType::Tip4Gromacs; // todo; For now. Pass in A/R.
     let Ok(template) = template_type.get_template() else {
         eprintln!("Error initializing water; can't read the template.");
         return Vec::new();

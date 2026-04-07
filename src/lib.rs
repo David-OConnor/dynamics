@@ -927,26 +927,26 @@ impl MdState {
                 Solvent::Custom((_, c)) => Some(*c),
             };
 
-            let water_template_override: Option<WaterInitTemplate> = cfg
-                .water_template_path
-                .as_deref()
-                .and_then(|path_str| {
-                    match WaterInitTemplate::load(std::path::Path::new(path_str)) {
-                        Ok(t) => Some(t),
-                        Err(e) => {
-                            eprintln!(
-                                "Warning: could not load water template from {path_str:?}: {e}. Using default."
-                            );
-                            None
-                        }
-                    }
-                });
+            // let water_template_override: Option<WaterInitTemplate> = cfg
+            //     .water_template_path
+            //     .as_deref()
+            //     .and_then(|path_str| {
+            //         match WaterInitTemplate::load(std::path::Path::new(path_str)) {
+            //             Ok(t) => Some(t),
+            //             Err(e) => {
+            //                 eprintln!(
+            //                     "Warning: could not load water template from {path_str:?}: {e}. Using default."
+            //                 );
+            //                 None
+            //             }
+            //         }
+            //     });
 
             water_mols_from_template(
                 &result.cell,
                 &result.atoms,
                 count,
-                water_template_override.as_ref(),
+                &cfg.solvent_template_type,
                 cfg.skip_water_pbc_filter,
             )
         };

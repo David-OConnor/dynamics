@@ -16,7 +16,7 @@ use crate::{
     integrate::Integrator,
     prep::HydrogenConstraint,
     snapshot::SnapshotHandlers,
-    solvent::Solvent,
+    solvent::{Solvent, init::SolventTemplateType},
     thermostat::{TAU_TEMP_DEFAULT, TEMP_DEFAULT},
 };
 
@@ -55,7 +55,8 @@ pub struct MdConfig {
     /// because the built-in template is cut from a larger equilibrated cell and lacks
     /// the long-range Coulomb correlations appropriate for the target PBC cell size.
     /// Generate one with the `generate_water_init_template` test (marked #[ignore]).
-    pub water_template_path: Option<String>,
+    // pub water_template_path: Option<String>,
+    pub solvent_template_type: SolventTemplateType,
     /// Skip the PBC-boundary proximity check (2.8 Å cross-boundary O-O filter) when placing
     /// water molecules.  Use this only when generating a pre-equilibrated template at the correct
     /// density: the ~88 boundary molecules that the filter would otherwise reject are needed to
@@ -96,7 +97,7 @@ impl Default for MdConfig {
             // kJ mol-1 nm-1 to KCal Mol-1 Angstrom-1
             energy_minimization_tolerance: 1_000. * 0.0239005,
             neighbor_skin: 4.0,
-            water_template_path: None,
+            solvent_template_type: Default::default(),
             skip_water_pbc_filter: false,
             spme_mesh_spacing: 1.0,
             // Å⁻¹. Chosen so erfc(α × r_c) ≈ 1e-5 at r_c = 12 Å, matching GROMACS' default
@@ -310,7 +311,7 @@ impl From<MdpParams> for MdConfig {
             energy_minimization_tolerance: def.energy_minimization_tolerance,
             neighbor_skin: def.neighbor_skin,
             overrides,
-            water_template_path: None,
+            solvent_template_type: Default::default(),
             skip_water_pbc_filter: false,
             // energy_minimization: p.energy_minimization.unwrap_or_default(),
             spme_mesh_spacing: mesh_spacing,
