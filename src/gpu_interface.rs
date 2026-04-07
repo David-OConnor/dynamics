@@ -9,7 +9,7 @@ use lin_alg::{
 use crate::{
     AtomDynamics, ForcesOnWaterMol, MdOverrides,
     non_bonded::{BodyRef, LjTables, NonBondedPair},
-    solvent::{WaterMol, WaterSite},
+    solvent::{WaterMolOpc, WaterSite},
 };
 
 /// Device buffers that persist across all steps. Mutated on the GPU.
@@ -109,7 +109,7 @@ impl PerNeighborGpu {
         stream: &Arc<CudaStream>,
         pairs: &[NonBondedPair],
         atoms_dyn: &[AtomDynamics],
-        water: &[WaterMol],
+        water: &[WaterMolOpc],
         lj_tables: &LjTables,
     ) -> Self {
         let n = pairs.len();
@@ -272,7 +272,7 @@ fn upload_positions(
     stream: &Arc<CudaStream>,
     forces: &mut ForcesPositsGpu,
     atoms_dyn: &[AtomDynamics],
-    water: &[WaterMol],
+    water: &[WaterMolOpc],
 ) {
     // pack to flat f32 arrays (x,y,z per atom)
     let mut h_pos_dyn = Vec::with_capacity(atoms_dyn.len() * 3);
@@ -315,7 +315,7 @@ pub fn force_nonbonded_gpu(
     kernel_zero_f64: &CudaFunction,
     pairs: &[NonBondedPair],
     atoms_dyn: &[AtomDynamics],
-    water: &[WaterMol],
+    water: &[WaterMolOpc],
     // todo: Only copy cell_extent when it changes, e.g. due to the barostat.
     cell_extent: Vec3,
     forces: &mut ForcesPositsGpu,

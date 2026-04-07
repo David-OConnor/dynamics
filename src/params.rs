@@ -3,18 +3,13 @@
 //!
 //! Uses `bio_files` for the base data structures.
 
-use std::{
-    collections::{HashMap, HashSet},
-    io,
-    path::PathBuf,
-};
+use std::{collections::HashMap, io, path::PathBuf};
 
 use bio_files::{
     AtomGeneric, BondGeneric, ChainGeneric, LipidStandard, MmCif, ResidueEnd, ResidueGeneric,
     ResidueType, create_bonds,
     md_params::{
-        AngleBendingParams, BondStretchingParams, ChargeParams, ChargeParamsProtein,
-        DihedralParams, ForceFieldParams, LjParams, MassParams, NucleotideTemplate,
+        ChargeParams, ChargeParamsProtein, ForceFieldParams, NucleotideTemplate,
         load_amino_charges, parse_lib_lipid, parse_lib_nucleic_acid, parse_lib_peptide,
     },
 };

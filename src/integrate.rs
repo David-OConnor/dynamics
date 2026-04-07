@@ -15,7 +15,7 @@ use crate::{
     barostat::measure_pressure,
     solvent::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
-        settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
+        opc_settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
     },
     thermostat::{LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT},
 };
@@ -528,7 +528,7 @@ impl MdState {
         for w in &mut self.water {
             // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
             // w.project_ep_force_to_real_sites(&self.cell);
-            w.project_ep_force_optimized();
+            w.project_ep_force();
 
             w.o.accel = w.o.force * ACCEL_CONV_WATER_O;
             w.h0.accel = w.h0.force * ACCEL_CONV_WATER_H;

@@ -13,7 +13,6 @@ use bio_files::{
 
 use crate::{
     MdOverrides, SimBoxInit, barostat,
-    barostat::PRESSURE_DEFAULT,
     integrate::Integrator,
     prep::HydrogenConstraint,
     snapshot::SnapshotHandlers,

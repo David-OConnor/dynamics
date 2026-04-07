@@ -7,7 +7,7 @@ use lin_alg::f32::Vec3;
 use crate::{
     AtomDynamics, MdState, NATIVE_TO_KCAL, Solvent,
     barostat::BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED,
-    solvent::{H_MASS, MASS_WATER_MOL, O_MASS, WaterMol},
+    solvent::{H_MASS, MASS_WATER_MOL, O_MASS, WaterMolOpc},
     thermostat::GAS_CONST_R,
 };
 
@@ -73,7 +73,7 @@ fn test_measure_kinetic_energy_includes_water() {
     let v_o = Vec3::new(2.0, 0.0, 0.0);
     let v_h = Vec3::new(0.0, 1.0, 0.0);
 
-    md.water = vec![WaterMol {
+    md.water = vec![WaterMolOpc {
         o: AtomDynamics {
             mass: O_MASS,
             vel: v_o,
@@ -106,7 +106,7 @@ fn test_measure_kinetic_energy_translational_rigid_translation() {
     let mut md = MdState::default();
     let v_com = Vec3::new(3.0, 0.0, 0.0);
 
-    md.water = vec![WaterMol {
+    md.water = vec![WaterMolOpc {
         o: AtomDynamics {
             mass: O_MASS,
             vel: v_com,
@@ -137,7 +137,7 @@ fn test_measure_kinetic_energy_translational_excludes_rotation() {
     let v_h = Vec3::new(0.0, 1.0, 0.0);
     let v_o = Vec3::new(0.0, -2.0 * H_MASS / O_MASS, 0.0); // COM vel = 0
 
-    md.water = vec![WaterMol {
+    md.water = vec![WaterMolOpc {
         o: AtomDynamics {
             mass: O_MASS,
             vel: v_o,

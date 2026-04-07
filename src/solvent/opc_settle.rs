@@ -1,5 +1,5 @@
 //! This module implements the SETTLE algorithm, for drifting
-//!  rigid solvent molecules.
+//! rigid solvent molecules. We use it to integrate OPC water.
 //!
 //! See these reference implementations:
 //! -[OpenFF](https://github.com/openmm/openmm/blob/master/platforms/cpu/src/CpuSETTLE.cpp)
@@ -12,7 +12,7 @@ use lin_alg::f32::Vec3;
 
 use crate::{
     barostat::{SimBox, Virial},
-    solvent::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMol},
+    solvent::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMolOpc},
 };
 
 // Reset the solvent angle to the defined parameter every this many steps,
@@ -104,7 +104,7 @@ fn solve_symmetric3(ixx: f32, iyy: f32, izz: f32, ixy: f32, ixz: f32, iyz: f32, 
 /// of updating position by adding velocity x dt, but also maintains the rigid
 /// geometry of 3-atom molecules.
 /// Returns the constraint virial contribution for this molecule, in native units (amu·Å²/ps²).
-pub(crate) fn integrate_rigid_water(mol: &mut WaterMol, dt: f32, cell: &SimBox) -> f64 {
+pub(crate) fn integrate_rigid_water(mol: &mut WaterMolOpc, dt: f32, cell: &SimBox) -> f64 {
     let o_pos = mol.o.posit;
     let h0_pos_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
     let h1_pos_local = o_pos + cell.min_image(mol.h1.posit - o_pos);
@@ -199,7 +199,7 @@ pub(crate) fn integrate_rigid_water(mol: &mut WaterMol, dt: f32, cell: &SimBox) 
 
 /// Periodically run this to re-establish the initial solvent geometry; this should be maintained
 /// rigid normally, but numerical errors will accumulate. RUn this periodically to reset it.
-pub(crate) fn reset_angle(mol: &mut WaterMol, cell: &SimBox) {
+pub(crate) fn reset_angle(mol: &mut WaterMolOpc, cell: &SimBox) {
     // Rebuild u (bisector) and v (in-plane) from the updated positions
     let o_pos = mol.o.posit;
     let h0_local = o_pos + cell.min_image(mol.h0.posit - o_pos);
@@ -217,52 +217,52 @@ pub(crate) fn reset_angle(mol: &mut WaterMol, cell: &SimBox) {
     mol.h0.posit = mol.o.posit + cell.min_image(new_h0 - mol.o.posit);
     mol.h1.posit = mol.o.posit + cell.min_image(new_h1 - mol.o.posit);
 }
+//
+// // Below: Experimenting ------------
+// /// Pre-calculated constants struct (equivalent to GROMACS SettleParameters)
+// pub struct SettleParams {
+//     pub wh: f32,   // Weighted mass factor
+//     pub ra: f32,   // Geometry constant A
+//     pub rb: f32,   // Geometry constant B
+//     pub rc: f32,   // Geometry constant C
+//     pub irc2: f32, // Inverse H-H distance (reused)
+//     pub d_oh: f32, // Target O-H bond length
+//     pub d_hh: f32, // Target H-H bond length
+// }
+//
+// impl SettleParams {
+//     pub fn new() -> Self {
+//         let m_o = O_MASS;
+//         let m_h = H_MASS;
+//
+//         // Target geometry
+//         let d_oh = O_H_R;
+//         // Law of cosines for d_hh
+//         let d_hh = (2.0 * d_oh * d_oh * (1.0 - H_O_H_θ.cos())).sqrt();
+//
+//         // GROMACS derivation for constants
+//         let wohh = m_o + 2.0 * m_h;
+//         let wh = m_h / wohh;
+//         let rc = d_hh / 2.0;
+//
+//         // ra is the distance from O to the H-H axis, weighted by mass ratios
+//         let ra = 2.0 * m_h * (d_oh * d_oh - rc * rc).sqrt() / wohh;
+//         let rb = (d_oh * d_oh - rc * rc).sqrt() - ra;
+//         let irc2 = 1.0 / d_hh;
+//
+//         Self {
+//             wh,
+//             ra,
+//             rb,
+//             rc,
+//             irc2,
+//             d_oh,
+//             d_hh,
+//         }
+//     }
+// }
 
-// Below: Experimenting ------------
-/// Pre-calculated constants struct (equivalent to GROMACS SettleParameters)
-pub struct SettleParams {
-    pub wh: f32,   // Weighted mass factor
-    pub ra: f32,   // Geometry constant A
-    pub rb: f32,   // Geometry constant B
-    pub rc: f32,   // Geometry constant C
-    pub irc2: f32, // Inverse H-H distance (reused)
-    pub d_oh: f32, // Target O-H bond length
-    pub d_hh: f32, // Target H-H bond length
-}
-
-impl SettleParams {
-    pub fn new() -> Self {
-        let m_o = O_MASS;
-        let m_h = H_MASS;
-
-        // Target geometry
-        let d_oh = O_H_R;
-        // Law of cosines for d_hh
-        let d_hh = (2.0 * d_oh * d_oh * (1.0 - H_O_H_θ.cos())).sqrt();
-
-        // GROMACS derivation for constants
-        let wohh = m_o + 2.0 * m_h;
-        let wh = m_h / wohh;
-        let rc = d_hh / 2.0;
-
-        // ra is the distance from O to the H-H axis, weighted by mass ratios
-        let ra = 2.0 * m_h * (d_oh * d_oh - rc * rc).sqrt() / wohh;
-        let rb = (d_oh * d_oh - rc * rc).sqrt() - ra;
-        let irc2 = 1.0 / d_hh;
-
-        Self {
-            wh,
-            ra,
-            rb,
-            rc,
-            irc2,
-            d_oh,
-            d_hh,
-        }
-    }
-}
-
-// todo: ALternatively, place this in MdState.
-lazy_static::lazy_static! {
-    pub static ref SETTLE_PARAMS: SettleParams = SettleParams::new();
-}
+// // todo: ALternatively, place this in MdState.
+// lazy_static::lazy_static! {
+//     pub static ref SETTLE_PARAMS: SettleParams = SettleParams::new();
+// }

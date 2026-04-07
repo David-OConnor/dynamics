@@ -37,17 +37,16 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{
-    AtomDynamics, KCAL_TO_NATIVE, MolDynamics, barostat::SimBox, non_bonded::CHARGE_UNIT_SCALER,
-};
+use crate::{AtomDynamics, KCAL_TO_NATIVE, MolDynamics, non_bonded::CHARGE_UNIT_SCALER};
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 pub(crate) mod init;
-pub(crate) mod settle;
+pub(crate) mod opc_settle;
+mod template_creation;
 
-use settle::RA;
+use opc_settle::RA;
 
 // Constant parameters below are for the OPC solvent (JPCL, 2014, 5 (21), pp 3863-3871)
 // (Amber 2025, frcmod.opc) EP/M is the massless, 4th charge.
@@ -260,7 +259,7 @@ pub struct ForcesOnWaterMolx16 {
 /// by a factor of mass.
 /// todo: We may or may not change this A/R.
 #[derive(Clone, Debug)]
-pub struct WaterMol {
+pub struct WaterMolOpc {
     /// Chargeless; its charge is represented at the offset "M" or "EP".
     /// The only Lennard Jones/Vdw source. Has mass.
     pub o: AtomDynamics,
@@ -289,7 +288,7 @@ pub struct WaterMolx16 {
     pub m: AtomDynamicsx16,
 }
 
-impl WaterMol {
+impl WaterMolOpc {
     pub fn new(o_pos: Vec3F32, vel: Vec3F32, orientation: QuaternionF32) -> Self {
         // Set up H and EP/M positions based on orientation.
         // Unit vectors defining the body frame
@@ -348,47 +347,9 @@ impl WaterMol {
         }
     }
 
-    /// Run this after updating force on the EP site; converts its force to the O and H sites,
+    /// Run this after updating force on the M/EP site; converts its force to the O and H sites,
     /// and leaves it at 0.
-    pub(crate) fn _project_ep_force_to_real_sites(&mut self, cell: &SimBox) {
-        // Geometry in O-centered frame
-        let r_O_H0 = self.o.posit + cell.min_image(self.h0.posit - self.o.posit) - self.o.posit;
-        let r_O_H1 = self.o.posit + cell.min_image(self.h1.posit - self.o.posit) - self.o.posit;
-
-        let s = r_O_H0 + r_O_H1;
-        let s_norm = s.magnitude();
-
-        if s_norm < 1e-12 {
-            // Degenerate geometry: drop EP force this step
-            self.o.force += self.m.force;
-            self.m.force = Vec3F32::new_zero();
-            return;
-        }
-
-        let f_m = self.m.force;
-
-        // Unit bisector and projection operator P = (I - uu^T)/|s|
-        let u = s / s_norm;
-        let fm_parallel = u * f_m.dot(u);
-        let fm_perp = f_m - fm_parallel; // (I - uu^T) f_m
-        let scale = O_EP_R / s_norm; // d / |s|
-
-        // Chain rule: ∂rM/∂rO = I - 2 d P ;  ∂rM/∂rHk = d P
-        // Because P is symmetric, (∂rM/∂ri)^T Fm == same expression with P acting on Fm.
-        let fh = fm_perp * scale; // contribution that goes to each H
-        let fo = f_m - fh * 2.0; // remaining force goes to O
-
-        // Force on M/EP is now zero, and we've modified the forces on the other atoms from it.
-        self.m.force = Vec3F32::new_zero();
-        self.o.force += fo;
-        self.h0.force += fh;
-        self.h1.force += fh;
-    }
-
-    // todo: Experimenting
-    /// Run this after updating force on the EP site; converts its force to the O and H sites,
-    /// and leaves it at 0.
-    pub(crate) fn project_ep_force_optimized(&mut self) {
+    pub(crate) fn project_ep_force(&mut self) {
         let f_m = self.m.force;
 
         // Exact force conservation, exact torque conservation (for this geometry)
@@ -422,15 +383,3 @@ impl WaterMol {
         self.m.vel = (self.h0.vel + self.h1.vel) * 0.5;
     }
 }
-//
-// /// Wrap molecule as a rigid unit. Wrap O, then translate Hs and ,EP so they're on the same
-// /// side of the cell.
-// pub(crate) fn wrap_water(mol: &mut WaterMol, cell: &SimBox) {
-//     let new_o = cell.wrap(mol.o.posit);
-//     let shift = new_o - mol.o.posit;
-//
-//     mol.o.posit = new_o;
-//     mol.h0.posit += shift;
-//     mol.h1.posit += shift;
-//     mol.m.posit += shift;
-// }

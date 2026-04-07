@@ -2,31 +2,28 @@
 
 //! Code for initializing solvent molecules, including assigning quantity, initial positions, and
 //! velocities. Set up to meet density, pressure, and or temperature targets. Not specific to the
-//! solvent model used.
+//! solvent model used. Populates simulation boxes with solvents, with a PBC assumption.
 //!
 //! This involves creating, saving and loading templates, and generating water molecules given a template,
 //! sim box, and solute.
 
-use std::{f32::consts::TAU, fs, io, path::Path, time::Instant};
+use std::{fs, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
 use bio_files::gromacs;
 use lin_alg::{
-    f32::{Mat3 as Mat3F32, Quaternion, Vec3},
+    f32::{Quaternion, Vec3},
     f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
 };
-use rand::{Rng, distr::Uniform, rngs::ThreadRng};
-use rand_distr::{Distribution, Normal};
+use rand::Rng;
 
 use crate::{
-    AtomDynamics, ComputationDevice, MdState, MolDynamics, NATIVE_TO_KCAL,
+    AtomDynamics, ComputationDevice, MdState, MolDynamics,
     barostat::SimBox,
     partial_charge_inference::{files::load_from_bytes_bincode, save},
     sa_surface,
-    solvent::WaterMol,
-    thermostat::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU},
+    solvent::WaterMolOpc,
 };
-
 // 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing
 // and maintaining the solvent density and molecule count.
 const WATER_DENSITY: f32 = 0.997;
@@ -52,7 +49,7 @@ const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 
 // Direct O-O overlap check — prevents truly coincident molecules.
 const MIN_WATER_O_O_DIST: f32 = 1.7;
-const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
+pub(in crate::solvent) const MIN_WATER_O_O_DIST_SQ: f32 = MIN_WATER_O_O_DIST * MIN_WATER_O_O_DIST;
 
 // PBC-boundary exclusion distance.
 // When a smaller box is filled from a larger template (e.g. 30 Å from a 60 Å template),
@@ -116,7 +113,7 @@ impl WaterInitTemplate {
     /// Construct from the current state, and save to file.
     /// Call this explicitly. (todo: Determine a formal or informal approach)
     pub fn create_and_save(
-        water: &[WaterMol],
+        water: &[WaterMolOpc],
         bounds: (Vec3, Vec3),
         path: &Path,
     ) -> io::Result<()> {
@@ -190,7 +187,7 @@ impl WaterInitTemplate {
 }
 
 /// Determine the number of solvent molecules to add, based on box size and solute.
-fn n_water_mols(cell: &SimBox, solute_atoms: &[AtomDynamics]) -> usize {
+pub(in crate::solvent) fn n_water_mols(cell: &SimBox, solute_atoms: &[AtomDynamics]) -> usize {
     let cell_volume = cell.volume();
     let mol_volume = sa_surface::vol_take_up_by_atoms(solute_atoms);
     let free_vol = cell_volume - mol_volume;
@@ -232,7 +229,7 @@ pub fn make_water_mols(
     // filter would reject are acceptable starting points; the MD equilibration run will push
     // them to their natural first-shell distances.
     skip_pbc_filter: bool,
-) -> Vec<WaterMol> {
+) -> Vec<WaterMolOpc> {
     println!("Initializing solvent molecules...");
     let start = Instant::now();
 
@@ -327,7 +324,7 @@ pub fn make_water_mols(
                         }
                     }
 
-                    let mut mol = WaterMol::new(
+                    let mut mol = WaterMolOpc::new(
                         Vec3::new_zero(),
                         Vec3::new_zero(),
                         Quaternion::new_identity(),
@@ -616,270 +613,6 @@ pub(crate) fn pack_custom_solvent(
     }
 
     result
-}
-
-#[allow(unused)]
-/// Creates a regular lattice of water molecules. We use this as the first part of creating
-/// a solvent template. Use this,  run a sim with thermostat and barostat, then store the result
-/// in a `WaterInitTemplate`. We can save and load this to disk as binary, or in `.gro` format.
-///
-/// Generate solvent molecules to meet a temperature target, using standard density assumptions.
-/// We deconflict with (solute) atoms in the simulation, and base the number of molecules to add
-/// on the free space, not the total cell volume.
-///
-/// Process:
-/// - Compute the number of molecules to add
-/// - Add them on a regular grid with random orientations, and velocities in a random distribution
-///   that matches the target temperature. Move molecules to the edge that are too close to
-///   solute atoms.
-///
-/// Note: If we're able to place most, but not all waters, the barostat should adjust the sim box size
-/// to account for the lower-than-specific pressure.
-pub fn make_water_mols_grid(
-    cell: &SimBox,
-    temperature_tgt: f32,
-    zero_com_drift: bool,
-) -> Vec<WaterMol> {
-    println!("Initializing a solvent grid, as part of template preparation...");
-    // Initialize an RNG for orientations.
-    let mut rng = rand::rng();
-    let distro = Uniform::<f32>::new(0.0, 1.0).unwrap();
-
-    let n_mols = n_water_mols(cell, &[]);
-
-    let mut result: Vec<WaterMol> = Vec::with_capacity(n_mols);
-
-    // Initialize the correct number of solvent molecules on a uniform grid. We ignore the solute for
-    let lx = cell.bounds_high.x - cell.bounds_low.x;
-    let ly = cell.bounds_high.y - cell.bounds_low.y;
-    let lz = cell.bounds_high.z - cell.bounds_low.z;
-
-    let base = (n_mols as f32).cbrt().round().max(1.0) as usize;
-    let n_x = base;
-    let n_y = base;
-    let n_z = n_mols.div_ceil(n_x * n_y);
-
-    let spacing_x = lx / n_x as f32;
-    let spacing_y = ly / n_y as f32;
-    let spacing_z = lz / n_z as f32;
-
-    // Prevents unbounded looping. A higher value means we're more likely to succed,
-    // but the run time could be higher.
-    let fault_ratio = 3;
-
-    let mut num_added = 0;
-    let mut loops_used = 0;
-
-    'outer: for i in 0..n_mols * fault_ratio {
-        let a = i % n_x;
-        let b = (i / n_x) % n_y;
-        let c = (i / (n_x * n_y)) % n_z;
-
-        let posit = Vec3::new(
-            cell.bounds_low.x + (a as f32 + 0.5) * spacing_x,
-            cell.bounds_low.y + (b as f32 + 0.5) * spacing_y,
-            cell.bounds_low.z + (c as f32 + 0.5) * spacing_z,
-        );
-
-        // Check for an overlap with existing solvent molecules.
-        for w in &result {
-            let dist_sq = (w.o.posit - posit).magnitude_squared();
-            if dist_sq < MIN_WATER_O_O_DIST_SQ {
-                loops_used += 1;
-                continue 'outer;
-            }
-        }
-
-        result.push(WaterMol::new(
-            posit,
-            Vec3::new_zero(),
-            random_quaternion(&mut rng, distro),
-        ));
-        num_added += 1;
-
-        if num_added == n_mols {
-            break;
-        }
-        loops_used += 1;
-    }
-
-    // Set velocities consistent with the temperature target.
-    init_velocities(&mut result, temperature_tgt, zero_com_drift, &mut rng);
-
-    println!(
-        "Added {} / {n_mols} solvent mols. Used {loops_used} loops",
-        result.len()
-    );
-    result
-}
-
-/// We use this as part of our water template generation.
-///
-/// Note: This sets a reasonable default, but our thermostat, applied notably during
-/// our initial solvent simulation, determines the actual temperature set at proper sim init.
-/// Note: We've deprecated this in favor of velocities pre-initialized in the template.
-fn init_velocities(
-    mols: &mut [WaterMol],
-    t_target: f32,
-    zero_com_drift: bool,
-    rng: &mut ThreadRng,
-) {
-    let kT = KB_A2_PS2_PER_K_PER_AMU * t_target;
-
-    for m in mols.iter_mut() {
-        // COM and relative positions
-        let (r_com, m_tot) = {
-            let mut r = Vec3::new_zero();
-            let mut m_tot = 0.0;
-            for a in [&m.o, &m.h0, &m.h1] {
-                r += a.posit * a.mass;
-                m_tot += a.mass;
-            }
-            (r / m_tot, m_tot)
-        };
-
-        let r_0 = m.o.posit - r_com;
-        let r_h0 = m.h0.posit - r_com;
-        let r_h1 = m.h1.posit - r_com;
-
-        // Sample COM velocity
-        let sigma_v = (kT / m_tot).sqrt();
-        let n = Normal::new(0.0, sigma_v).unwrap();
-        let v_com = Vec3::new(n.sample(rng), n.sample(rng), n.sample(rng));
-
-        // Inertia tensor about COM (world frame)
-        // Build as arrays (your code)
-        let inertia = |r: Vec3, mass: f32| {
-            let r2 = r.dot(r);
-            [
-                [
-                    mass * (r2 - r.x * r.x),
-                    -mass * r.x * r.y,
-                    -mass * r.x * r.z,
-                ],
-                [
-                    -mass * r.y * r.x,
-                    mass * (r2 - r.y * r.y),
-                    -mass * r.y * r.z,
-                ],
-                [
-                    -mass * r.z * r.x,
-                    -mass * r.z * r.y,
-                    mass * (r2 - r.z * r.z),
-                ],
-            ]
-        };
-        let mut I_arr = inertia(r_0, m.o.mass);
-        let add_I = |I: &mut [[f32; 3]; 3], J: [[f32; 3]; 3]| {
-            for i in 0..3 {
-                for j in 0..3 {
-                    I[i][j] += J[i][j];
-                }
-            }
-        };
-        add_I(&mut I_arr, inertia(r_h0, m.h0.mass));
-        add_I(&mut I_arr, inertia(r_h1, m.h1.mass));
-
-        let I = Mat3F32::from_arr(I_arr);
-
-        // Diagonalize and solve with the Mat3 methods
-        let (eigvecs, eigvals) = I.eigen_vecs_vals();
-        let L_principal = Vec3::new(
-            Normal::new(0.0, (kT * eigvals.x.max(0.0)).sqrt())
-                .unwrap()
-                .sample(rng),
-            Normal::new(0.0, (kT * eigvals.y.max(0.0)).sqrt())
-                .unwrap()
-                .sample(rng),
-            Normal::new(0.0, (kT * eigvals.z.max(0.0)).sqrt())
-                .unwrap()
-                .sample(rng),
-        );
-        let L_world = eigvecs * L_principal; // assumes Mat3 * Vec3 is implemented
-        let omega = I.solve_system(L_world); // ω = I^{-1} L
-
-        // Set atomic velocities
-        m.o.vel = v_com + omega.cross(r_0);
-        m.h0.vel = v_com + omega.cross(r_h0);
-        m.h1.vel = v_com + omega.cross(r_h1);
-    }
-
-    if zero_com_drift {
-        // Remove global COM drift
-        remove_com_velocity(mols);
-    }
-
-    let (ke_raw, dof) = _kinetic_energy_and_dof(mols, zero_com_drift);
-
-    // current T = 2 KE / (dof * R)
-    let temperature_meas = (2.0 * ke_raw) / (dof as f32 * GAS_CONST_R as f32);
-    let lambda = (t_target / temperature_meas).sqrt();
-
-    for a in atoms_mut(mols) {
-        if a.mass > 0.0 {
-            a.vel *= lambda;
-        }
-    }
-}
-
-/// Calculate kinetic energy in kcal/mol, and DOF for solvent only.
-/// Water is rigid, so 3 DOF per molecule.
-fn _kinetic_energy_and_dof(mols: &[WaterMol], zero_com_drift: bool) -> (f32, usize) {
-    let mut ke = 0.;
-    for w in mols {
-        ke += (w.o.mass * w.o.vel.magnitude_squared()) as f64;
-        ke += (w.h0.mass * w.h0.vel.magnitude_squared()) as f64;
-        ke += (w.h1.mass * w.h1.vel.magnitude_squared()) as f64;
-    }
-
-    let mut dof = mols.len() * 3;
-
-    if zero_com_drift {
-        dof = dof.saturating_sub(3);
-    }
-
-    // Add in the 0.5 factor, and convert from amu • (Å/ps)² to kcal/mol.
-    (ke as f32 * 0.5 * NATIVE_TO_KCAL, dof)
-}
-
-fn atoms_mut(mols: &mut [WaterMol]) -> impl Iterator<Item = &mut AtomDynamics> {
-    mols.iter_mut()
-        .flat_map(|m| [&mut m.o, &mut m.h0, &mut m.h1].into_iter())
-}
-
-#[allow(unused)]
-/// Removes center-of-mass drift. Use in template generation
-fn remove_com_velocity(mols: &mut [WaterMol]) {
-    let mut p = Vec3::new_zero();
-    let mut m_tot = 0.0;
-    for a in atoms_mut(mols) {
-        p += a.vel * a.mass;
-        m_tot += a.mass;
-    }
-
-    let v_com = p / m_tot;
-    for a in atoms_mut(mols) {
-        a.vel -= v_com;
-    }
-}
-
-#[allow(unused)]
-/// Used in template generation
-// todo: It might be nice to have this in lin_alg, although I don't want to add the rand
-// todo dependency to it.
-fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
-    let (u1, u2, u3) = (rng.sample(distro), rng.sample(distro), rng.sample(distro));
-    let sqrt1_minus_u1 = (1.0 - u1).sqrt();
-    let sqrt_u1 = u1.sqrt();
-    let (theta1, theta2) = (TAU * u2, TAU * u3);
-
-    Quaternion::new(
-        sqrt1_minus_u1 * theta1.sin(),
-        sqrt1_minus_u1 * theta1.cos(),
-        sqrt_u1 * theta2.sin(),
-        sqrt_u1 * theta2.cos(),
-    )
-    .to_normalized()
 }
 
 impl MdState {

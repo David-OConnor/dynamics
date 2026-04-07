@@ -161,7 +161,7 @@ use crate::{
     params::FfParamSet,
     snapshot::Snapshot,
     solvent::{
-        WaterMol, WaterMolx8, WaterMolx16,
+        WaterMolOpc, WaterMolx8, WaterMolx16,
         init::{make_water_mols, pack_custom_solvent},
     },
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
@@ -584,7 +584,7 @@ pub struct MdState {
     #[allow(unused)]
     #[cfg(target_arch = "x86_64")]
     pub(crate) atoms_x16: Vec<AtomDynamicsx16>,
-    pub water: Vec<WaterMol>,
+    pub water: Vec<WaterMolOpc>,
     #[allow(unused)]
     #[cfg(target_arch = "x86_64")]
     pub(crate) water_x8: Vec<WaterMolx8>,
@@ -1085,9 +1085,16 @@ impl MdState {
                             "check_for_overlaps_oob FAIL: atom {i} pos=({:.3},{:.3},{:.3}) \
                              atom {j} pos=({:.3},{:.3},{:.3}) direct_dist={:.3} Å  \
                              min_image_dist={dist:.3} Å  cell_extent=({:.3},{:.3},{:.3})",
-                            pi.x, pi.y, pi.z, pj.x, pj.y, pj.z,
+                            pi.x,
+                            pi.y,
+                            pi.z,
+                            pj.x,
+                            pj.y,
+                            pj.z,
                             (self.atoms[i].posit - self.atoms[j].posit).magnitude(),
-                            self.cell.extent.x, self.cell.extent.y, self.cell.extent.z,
+                            self.cell.extent.x,
+                            self.cell.extent.y,
+                            self.cell.extent.z,
                         );
                         return Err(ParamError::new(&format!(
                             "Atoms from different molecules (indices {i} and {j}) are too \

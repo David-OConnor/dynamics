@@ -15,7 +15,7 @@ use crate::{
     AtomDynamics, ComputationDevice, MdOverrides, MdState,
     barostat::SimBox,
     forces::force_e_lj,
-    solvent::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMol, WaterSite},
+    solvent::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMolOpc, WaterSite},
 };
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
@@ -198,7 +198,7 @@ impl BodyRef {
     pub(crate) fn get<'a>(
         &self,
         non_waters: &'a [AtomDynamics],
-        waters: &'a [WaterMol],
+        waters: &'a [WaterMolOpc],
     ) -> &'a AtomDynamics {
         match *self {
             BodyRef::NonWater(i) => &non_waters[i],
@@ -249,7 +249,7 @@ fn add_to_sink(
 fn calc_force_cpu(
     pairs: &[NonBondedPair],
     atoms_std: &[AtomDynamics],
-    water: &[WaterMol],
+    water: &[WaterMolOpc],
     cell: &SimBox,
     lj_tables: &LjTables,
     overrides: &MdOverrides,

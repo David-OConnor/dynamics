@@ -15,7 +15,9 @@ use lin_alg::f32::Vec3;
 use rand::prelude::ThreadRng;
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::{AtomDynamics, KCAL_TO_NATIVE, MdState, NATIVE_TO_KCAL, SimBoxInit, solvent::WaterMol};
+use crate::{
+    AtomDynamics, KCAL_TO_NATIVE, MdState, NATIVE_TO_KCAL, SimBoxInit, solvent::WaterMolOpc,
+};
 
 pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
 
@@ -327,7 +329,7 @@ impl Barostat {
         cfg: &BarostatCfg,
         simbox: &mut SimBox,
         atoms_dyn: &mut [AtomDynamics],
-        waters: &mut [WaterMol],
+        waters: &mut [WaterMolOpc],
     ) {
         // todo: Temporarily disabled  barostat, until pressure measurements are fixed
         return;
