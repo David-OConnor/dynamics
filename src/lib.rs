@@ -917,9 +917,12 @@ impl MdState {
         // parameters are already included in `force_field_params`.  Water (below) will avoid
         // them automatically because `make_water_mols` checks against `result.atoms`.
 
-        result.water = {
+        result.water = if matches!(cfg.solvent, Solvent::None) {
+            Vec::new()
+        } else {
             let count = match &cfg.solvent {
-                Solvent::None | Solvent::WaterOpc => None,
+                Solvent::None => unreachable!(),
+                Solvent::WaterOpc => None,
                 Solvent::WaterOpcSpecifyMolCount(c) => Some(*c),
                 Solvent::Custom((_, c)) => Some(*c),
             };
@@ -1076,6 +1079,16 @@ impl MdState {
                         .min_image(self.atoms[i].posit - self.atoms[j].posit);
                     let dist = diff.magnitude();
                     if dist < MIN_INTER_MOL_DIST {
+                        let pi = self.atoms[i].posit;
+                        let pj = self.atoms[j].posit;
+                        eprintln!(
+                            "check_for_overlaps_oob FAIL: atom {i} pos=({:.3},{:.3},{:.3}) \
+                             atom {j} pos=({:.3},{:.3},{:.3}) direct_dist={:.3} Å  \
+                             min_image_dist={dist:.3} Å  cell_extent=({:.3},{:.3},{:.3})",
+                            pi.x, pi.y, pi.z, pj.x, pj.y, pj.z,
+                            (self.atoms[i].posit - self.atoms[j].posit).magnitude(),
+                            self.cell.extent.x, self.cell.extent.y, self.cell.extent.z,
+                        );
                         return Err(ParamError::new(&format!(
                             "Atoms from different molecules (indices {i} and {j}) are too \
                                  close in minimum-image distance ({dist:.3} Å). This would cause \

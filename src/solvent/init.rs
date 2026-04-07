@@ -395,6 +395,15 @@ pub(crate) fn pack_custom_solvent(
     let box_size = hi - lo;
     let box_ctr = (lo + hi) * 0.5;
 
+    // PBC minimum-image helper. Vec3F64 is Copy so this captures box_size by value.
+    let pbc_min_image = |d: Vec3F64| -> Vec3F64 {
+        Vec3F64::new(
+            d.x - box_size.x * (d.x / box_size.x).round(),
+            d.y - box_size.y * (d.y / box_size.y).round(),
+            d.z - box_size.z * (d.z / box_size.z).round(),
+        )
+    };
+
     // Grows as copies are committed; starts with the solute atom positions.
     let mut placed_posits: Vec<Vec3F64> = existing_posits.to_vec();
 
@@ -491,6 +500,7 @@ pub(crate) fn pack_custom_solvent(
 
         for copy_i in 0..count {
             // Greedy: pick the cell whose centroid is furthest from all placed atoms.
+            // Uses PBC min-image distance so cross-boundary neighbours are accounted for.
             let best_cell_idx = if placed_posits.is_empty() {
                 0
             } else {
@@ -499,7 +509,11 @@ pub(crate) fn pack_custom_solvent(
                     .map(|(i, &cell_ctr)| {
                         let min_dsq = placed_posits
                             .iter()
-                            .map(|&p| (cell_ctr - p).magnitude_squared())
+                            .map(|&p| {
+                                let d = cell_ctr - p;
+                                d.magnitude_squared()
+                                    .min(pbc_min_image(d).magnitude_squared())
+                            })
                             .fold(f64::MAX, f64::min);
                         (i, min_dsq)
                     })
@@ -531,14 +545,27 @@ pub(crate) fn pack_custom_solvent(
                     continue;
                 }
 
-                // Atom-level clash check against placed atoms.
+                // Atom-level clash check against placed atoms (PBC-aware).
+
                 let mut min_sq = f64::MAX;
                 'check: for &np in &new_posits {
                     for &pp in &placed_posits {
-                        if (pp - world_ctr).magnitude_squared() > search_sq {
+                        // Spatial early-reject: consider both direct and PBC distance to the
+                        // candidate centroid so we don't skip cross-boundary neighbours.
+                        let diff_to_ctr = pp - world_ctr;
+                        let min_dsq_to_ctr = diff_to_ctr
+                            .magnitude_squared()
+                            .min(pbc_min_image(diff_to_ctr).magnitude_squared());
+                        if min_dsq_to_ctr > search_sq {
                             continue;
                         }
-                        let dsq = (np - pp).magnitude_squared();
+
+                        // PBC-aware inter-atom distance.
+                        let diff = np - pp;
+                        let dsq = diff
+                            .magnitude_squared()
+                            .min(pbc_min_image(diff).magnitude_squared());
+
                         if dsq < min_sq {
                             min_sq = dsq;
                             if min_sq < MIN_ATOM_DIST_SQ {
