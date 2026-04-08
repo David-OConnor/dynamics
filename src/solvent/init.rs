@@ -11,6 +11,7 @@ use std::{fs, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
 use bio_files::{gromacs, gromacs::gro::Gro};
+use candle_core::cpu_backend::unary_map;
 use lin_alg::{
     f32::{Quaternion, Vec3},
     f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
@@ -82,8 +83,14 @@ pub const WATER_TEMPLATE_TIP4: &str = include_str!("../../param_data/tip4p.gro")
 #[derive(Clone, Debug, PartialEq, Default, Decode, Encode)]
 pub enum SolventTemplateType {
     Water60A,
+    /// Also usable for any other 4-pt water model. Note that currently we discard the M
+    /// site, adding it manually; consider using the TIP3 template instead, as it's slightly smaller.
     #[default]
     Tip4Gromacs,
+    // todo: implement once you have a template.
+    /// Octanol saturated with water at x temperature and x pressure. X water molecules
+    /// per octanol molecule.
+    OctanolWithWater,
     Custom(WaterInitTemplate),
 }
 
@@ -92,11 +99,14 @@ impl SolventTemplateType {
         match self {
             Self::Water60A => load_from_bytes_bincode(WATER_TEMPLATE_60A),
             Self::Tip4Gromacs => WaterInitTemplate::from_gro(WATER_TEMPLATE_TIP4),
+            Self::OctanolWithWater => unimplemented!(),
             Self::Custom(t) => Ok(t.clone()),
         }
     }
 }
 
+/// For 3 and 4 point water models.
+///
 /// We store pre-equilibrated solvent molecules in a template, and use it to initialize solvent for a simulation.
 /// This keeps the equilibration steps relatively low. Note that edge effects from tiling will require
 /// equilibration, as well as adjusting a template for the runtime temperature target.
