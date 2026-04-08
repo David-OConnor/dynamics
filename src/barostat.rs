@@ -78,6 +78,7 @@ impl SimBox {
             SimBoxInit::Pad(pad) => {
                 let (mut min, mut max) =
                     (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+
                 for a in atoms {
                     min = min.min(a.posit);
                     max = max.max(a.posit);

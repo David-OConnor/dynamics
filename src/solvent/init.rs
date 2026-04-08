@@ -79,7 +79,7 @@ pub const WATER_TEMPLATE_60A: &[u8] =
 // From GROMACS. 4-point water model.
 pub const WATER_TEMPLATE_TIP4: &str = include_str!("../../param_data/tip4p.gro");
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Decode, Encode)]
 pub enum SolventTemplateType {
     Water60A,
     #[default]
@@ -135,7 +135,6 @@ impl WaterInitTemplate {
 
     pub fn from_gro(gro_text: &str) -> io::Result<Self> {
         const NM_TO_ANGSTROM: f32 = 10.;
-        // const NM_TO_ANGSTROM: f32 = 1.;
 
         let gro = Gro::new(gro_text)?;
 
@@ -305,19 +304,22 @@ pub fn water_mols_from_template(
     solute: &[AtomDynamics],
     specify_num_water: Option<usize>,
     template_type: &SolventTemplateType,
-    // When true, skip the PBC-boundary proximity check (the 2.8 Å cross-boundary filter).
-    // Only the hard-overlap 1.7 Å direct-distance check remains.  Use this when generating
-    // a template at the correct equilibrium density: the ~88 boundary molecules that the PBC
-    // filter would reject are acceptable starting points; the MD equilibration run will push
-    // them to their natural first-shell distances.
+    // When true, skip the PBC-boundary proximity check (the 2.8 Å same-tile cross-boundary
+    // filter) entirely.  Only the hard-overlap 1.7 Å direct/PBC-distance check remains.
+    // Use when generating a template at the correct equilibrium density: same-tile boundary
+    // molecules that the filter would reject are acceptable starting points; the MD
+    // equilibration run will push them to their natural first-shell distances.
     skip_pbc_filter: bool,
 ) -> Vec<WaterMolOpc> {
     println!("Initializing solvent molecules...");
     let start = Instant::now();
 
-    let Ok(template) = template_type.get_template() else {
-        eprintln!("Error initializing water; can't read the template.");
-        return Vec::new();
+    let template = match template_type.get_template() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("\nError initializing water; can't read the template: {e}");
+            return Vec::new();
+        }
     };
 
     let n_mols = specify_num_water.unwrap_or_else(|| n_water_mols(cell, solute));
@@ -345,6 +347,10 @@ pub fn water_mols_from_template(
     let half_z = (cell_size.z / (2.0 * template_size.z)).ceil() as i32 + 1;
 
     let mut loops_used = 0;
+
+    // Parallel vecs: tile index of each molecule placed in `result`.
+    // Used to restrict the PBC soft filter to same-tile pairs (see comment below).
+    let mut placed_tiles: Vec<(i32, i32, i32)> = Vec::with_capacity(n_mols);
 
     'tiles: for ix in -half_x..=half_x {
         for iy in -half_y..=half_y {
@@ -375,14 +381,20 @@ pub fn water_mols_from_template(
                     }
 
                     // Conflict with already-placed solvent.
-                    // Two-threshold check:
-                    //   1. Direct distance < 1.7 Å: hard overlap regardless of PBC.
-                    //   2. PBC-wrapped distance < 2.8 Å *and* wrapping shortened the distance:
-                    //      these are cross-boundary pairs from the template that were never
-                    //      equilibrated as PBC neighbours in this (smaller) cell.
-                    //      Interior template molecules at their natural 2.5–2.8 Å first-shell
-                    //      distances are not affected (min_image == direct for them).
-                    for w in &result {
+                    //
+                    // Hard overlap (1.7 Å): always reject, regardless of PBC or tile.
+                    //
+                    // PBC soft filter (2.8 Å): only applies to SAME-TILE pairs.
+                    //   - Large-template (e.g. Water60A, 60 Å) in a small cell: only one tile
+                    //     contributes, so same-tile molecules from opposite ends of the template
+                    //     can land at unequilibrated PBC distances of 2–3 Å.  The filter rejects
+                    //     them. ✓
+                    //   - Small-template (e.g. tip4p, 18.68 Å) in a large cell: adjacent tiles
+                    //     tile the cell; cross-tile molecules near the cell boundary ARE legitimate
+                    //     PBC neighbours (equilibrated as such in the template).  Applying the
+                    //     filter to cross-tile pairs incorrectly rejects ~10 % of molecules.
+                    //     Restricting it to same-tile pairs prevents this over-rejection. ✓
+                    for (j, w) in result.iter().enumerate() {
                         let diff = w.o.posit - o_posit;
                         let direct_sq = diff.magnitude_squared();
                         if direct_sq < MIN_WATER_O_O_DIST_SQ {
@@ -394,7 +406,7 @@ pub fn water_mols_from_template(
                         if min_image_sq < MIN_WATER_O_O_DIST_SQ {
                             continue 'mol;
                         }
-                        if !skip_pbc_filter {
+                        if !skip_pbc_filter && placed_tiles[j] == (ix, iy, iz) {
                             if min_image_sq < PBC_MIN_WATER_O_O_DIST_SQ && min_image_sq < direct_sq
                             {
                                 continue 'mol;
@@ -420,6 +432,7 @@ pub fn water_mols_from_template(
                     mol.h1.vel = template.h1_velocities[i];
 
                     result.push(mol);
+                    placed_tiles.push((ix, iy, iz));
 
                     if result.len() == n_mols {
                         break 'tiles;

@@ -123,7 +123,7 @@ pub use add_hydrogens::{
     bond_vecs::{find_planar_posit, find_tetra_posit_final, find_tetra_posits},
     populate_hydrogens_dihedrals,
 };
-use barostat::SimBox;
+pub use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::{
