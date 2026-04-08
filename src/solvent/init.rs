@@ -471,8 +471,7 @@ pub fn water_mols_from_template(
 ///
 /// Only supports `SimBoxInit::Fixed` boxes — the caller is responsible for ensuring this.
 pub(crate) fn pack_custom_solvent(
-    bounds_low: Vec3,
-    bounds_high: Vec3,
+    cell: SimBox,
     existing_posits: &[Vec3F64], // declared positions of already-placed mols (e.g. solute)
     mols_solvent: &[(MolDynamics, usize)],
 ) -> Vec<MolDynamics> {
@@ -485,27 +484,8 @@ pub(crate) fn pack_custom_solvent(
 
     let mut rng = rand::rng();
 
-    let lo = Vec3F64::new(
-        bounds_low.x as f64,
-        bounds_low.y as f64,
-        bounds_low.z as f64,
-    );
-    let hi = Vec3F64::new(
-        bounds_high.x as f64,
-        bounds_high.y as f64,
-        bounds_high.z as f64,
-    );
-    let box_size = hi - lo;
-    let box_ctr = (lo + hi) * 0.5;
-
-    // PBC minimum-image helper. Vec3F64 is Copy so this captures box_size by value.
-    let pbc_min_image = |d: Vec3F64| -> Vec3F64 {
-        Vec3F64::new(
-            d.x - box_size.x * (d.x / box_size.x).round(),
-            d.y - box_size.y * (d.y / box_size.y).round(),
-            d.z - box_size.z * (d.z / box_size.z).round(),
-        )
-    };
+    let box_size: Vec3F64 = cell.extent.into();
+    let box_ctr: Vec3F64 = cell.center().into();
 
     // Grows as copies are committed; starts with the solute atom positions.
     let mut placed_posits: Vec<Vec3F64> = existing_posits.to_vec();
@@ -544,8 +524,10 @@ pub(crate) fn pack_custom_solvent(
         // Every copy's centroid must be ≥ bounding_r + WALL_MARGIN from each wall face so that
         // even the molecule's furthest atom stays within the per-atom wall margin.
         let safe_margin = bounding_r + WALL_MARGIN;
-        let inner_lo = lo + Vec3F64::new(safe_margin, safe_margin, safe_margin);
-        let inner_hi = hi - Vec3F64::new(safe_margin, safe_margin, safe_margin);
+        let inner_lo: Vec3F64 =
+            cell.bounds_low.into() + Vec3F64::new(safe_margin, safe_margin, safe_margin);
+        let inner_hi: Vec3F64 =
+            cell.bounds_high.into() - Vec3F64::new(safe_margin, safe_margin, safe_margin);
 
         if inner_lo.x >= inner_hi.x || inner_lo.y >= inner_hi.y || inner_lo.z >= inner_hi.z {
             eprintln!(
@@ -584,9 +566,9 @@ pub(crate) fn pack_custom_solvent(
                 (0..n).flat_map(move |iy| {
                     (0..n).map(move |iz| {
                         Vec3F64::new(
-                            lo.x + (ix as f64 + 0.5) * sx,
-                            lo.y + (iy as f64 + 0.5) * sy,
-                            lo.z + (iz as f64 + 0.5) * sz,
+                            cell.bounds_low.x as f64 + (ix as f64 + 0.5) * sx,
+                            cell.bounds_low.y as f64 + (iy as f64 + 0.5) * sy,
+                            cell.bounds_low.z as f64 + (iz as f64 + 0.5) * sz,
                         )
                     })
                 })
@@ -615,7 +597,7 @@ pub(crate) fn pack_custom_solvent(
                             .map(|&p| {
                                 let d = cell_ctr - p;
                                 d.magnitude_squared()
-                                    .min(pbc_min_image(d).magnitude_squared())
+                                    .min(cell.min_image(d.into()).into().magnitude_squared())
                             })
                             .fold(f64::MAX, f64::min);
                         (i, min_dsq)
@@ -656,9 +638,11 @@ pub(crate) fn pack_custom_solvent(
                         // Spatial early-reject: consider both direct and PBC distance to the
                         // candidate centroid so we don't skip cross-boundary neighbours.
                         let diff_to_ctr = pp - world_ctr;
-                        let min_dsq_to_ctr = diff_to_ctr
-                            .magnitude_squared()
-                            .min(pbc_min_image(diff_to_ctr).magnitude_squared());
+                        let min_dsq_to_ctr = diff_to_ctr.magnitude_squared().min(
+                            cell.min_image(diff_to_ctr.into())
+                                .into()
+                                .magnitude_squared(),
+                        );
                         if min_dsq_to_ctr > search_sq {
                             continue;
                         }
@@ -667,7 +651,7 @@ pub(crate) fn pack_custom_solvent(
                         let diff = np - pp;
                         let dsq = diff
                             .magnitude_squared()
-                            .min(pbc_min_image(diff).magnitude_squared());
+                            .min(cell.min_image(diff.into()).into().magnitude_squared());
 
                         if dsq < min_sq {
                             min_sq = dsq;
