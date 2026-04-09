@@ -8,8 +8,10 @@
 
 use std::f32::consts::TAU;
 
-use lin_alg::f32::{Mat3 as Mat3F32, Quaternion, Vec3};
-use lin_alg::f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64};
+use lin_alg::{
+    f32::{Mat3 as Mat3F32, Quaternion, Vec3},
+    f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
+};
 use rand::{
     Rng,
     distr::{Distribution, Uniform},
@@ -354,6 +356,9 @@ pub(crate) fn pack_solvent_with_shrinking_box(
     let mut rng = rand::rng();
     let mut mols: Vec<MolDynamics> = Vec::with_capacity(solvent_count);
 
+    let mut rng = rand::rng();
+    let distro = Uniform::<f32>::new(0.0, 1.0).unwrap();
+
     for idx in 0..solvent_count {
         let a = idx % n_x;
         let b = (idx / n_x) % n_y;
@@ -366,10 +371,11 @@ pub(crate) fn pack_solvent_with_shrinking_box(
         );
 
         // Random uniform quaternion.
-        let (qw, qx, qy, qz): (f64, f64, f64, f64) =
-            (rng.random(), rng.random(), rng.random(), rng.random());
-        let rot = QuaternionF64::new(qw, qx, qy, qz).to_normalized();
-        let posits: Vec<Vec3F64> = local.iter().map(|&l| rot.rotate_vec(l) + world_ctr).collect();
+        let rot: QuaternionF64 = random_quaternion(&mut rng, distro).into();
+        let posits: Vec<Vec3F64> = local
+            .iter()
+            .map(|&l| rot.rotate_vec(l) + world_ctr)
+            .collect();
 
         let mut mol_copy = mol_solvent.clone();
         mol_copy.atom_posits = Some(posits);
@@ -418,9 +424,9 @@ pub(crate) fn pack_solvent_with_shrinking_box(
         md_state.step(dev, dt, None);
 
         if step < n_shrink_steps {
-            // Shrink each axis toward the target, clamped so we never overshoot.
             let cur = &md_state.cell;
             let half = box_shrink_per_step / 2.;
+
             let new_low = Vec3::new(
                 (cur.bounds_low.x + half).min(cell.bounds_low.x),
                 (cur.bounds_low.y + half).min(cell.bounds_low.y),
@@ -432,10 +438,42 @@ pub(crate) fn pack_solvent_with_shrinking_box(
                 (cur.bounds_high.z - half).max(cell.bounds_high.z),
             );
             let new_cell = SimBox::new(new_low, new_high);
-            // Wrap atom positions into the reduced cell so that forces are computed correctly.
-            for a in &mut md_state.atoms {
-                a.posit = new_cell.wrap(a.posit);
+
+            // Calculate scale factors relative to the current cell
+            let scale_x = (new_cell.extent.x / cur.extent.x) as f64;
+            let scale_y = (new_cell.extent.y / cur.extent.y) as f64;
+            let scale_z = (new_cell.extent.z / cur.extent.z) as f64;
+
+            // --- Replace the atom wrapping loop with molecule scaling ---
+            for mol_atoms in md_state.atoms.chunks_mut(n_atoms) {
+                // 1. Calculate the current centroid of the molecule
+                let mut centroid: Vec3F64 = Vec3F64::new(0., 0., 0.);
+                for a in mol_atoms.iter() {
+                    let p: Vec3F64 = a.posit.into();
+                    centroid = centroid + p;
+                }
+                centroid *= 1.0 / n_atoms as f64;
+
+                // 2. Calculate vector from target_center to centroid, and scale it
+                let p: Vec3F64 = target_center.into();
+                let relative_pos: Vec3F64 = centroid - p;
+                let scaled_relative_pos = Vec3F64::new(
+                    relative_pos.x * scale_x,
+                    relative_pos.y * scale_y,
+                    relative_pos.z * scale_z,
+                );
+
+                // 3. Determine the new centroid and calculate the displacement vector
+                let p: Vec3 = scaled_relative_pos.into();
+                let new_centroid: Vec3F64 = (target_center + p).into();
+                let displacement: Vec3 = (new_centroid - centroid).into();
+
+                // 4. Shift all atoms in the molecule by the displacement vector
+                for a in mol_atoms.iter_mut() {
+                    a.posit += displacement;
+                }
             }
+
             md_state.cell = new_cell;
         }
     }
