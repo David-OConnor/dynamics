@@ -17,15 +17,16 @@ use rand::{
 use rand_distr::Normal;
 
 use crate::{
-    AtomDynamics, NATIVE_TO_KCAL,
+    AtomDynamics, ComputationDevice, MdConfig, MdOverrides, MdState, MolDynamics, NATIVE_TO_KCAL,
+    ParamError,
     barostat::SimBox,
+    params::FfParamSet,
     solvent::{
         WaterMolOpc, init,
         init::{MIN_WATER_O_O_DIST_SQ, n_water_mols},
     },
     thermostat::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU},
 };
-
 // todo: Add a function which automatically creates a template. Sets up the grid, equilibriates,
 // todo and saves to `.gro` and/or `.water_init_template`
 
@@ -288,4 +289,67 @@ fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
         sqrt_u1 * theta2.cos(),
     )
     .to_normalized()
+}
+
+/// Create a solvent template by packing with a box which starts out too large, and gradually shrinks
+/// to the proper size. This may work in cases where a grid-based or other packing doens't work in the cases
+/// or long molecules like octanol. We initialize in a grid, then run a sim box. We shrink it graually enough
+/// so that the molecules bend and move into deconflicted positions naturally. The final result has the correct
+/// density (i.e. pressure) characteristics, and is equilibriated.
+pub(crate) fn pack_solvent_with_shrinking_box(
+    dev: &ComputationDevice,
+    mol_solvent: &MolDynamics,
+    solvent_count: usize,
+    water_count: usize, // E.g. OPC water with the custom solvent.
+    mut cell: SimBox,
+    param_set: &FfParamSet,
+) -> Result<Vec<AtomDynamics>, ParamError> {
+    // todo: A/R. Ideally this scale is dynamic; it should be large enough so the
+    // todo initial packign goes smoothly.
+    // this scale is of side len; not volume.
+    let initial_box_scale = 2.;
+
+    let dt = 0.001; // todo: A/R
+
+    // Å edge len per step. This must be low enough
+    let box_scale_rate = 0.01;
+    let box_scale_rate_div2 = box_scale_rate / 2.;
+
+    // todo: Instead of a fixed step count, perhaps do it dynamically based on the situation.
+    // todo: Or based on the number of steps to get between initial and final box sizes plus a pad.
+    let steps = 4_000;
+
+    // Uncomment as required for validating individual processes.
+    let cfg = MdConfig {
+        overrides: MdOverrides {
+            skip_water_relaxation: true,
+            snapshots_during_equilibration: true,
+            // Merge with caller-supplied overrides so flags like `skip_water` are preserved.
+            ..Default::default()
+        },
+        barostat_cfg: None,
+        ..Default::default()
+    };
+
+    let mut mols = Vec::with_capacity(solvent_count);
+    // todo: Position molecules evenly, e.g. in a grid for simplicity. Perhaps
+    // todo with fixed orientation.
+    for _ in 0..solvent_count {}
+
+    let (mut md_state, _) = MdState::new(dev, &cfg, &mols, param_set)?;
+
+    for step in 0..steps {
+        md_state.step(dev, dt, None);
+
+        cell.bounds_low += Vec3::splat(box_scale_rate_div2);
+        cell.bounds_high -= Vec3::splat(box_scale_rate_div2);
+    }
+
+    // Recenter so the sim box is around the origin.
+    let diff = cell.center();
+    for a in &mut md_state.atoms {
+        a.posit -= diff;
+    }
+
+    Ok(md_state.atoms)
 }
