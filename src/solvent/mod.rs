@@ -102,6 +102,7 @@ pub enum Solvent {
     #[default]
     WaterOpc,
     WaterOpcSpecifyMolCount(usize),
+    // OctanolWithWater,
     /// (Custom mols and their counts, OPC water count). Unlikje for OPC water, we use standard
     /// MD force fields for these, as we do for other molecules. Their presense in solvents here
     /// is primarily for the purposes of initializing them on their own, or with OPC water. Compared
@@ -118,6 +119,7 @@ impl Display for Solvent {
             Self::None => "None",
             Self::WaterOpc => "OPC water",
             Self::WaterOpcSpecifyMolCount(c) => &format!("Water OPC. {c} mols"),
+            // Self::OctanolWithWater => "Octanol with Water",
             Self::Custom(_) => "Custom",
         };
 

@@ -682,18 +682,15 @@ pub struct MdState {
 }
 
 impl MdState {
+    /// Also returns any explicit solvent molecules added. This may be needed by applications
+    /// in order to create molecule sets for rendering the trajectories. These are placed, in the
+    /// trajectory, after all solute atoms.
     pub fn new(
         dev: &ComputationDevice,
         cfg: &MdConfig,
         mols: &[MolDynamics],
         param_set: &FfParamSet,
-    ) -> Result<Self, ParamError> {
-        // We create a flattened atom list, which simplifies our workflow, and is conducive to
-        // parallel operations.
-        // These Vecs all share indices, and all include all molecules.
-        let mut atoms_md = Vec::new();
-        let mut adjacency_list = Vec::new();
-
+    ) -> Result<(Self, Vec<MolDynamics>), ParamError> {
         // We combine all molecule general and specific params into this set, then
         // create Indexed params from it.
         let mut params = ForceFieldParams::default();
@@ -703,11 +700,29 @@ impl MdState {
 
         let mut mol_start_indices = Vec::new();
 
+        let posits_solute = {
+            let mut p = Vec::new();
+
+            // todo: This is DRY /extra computation with the general atom posits building below, but may be required
+            // todo when dealing with a custom solute.
+            for mol in mols {
+                let atom_posits: Vec<Vec3> = match &mol.atom_posits {
+                    Some(a) => a.iter().map(|p| (*p).into()).collect(),
+                    None => mol.atoms.iter().map(|a| a.posit.into()).collect(),
+                };
+                p.extend(atom_posits);
+            }
+
+            p
+        };
+
+        let cell = SimBox::from_solute_atoms(&posits_solute, &cfg.sim_box);
+
         // Pre-pack custom solvent molecules so their atoms, bonds, and parameters are included
         // in ForceFieldParamsIndexed (built below from the combined atoms list).
         // We extract the declared positions from the regular `mols` to use as exclusion zones.
-        let custom_packed: Vec<MolDynamics> = match (&cfg.solvent, &cfg.sim_box) {
-            (Solvent::Custom((mols_solvent, _)), SimBoxInit::Fixed((low, high))) => {
+        let custom_solvent_packed: Vec<MolDynamics> = match &cfg.solvent {
+            Solvent::Custom((mols_solvent, _)) => {
                 let existing: Vec<Vec3F64> = mols
                     .iter()
                     .flat_map(|m| -> Vec<Vec3F64> {
@@ -719,26 +734,29 @@ impl MdState {
                     })
                     .collect();
 
-                pack_custom_solvent(*low, *high, &existing, mols_solvent)
-            }
-            (Solvent::Custom(_), SimBoxInit::Pad(_)) => {
-                return Err(ParamError {
-                    descrip: "Custom solvent with a Pad sim box is not yet supported; \
-                     skipping custom solvent packing."
-                        .to_string(),
-                });
+                pack_custom_solvent(cell, &existing, mols_solvent)
             }
             _ => Vec::new(),
         };
 
         // Build a combined slice: caller-supplied mols first, then packed custom solvents.
         let combined_mols: Vec<MolDynamics>;
-        let all_mols: &[MolDynamics] = if custom_packed.is_empty() {
+        let all_mols: &[MolDynamics] = if custom_solvent_packed.is_empty() {
             mols
         } else {
-            combined_mols = mols.iter().cloned().chain(custom_packed).collect();
+            combined_mols = mols
+                .iter()
+                .cloned()
+                .chain(custom_solvent_packed.clone())
+                .collect();
             &combined_mols
         };
+
+        // We create a flattened atom list, which simplifies our workflow, and is conducive to
+        // parallel operations.
+        // These Vecs all share indices, and all include all molecules.
+        let mut atoms_md = Vec::new();
+        let mut adjacency_list = Vec::new();
 
         for mol in all_mols {
             if !mol.atoms.is_empty() {
@@ -820,7 +838,6 @@ impl MdState {
                 }
             }
 
-            // let mut p: Vec<Vec3> = Vec::new(); // to store the ref.
             let atom_posits: Vec<Vec3> = match &mol.atom_posits {
                 Some(a) => a.iter().map(|p| (*p).into()).collect(),
                 None => mol.atoms.iter().map(|a| a.posit.into()).collect(),
@@ -829,6 +846,7 @@ impl MdState {
             for (i, atom) in atoms.iter().enumerate() {
                 let mut atom =
                     AtomDynamics::new(atom, &atom_posits, i, mol.static_, mol.bonded_only)?;
+
                 if let Some(vel) = &mol.atom_init_velocities {
                     if i >= vel.len() {
                         return Err(ParamError::new(
@@ -878,8 +896,6 @@ impl MdState {
             mass_accel_factor.push(KCAL_TO_NATIVE / atom.mass);
         }
 
-        let cell = SimBox::from_atoms(&atoms_md, &cfg.sim_box);
-
         let num_static_atoms = atoms_md.iter().filter(|a| !a.static_).count();
 
         let potential_energy_between_mols = vec![0.; mol_start_indices.len().pow(2)];
@@ -926,21 +942,6 @@ impl MdState {
                 Solvent::WaterOpcSpecifyMolCount(c) => Some(*c),
                 Solvent::Custom((_, c)) => Some(*c),
             };
-
-            // let water_template_override: Option<WaterInitTemplate> = cfg
-            //     .water_template_path
-            //     .as_deref()
-            //     .and_then(|path_str| {
-            //         match WaterInitTemplate::load(std::path::Path::new(path_str)) {
-            //             Ok(t) => Some(t),
-            //             Err(e) => {
-            //                 eprintln!(
-            //                     "Warning: could not load water template from {path_str:?}: {e}. Using default."
-            //                 );
-            //                 None
-            //             }
-            //         }
-            //     });
 
             water_mols_from_template(
                 &result.cell,
@@ -1015,7 +1016,7 @@ impl MdState {
         // neighbor rebuild, and anything else done here that may affect it.
         result.computation_time = Default::default();
 
-        Ok(result)
+        Ok((result, custom_solvent_packed))
     }
 
     /// This way of returning a Result isn't great semantically, but it works.
@@ -1358,7 +1359,7 @@ pub fn compute_energy_snapshot(
         ..Default::default()
     };
 
-    let mut md_state = MdState::new(dev, &cfg, mols, param_set)?;
+    let (mut md_state, _) = MdState::new(dev, &cfg, mols, param_set)?;
 
     // dt is arbitrary?
     let dt = 0.001;

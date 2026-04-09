@@ -73,18 +73,18 @@ impl SimBox {
     /// use to center the bix.
     ///
     /// `atoms` is only used when initializing from a pad.
-    pub fn from_atoms(atoms: &[AtomDynamics], box_type: &SimBoxInit) -> Self {
+    pub fn from_solute_atoms(atom_posits: &[Vec3], box_type: &SimBoxInit) -> Self {
         match box_type {
             SimBoxInit::Pad(pad) => {
                 let (mut min, mut max) =
                     (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
 
-                for a in atoms {
-                    min = min.min(a.posit);
-                    max = max.max(a.posit);
+                for posit in atom_posits {
+                    min = min.min(*posit);
+                    max = max.max(*posit);
                 }
 
-                if atoms.is_empty() {
+                if atom_posits.is_empty() {
                     min = Vec3::new_zero();
                     max = Vec3::new_zero();
                 }
