@@ -9,6 +9,7 @@
 use std::f32::consts::TAU;
 
 use lin_alg::f32::{Mat3 as Mat3F32, Quaternion, Vec3};
+use lin_alg::f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64};
 use rand::{
     Rng,
     distr::{Distribution, Uniform},
@@ -18,11 +19,11 @@ use rand_distr::Normal;
 
 use crate::{
     AtomDynamics, ComputationDevice, MdConfig, MdOverrides, MdState, MolDynamics, NATIVE_TO_KCAL,
-    ParamError,
+    ParamError, SimBoxInit,
     barostat::SimBox,
     params::FfParamSet,
     solvent::{
-        WaterMolOpc, init,
+        Solvent, WaterMolOpc, init,
         init::{MIN_WATER_O_O_DIST_SQ, n_water_mols},
     },
     thermostat::{GAS_CONST_R, KB_A2_PS2_PER_K_PER_AMU},
@@ -301,54 +302,148 @@ pub(crate) fn pack_solvent_with_shrinking_box(
     mol_solvent: &MolDynamics,
     solvent_count: usize,
     water_count: usize, // E.g. OPC water with the custom solvent.
-    mut cell: SimBox,
+    cell: SimBox,
     param_set: &FfParamSet,
 ) -> Result<Vec<AtomDynamics>, ParamError> {
-    // todo: A/R. Ideally this scale is dynamic; it should be large enough so the
-    // todo initial packign goes smoothly.
-    // this scale is of side len; not volume.
-    let initial_box_scale = 2.;
+    if water_count > 0 {
+        eprintln!(
+            "pack_solvent_with_shrinking_box: water_count={water_count} is not yet implemented; \
+             proceeding with custom solvent only."
+        );
+    }
 
-    let dt = 0.001; // todo: A/R
+    // Side-length scale factor for the initial (large) box. Volume scales by the cube of this.
+    let initial_box_scale = 2.0_f32;
+    let dt = 0.001_f32;
+    // Å shrunk per axis per step (total, both sides combined).
+    let box_shrink_per_step = 0.01_f32;
+    // Steps of pure MD to run after the box has reached its target size.
+    let equilibration_steps = 1_000_usize;
 
-    // Å edge len per step. This must be low enough
-    let box_scale_rate = 0.01;
-    let box_scale_rate_div2 = box_scale_rate / 2.;
+    // ── 1. Build the large initial cell, centered on the same point as the target ────────────
+    let target_center = cell.center();
+    let large_half = cell.extent * (initial_box_scale / 2.);
+    let large_cell = SimBox::new(target_center - large_half, target_center + large_half);
 
-    // todo: Instead of a fixed step count, perhaps do it dynamically based on the situation.
-    // todo: Or based on the number of steps to get between initial and final box sizes plus a pad.
-    let steps = 4_000;
+    // ── 2. Grid-place `solvent_count` copies of `mol_solvent` with random orientations ───────
+    // Template: prefer atom_posits override, fall back to atom positions.
+    let template_world: Vec<Vec3F64> = mol_solvent
+        .atom_posits
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| mol_solvent.atoms.iter().map(|a| a.posit).collect());
 
-    // Uncomment as required for validating individual processes.
+    let n_atoms = template_world.len();
+    // Centroid-relative local positions (for rotation).
+    let centroid = template_world
+        .iter()
+        .fold(Vec3F64::new(0., 0., 0.), |s, &p| s + p)
+        * (1.0 / n_atoms as f64);
+    let local: Vec<Vec3F64> = template_world.iter().map(|&p| p - centroid).collect();
+
+    // Regular 3-D grid inside the large cell.
+    let lx = large_cell.extent.x as f64;
+    let ly = large_cell.extent.y as f64;
+    let lz = large_cell.extent.z as f64;
+    let base = (solvent_count as f64).cbrt().round().max(1.0) as usize;
+    let n_x = base;
+    let n_y = base;
+    let n_z = solvent_count.div_ceil(n_x * n_y);
+    let (sx, sy, sz) = (lx / n_x as f64, ly / n_y as f64, lz / n_z as f64);
+
+    let mut rng = rand::rng();
+    let mut mols: Vec<MolDynamics> = Vec::with_capacity(solvent_count);
+
+    for idx in 0..solvent_count {
+        let a = idx % n_x;
+        let b = (idx / n_x) % n_y;
+        let c = idx / (n_x * n_y);
+
+        let world_ctr = Vec3F64::new(
+            large_cell.bounds_low.x as f64 + (a as f64 + 0.5) * sx,
+            large_cell.bounds_low.y as f64 + (b as f64 + 0.5) * sy,
+            large_cell.bounds_low.z as f64 + (c as f64 + 0.5) * sz,
+        );
+
+        // Random uniform quaternion.
+        let (qw, qx, qy, qz): (f64, f64, f64, f64) =
+            (rng.random(), rng.random(), rng.random(), rng.random());
+        let rot = QuaternionF64::new(qw, qx, qy, qz).to_normalized();
+        let posits: Vec<Vec3F64> = local.iter().map(|&l| rot.rotate_vec(l) + world_ctr).collect();
+
+        let mut mol_copy = mol_solvent.clone();
+        mol_copy.atom_posits = Some(posits);
+        mols.push(mol_copy);
+    }
+
+    // ── 3. Create MdState with the large cell ────────────────────────────────────────────────
     let cfg = MdConfig {
+        sim_box: SimBoxInit::Fixed((large_cell.bounds_low, large_cell.bounds_high)),
+        // We place the solvent ourselves above; don't let MdState::new add any.
+        solvent: Solvent::None,
+        // No barostat: we drive the pressure manually by shrinking the box.
+        barostat_cfg: None,
         overrides: MdOverrides {
             skip_water_relaxation: true,
             snapshots_during_equilibration: true,
-            // Merge with caller-supplied overrides so flags like `skip_water` are preserved.
             ..Default::default()
         },
-        barostat_cfg: None,
         ..Default::default()
     };
 
-    let mut mols = Vec::with_capacity(solvent_count);
-    // todo: Position molecules evenly, e.g. in a grid for simplicity. Perhaps
-    // todo with fixed orientation.
-    for _ in 0..solvent_count {}
-
     let (mut md_state, _) = MdState::new(dev, &cfg, &mols, param_set)?;
 
-    for step in 0..steps {
+    // ── 4. Shrink loop ───────────────────────────────────────────────────────────────────────
+    // Compute the number of steps required to reach the target cell size on the slowest axis.
+    let shrink_needed_x = large_cell.extent.x - cell.extent.x;
+    let shrink_needed_y = large_cell.extent.y - cell.extent.y;
+    let shrink_needed_z = large_cell.extent.z - cell.extent.z;
+    let max_shrink = shrink_needed_x.max(shrink_needed_y).max(shrink_needed_z);
+    let n_shrink_steps = (max_shrink / box_shrink_per_step).ceil() as usize;
+    let total_steps = n_shrink_steps + equilibration_steps;
+
+    println!(
+        "pack_solvent_with_shrinking_box: shrinking from {:.1}×{:.1}×{:.1} Å to \
+         {:.1}×{:.1}×{:.1} Å over {n_shrink_steps} steps, then {equilibration_steps} \
+         equilibration steps.",
+        large_cell.extent.x,
+        large_cell.extent.y,
+        large_cell.extent.z,
+        cell.extent.x,
+        cell.extent.y,
+        cell.extent.z,
+    );
+
+    for step in 0..total_steps {
         md_state.step(dev, dt, None);
 
-        cell.bounds_low += Vec3::splat(box_scale_rate_div2);
-        cell.bounds_high -= Vec3::splat(box_scale_rate_div2);
+        if step < n_shrink_steps {
+            // Shrink each axis toward the target, clamped so we never overshoot.
+            let cur = &md_state.cell;
+            let half = box_shrink_per_step / 2.;
+            let new_low = Vec3::new(
+                (cur.bounds_low.x + half).min(cell.bounds_low.x),
+                (cur.bounds_low.y + half).min(cell.bounds_low.y),
+                (cur.bounds_low.z + half).min(cell.bounds_low.z),
+            );
+            let new_high = Vec3::new(
+                (cur.bounds_high.x - half).max(cell.bounds_high.x),
+                (cur.bounds_high.y - half).max(cell.bounds_high.y),
+                (cur.bounds_high.z - half).max(cell.bounds_high.z),
+            );
+            let new_cell = SimBox::new(new_low, new_high);
+            // Wrap atom positions into the reduced cell so that forces are computed correctly.
+            for a in &mut md_state.atoms {
+                a.posit = new_cell.wrap(a.posit);
+            }
+            md_state.cell = new_cell;
+        }
     }
 
-    // Recenter so the sim box is around the origin.
-    let diff = cell.center();
+    // ── 5. Recenter the sim box on the origin ────────────────────────────────────────────────
+    let final_center = md_state.cell.center();
     for a in &mut md_state.atoms {
-        a.posit -= diff;
+        a.posit -= final_center;
     }
 
     Ok(md_state.atoms)
