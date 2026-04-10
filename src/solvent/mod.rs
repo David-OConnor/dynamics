@@ -43,6 +43,7 @@ use crate::{AtomDynamics, KCAL_TO_NATIVE, MolDynamics, non_bonded::CHARGE_UNIT_S
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 pub(crate) mod init;
+pub(crate) mod octanol;
 pub(crate) mod opc_settle;
 pub(crate) mod template_creation;
 
@@ -156,7 +157,7 @@ impl bincode::Encode for Solvent {
                 1u32.encode(encoder)?;
                 count.encode(encoder)?;
             }
-            Self::Custom(_) => {
+            Self::Custom(_) | Self::OctanolWithWater => {
                 0u32.encode(encoder)?;
             }
         }

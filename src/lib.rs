@@ -127,7 +127,7 @@ pub use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::{
-    AtomGeneric, BondGeneric, Sdf, create_bonds,
+    AtomGeneric, BondGeneric, Sdf,
     gromacs::gro::Gro,
     md_params::{ForceFieldParams, ForceFieldParamsIndexed, LjParams, MassParams},
     mol2::Mol2,
@@ -164,16 +164,17 @@ use crate::{
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
     params::FfParamSet,
-    partial_charge_inference::infer_charge,
     snapshot::Snapshot,
     solvent::{
         WaterMolOpc, WaterMolx8, WaterMolx16,
-        init::{OCTANOL_WATER_TEMPLATE, pack_custom_solvent, water_mols_from_template},
+        init::{OCTANOL_WATER_TEMPLATE, water_mols_from_template},
+        octanol::octanol_mols_from_gro,
     },
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
 };
 pub use crate::{
     barostat::{BarostatCfg, PRESSURE_DEFAULT, TAU_PRESSURE_DEFAULT},
+    solvent::octanol::make_octanol,
     thermostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT},
 };
 
@@ -722,7 +723,23 @@ impl MdState {
             p
         };
 
-        let cell = SimBox::from_solute_atoms(&posits_solute, &cfg.sim_box);
+        let octanol_water_template = if cfg.solvent == Solvent::OctanolWithWater {
+            Some(Gro::new(OCTANOL_WATER_TEMPLATE).map_err(|e| {
+                ParamError::new(&format!("Problem loading the octanol/water GRO file: {e}"))
+            })?)
+        } else {
+            None
+        };
+
+        let cell = if let Some(gro) = &octanol_water_template {
+            const NM_TO_ANGSTROM: f32 = 10.0;
+            SimBox::new(
+                (-gro.box_vec * NM_TO_ANGSTROM as f64 / 2.0).into(),
+                (gro.box_vec * NM_TO_ANGSTROM as f64 / 2.0).into(),
+            )
+        } else {
+            SimBox::from_solute_atoms(&posits_solute, &cfg.sim_box)
+        };
 
         // let custom_solvent_packed = match &cfg.solvent {
         //     Solvent::Custom((mols_solvent, water_count)) => {
@@ -741,7 +758,10 @@ impl MdState {
         //     _ => Vec::new(),
         // };
 
-        let custom_solvent_packed = Vec::new(); // todo for now.
+        let custom_solvent_packed = match &octanol_water_template {
+            Some(gro) => octanol_mols_from_gro(gro)?,
+            None => Vec::new(),
+        };
 
         // Build a combined slice: caller-supplied mols first, then packed custom solvents.
         let combined_mols: Vec<MolDynamics>;
@@ -923,9 +943,12 @@ impl MdState {
         // used for placement (add_copies places atoms relative to the original Fixed bounds).
         // Recentering shifts bounds_low/bounds_high to the atom centroid, which can move
         // atoms that were legitimately near a wall to just outside the new bounds.
+
         result.check_for_overlaps_oob()?;
 
-        result.cell.recenter(&result.atoms);
+        if cfg.solvent != Solvent::OctanolWithWater {
+            result.cell.recenter(&result.atoms);
+        }
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
@@ -955,56 +978,13 @@ impl MdState {
                 )
             }
             Solvent::OctanolWithWater => {
-                let gro = Gro::new(OCTANOL_WATER_TEMPLATE).map_err(|e| {
-                    ParamError::new(&format!("Problem loading the octanol/water GRO file: {e}"))
-                })?;
-
-                // This template is a full pre-equilibrated solvent box, so we use its native box
-                // instead of the solute-derived bounds.
-                const NM_TO_ANGSTROM: f32 = 10.0;
-                result.cell = SimBox::new(
-                    (-gro.box_vec * NM_TO_ANGSTROM as f64 / 2.0).into(),
-                    (gro.box_vec * NM_TO_ANGSTROM as f64 / 2.0).into(),
-                );
-
-                let water = water_mols_from_gro(&gro)?;
-
-                let Some(small_mol_params) = param_set.small_mol.as_ref() else {
+                let Some(gro) = &octanol_water_template else {
                     return Err(ParamError::new(
-                        "OctanolWithWater requires small-molecule force-field parameters.",
+                        "Missing octanol/water GRO template during initialization.",
                     ));
                 };
-                params = merge_params(&params, small_mol_params);
 
-                let atom_start_idx = result.atoms.len();
-                let (mut octanol_atoms, mut octanol_adjacency, octanol_mol_starts) =
-                    octanol_atoms_from_gro(&gro, atom_start_idx)?;
-
-                result.mol_start_indices.extend(octanol_mol_starts);
-                result.atoms.append(&mut octanol_atoms);
-                result.adjacency_list.append(&mut octanol_adjacency);
-
-                result.force_field_params = ForceFieldParamsIndexed::new(
-                    &params,
-                    &result.atoms,
-                    &result.adjacency_list,
-                    h_constrained,
-                )
-                .map_err(|e| ParamError::new(&e.to_string()))?;
-
-                result.mass_accel_factor.clear();
-                result.mass_accel_factor.reserve(result.atoms.len());
-                for (i, atom) in result.atoms.iter_mut().enumerate() {
-                    atom.assign_data_from_params(&result.force_field_params, i);
-                    result.mass_accel_factor.push(KCAL_TO_NATIVE / atom.mass);
-                }
-
-                result.potential_energy_between_mols =
-                    vec![0.0; result.mol_start_indices.len().pow(2)];
-                result.lj_tables = LjTables::new(&result.atoms);
-                result.check_for_overlaps_oob()?;
-
-                water
+                water_mols_from_gro(gro)?
             }
             Solvent::Custom(_) => Vec::new(), // todo: ?
         };
@@ -1502,108 +1482,6 @@ fn water_mols_from_gro(gro: &Gro) -> Result<Vec<WaterMolOpc>, ParamError> {
     }
 
     Ok(water)
-}
-
-fn octanol_atoms_from_gro(
-    gro: &Gro,
-    atom_start_idx: usize,
-) -> Result<(Vec<AtomDynamics>, Vec<Vec<usize>>, Vec<usize>), ParamError> {
-    const NM_TO_ANGSTROM: f32 = 10.0;
-
-    let mut octanol_by_mol_id: BTreeMap<u32, Vec<&bio_files::gromacs::gro::AtomGro>> =
-        BTreeMap::new();
-
-    for atom in &gro.atoms {
-        if atom.mol_name == "octan" {
-            octanol_by_mol_id.entry(atom.mol_id).or_default().push(atom);
-        }
-    }
-
-    let Some(first_octanol) = octanol_by_mol_id.values().next() else {
-        return Err(ParamError::new(
-            "No octanol molecules found in octanol/water GRO template.",
-        ));
-    };
-
-    let mut template_atoms = Vec::with_capacity(first_octanol.len());
-    let mut template_atom_types = Vec::with_capacity(first_octanol.len());
-
-    for (i, atom) in first_octanol.iter().enumerate() {
-        template_atoms.push(AtomGeneric {
-            serial_number: (i + 1) as u32,
-            posit: atom.posit * NM_TO_ANGSTROM as f64,
-            element: atom.element,
-            type_in_res_general: Some(atom.atom_type.clone()),
-            force_field_type: Some(atom.atom_type.clone()),
-            hetero: true,
-            ..Default::default()
-        });
-        template_atom_types.push(atom.atom_type.clone());
-    }
-
-    let bonds = create_bonds(&template_atoms);
-    if bonds.is_empty() {
-        return Err(ParamError::new(
-            "Unable to infer bonds for octanol template molecule.",
-        ));
-    }
-
-    let charges = infer_charge(&template_atoms, &bonds).map_err(|e| {
-        ParamError::new(&format!(
-            "Problem inferring partial charges for octanol template: {e}"
-        ))
-    })?;
-
-    let total_atoms: usize = octanol_by_mol_id.values().map(|atoms| atoms.len()).sum();
-    let mut atoms = Vec::with_capacity(total_atoms);
-    let mut adjacency_list = Vec::with_capacity(total_atoms);
-    let mut mol_start_indices = Vec::with_capacity(octanol_by_mol_id.len());
-
-    for (mol_id, mol_atoms) in octanol_by_mol_id {
-        if mol_atoms.len() != template_atom_types.len() {
-            return Err(ParamError::new(&format!(
-                "Octanol molecule {mol_id} has {} atoms; expected {}.",
-                mol_atoms.len(),
-                template_atom_types.len(),
-            )));
-        }
-
-        for (i, atom) in mol_atoms.iter().enumerate() {
-            if atom.atom_type != template_atom_types[i] {
-                return Err(ParamError::new(&format!(
-                    "Octanol molecule {mol_id} atom order does not match the template."
-                )));
-            }
-        }
-
-        mol_start_indices.push(atom_start_idx + atoms.len());
-
-        for (i, atom) in mol_atoms.iter().enumerate() {
-            let Some(vel) = atom.velocity else {
-                return Err(ParamError::new(&format!(
-                    "Missing velocity on octanol atom {} in GRO template.",
-                    atom.serial_number
-                )));
-            };
-
-            let posit: Vec3 = atom.posit.into();
-            let vel: Vec3 = vel.into();
-            let serial_number = (atom_start_idx + atoms.len()) as u32;
-
-            atoms.push(AtomDynamics {
-                serial_number,
-                force_field_type: atom.atom_type.clone(),
-                element: atom.element,
-                posit: posit * NM_TO_ANGSTROM,
-                vel: vel * NM_TO_ANGSTROM,
-                partial_charge: charges[i] * CHARGE_UNIT_SCALER,
-                ..Default::default()
-            });
-            adjacency_list.push(Vec::new());
-        }
-    }
-
-    Ok((atoms, adjacency_list, mol_start_indices))
 }
 
 // todo: Move this A/R
