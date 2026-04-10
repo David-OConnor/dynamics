@@ -487,6 +487,7 @@ pub(crate) fn pack_custom_solvent(
     cell: SimBox,
     existing_posits: &[Vec3F64], // declared positions of already-placed atoms (e.g. solute)
     mols_solvent: &[(MolDynamics, usize)],
+    // template: Option<Vec<AtomDynamics>>,
 ) -> Vec<MolDynamics> {
     // Minimum inter-atom distance that `check_for_overlaps_oob` enforces. Grid cells whose
     // best rotation falls below this are skipped rather than placed.

@@ -150,6 +150,7 @@ pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{
     ForcesOnWaterMol, Solvent,
     init::{WATER_TEMPLATE_60A, WaterInitTemplate},
+    template_creation::pack_solvent_with_shrinking_box,
 };
 
 #[cfg(feature = "cuda")]
@@ -718,26 +719,24 @@ impl MdState {
 
         let cell = SimBox::from_solute_atoms(&posits_solute, &cfg.sim_box);
 
-        // Pre-pack custom solvent molecules so their atoms, bonds, and parameters are included
-        // in ForceFieldParamsIndexed (built below from the combined atoms list).
-        // We extract the declared positions from the regular `mols` to use as exclusion zones.
-        let custom_solvent_packed: Vec<MolDynamics> = match &cfg.solvent {
-            Solvent::Custom((mols_solvent, _)) => {
-                let existing: Vec<Vec3F64> = mols
-                    .iter()
-                    .flat_map(|m| -> Vec<Vec3F64> {
-                        if let Some(ap) = &m.atom_posits {
-                            ap.clone()
-                        } else {
-                            m.atoms.iter().map(|a| a.posit).collect()
-                        }
-                    })
-                    .collect();
+        // let custom_solvent_packed = match &cfg.solvent {
+        //     Solvent::Custom((mols_solvent, water_count)) => {
+        //         let (mols, snaps) = pack_solvent_with_shrinking_box(
+        //             dev,
+        //             // todo: Handle cases where len of custom solvent isn't 1.
+        //             &mols_solvent[0].0,
+        //             mols_solvent[0].1,
+        //             *water_count,
+        //             cell,
+        //             param_set,
+        //         )?;
+        //
+        //         mols
+        //     }
+        //     _ => Vec::new(),
+        // };
 
-                pack_custom_solvent(cell, &existing, mols_solvent)
-            }
-            _ => Vec::new(),
-        };
+        let custom_solvent_packed = Vec::new(); // todo for now.
 
         // Build a combined slice: caller-supplied mols first, then packed custom solvents.
         let combined_mols: Vec<MolDynamics>;

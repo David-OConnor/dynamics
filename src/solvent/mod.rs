@@ -44,7 +44,7 @@ use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 pub(crate) mod init;
 pub(crate) mod opc_settle;
-mod template_creation;
+pub(crate) mod template_creation;
 
 use opc_settle::RA;
 
@@ -103,9 +103,9 @@ pub enum Solvent {
     WaterOpc,
     WaterOpcSpecifyMolCount(usize),
     // OctanolWithWater,
-    /// (Custom mols and their counts, OPC water count). Unlikje for OPC water, we use standard
+    /// (Custom mols and their counts, OPC water count). Unlike for OPC water, we use standard
     /// MD force fields for these, as we do for other molecules. Their presense in solvents here
-    /// is primarily for the purposes of initializing them on their own, or with OPC water. Compared
+    /// is primarily for the purposes of initializing them on their own, or with rigid water. Compared
     /// to with other molecules, the intent here is to saturate the cell / SimBox at init, in a way
     /// which requires care with how we're packing.
     ///

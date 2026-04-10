@@ -6,8 +6,12 @@
 //! to equilibriate. Save to a template file. (e.g. .gro, or a binary format). Use that template
 //! during MD runs in this library, or pass it to another MD engine.
 
-use std::f32::consts::TAU;
+use std::{f32::consts::TAU, path::Path};
 
+use bio_files::gromacs::{
+    OutputControl,
+    gro::{AtomGro, Gro},
+};
 use lin_alg::{
     f32::{Mat3 as Mat3F32, Quaternion, Vec3},
     f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
@@ -24,6 +28,7 @@ use crate::{
     ParamError, SimBoxInit,
     barostat::SimBox,
     params::FfParamSet,
+    snapshot::{Snapshot, SnapshotHandlers},
     solvent::{
         Solvent, WaterMolOpc, init,
         init::{MIN_WATER_O_O_DIST_SQ, n_water_mols},
@@ -299,28 +304,32 @@ fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
 /// or long molecules like octanol. We initialize in a grid, then run a sim box. We shrink it graually enough
 /// so that the molecules bend and move into deconflicted positions naturally. The final result has the correct
 /// density (i.e. pressure) characteristics, and is equilibriated.
-pub(crate) fn pack_solvent_with_shrinking_box(
+///
+/// Note: This generates its own `MdState`, and exists outside our normal pipeline. IJt can, therefor,
+/// be called externally.
+///
+/// We save a trajectory to disk, and a .gro file of the molecule set used, for playikng it back.
+pub fn pack_solvent_with_shrinking_box(
     dev: &ComputationDevice,
     mol_solvent: &MolDynamics,
+    mol_name: &str, // Residue name used in the saved .gro (e.g. "OCT", "MOL").
     solvent_count: usize,
     water_count: usize, // E.g. OPC water with the custom solvent.
-    cell: SimBox,
+    cell: SimBox,       // Final, after shrinking
     param_set: &FfParamSet,
-) -> Result<Vec<AtomDynamics>, ParamError> {
-    if water_count > 0 {
-        eprintln!(
-            "pack_solvent_with_shrinking_box: water_count={water_count} is not yet implemented; \
-             proceeding with custom solvent only."
-        );
-    }
+    save_dir: &Path, // Path to write the equilibrated template as a GROMACS .gro file.
+) -> Result<(Vec<MolDynamics>, Vec<Snapshot>), ParamError> {
+    println!("Packing a custom solvent using a shrinking box...");
 
     // Side-length scale factor for the initial (large) box. Volume scales by the cube of this.
-    let initial_box_scale = 2.0_f32;
-    let dt = 0.001_f32;
+    let initial_box_scale = 2.0;
+    let dt = 0.001;
     // Å shrunk per axis per step (total, both sides combined).
-    let box_shrink_per_step = 0.01_f32;
+    let box_shrink_per_step = 0.02;
+
     // Steps of pure MD to run after the box has reached its target size.
-    let equilibration_steps = 1_000_usize;
+    // As this will be used for a template, err on the side of too many steps.
+    let equilibration_steps = 4_000;
 
     // ── 1. Build the large initial cell, centered on the same point as the target ────────────
     let target_center = cell.center();
@@ -386,9 +395,20 @@ pub(crate) fn pack_solvent_with_shrinking_box(
     let cfg = MdConfig {
         sim_box: SimBoxInit::Fixed((large_cell.bounds_low, large_cell.bounds_high)),
         // We place the solvent ourselves above; don't let MdState::new add any.
-        solvent: Solvent::None,
+        solvent: Solvent::WaterOpcSpecifyMolCount(water_count),
         // No barostat: we drive the pressure manually by shrinking the box.
         barostat_cfg: None,
+        snapshot_handlers: SnapshotHandlers {
+            memory: Some(1),
+            dcd: None,
+            gromacs: OutputControl {
+                // We only need posits and velocity at the end, but this may help us
+                // visualize and validate this process.
+                nstxout: Some(1),
+                nstvout: Some(1),
+                ..Default::default()
+            },
+        },
         overrides: MdOverrides {
             skip_water_relaxation: true,
             snapshots_during_equilibration: true,
@@ -483,6 +503,93 @@ pub(crate) fn pack_solvent_with_shrinking_box(
     for a in &mut md_state.atoms {
         a.posit -= final_center;
     }
+    for w in &mut md_state.water {
+        w.o.posit -= final_center;
+        w.h0.posit -= final_center;
+        w.h1.posit -= final_center;
+        w.m.posit -= final_center;
+    }
 
-    Ok(md_state.atoms)
+    // ── 6. Save .gro file ────────────────────────────────────────────────────────────────────
+    {
+        let a_to_nm = |v: Vec3| -> Vec3F64 {
+            Vec3F64::new(v.x as f64 / 10.0, v.y as f64 / 10.0, v.z as f64 / 10.0)
+        };
+
+        let mut gro_atoms: Vec<AtomGro> = Vec::new();
+        let mut atom_serial = 1u32;
+
+        // Custom solvent molecules
+        for (mol_idx, chunk) in md_state.atoms.chunks(n_atoms).enumerate() {
+            let mol_id = (mol_idx + 1) as u32;
+            for a in chunk {
+                gro_atoms.push(AtomGro {
+                    mol_id,
+                    mol_name: mol_name.to_string(),
+                    element: a.element.clone(),
+                    atom_type: a.force_field_type.clone(),
+                    serial_number: atom_serial,
+                    posit: a_to_nm(a.posit),
+                    velocity: Some(a_to_nm(a.vel)),
+                });
+                atom_serial += 1;
+            }
+        }
+
+        // OPC water molecules (O, H1, H2, M virtual site)
+        for (w_idx, w) in md_state.water.iter().enumerate() {
+            let mol_id = (solvent_count + w_idx + 1) as u32;
+            for (atom, name) in [(&w.o, "OW"), (&w.h0, "HW1"), (&w.h1, "HW2"), (&w.m, "MW")] {
+                gro_atoms.push(AtomGro {
+                    mol_id,
+                    mol_name: "SOL".to_string(),
+                    element: atom.element.clone(),
+                    atom_type: name.to_string(),
+                    serial_number: atom_serial,
+                    posit: a_to_nm(atom.posit),
+                    velocity: Some(a_to_nm(atom.vel)),
+                });
+                atom_serial += 1;
+            }
+        }
+
+        let ext = md_state.cell.extent;
+        let gro = Gro {
+            atoms: gro_atoms,
+            head_text: format!("Solvent template: {mol_name}"),
+            box_vec: Vec3F64::new(
+                ext.x as f64 / 10.0,
+                ext.y as f64 / 10.0,
+                ext.z as f64 / 10.0,
+            ),
+        };
+
+        let path = save_dir.join(format!("solvent_shrink_gen.gro"));
+
+        match gro.save(&path) {
+            Ok(()) => println!("Saved solvent template to {}", path.display()),
+            Err(e) => {
+                eprintln!(
+                    "pack_solvent_with_shrinking_box: failed to save .gro file to path {path:?}: {e}"
+                )
+            }
+        }
+    }
+
+    // ── 7. Reconstruct Vec<MolDynamics> from the flat atom list ─────────────────────────────
+    let result_mols: Vec<MolDynamics> = md_state
+        .atoms
+        .chunks(n_atoms)
+        .map(|chunk| {
+            let mut mol = mol_solvent.clone();
+            mol.atom_posits = Some(chunk.iter().map(|a| a.posit.into()).collect());
+            mol.atom_init_velocities = Some(chunk.iter().map(|a| a.vel).collect());
+            mol
+        })
+        .collect();
+
+    println!("Shrinking box packing complete.");
+
+    // Ok((result_mols, md_state.snapshots))
+    Ok((result_mols, md_state.snapshots))
 }

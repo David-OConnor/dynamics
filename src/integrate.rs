@@ -441,7 +441,7 @@ impl MdState {
         }
 
         if !self.solvent_only_sim_at_init {
-            if self.step_count.is_multiple_of(200) {
+            if self.step_count.is_multiple_of(1_000) {
                 self.print_ambient_data(pressure);
             }
 

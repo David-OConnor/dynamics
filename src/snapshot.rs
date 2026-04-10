@@ -47,6 +47,7 @@ pub struct SnapshotHandlers {
 }
 
 impl Default for SnapshotHandlers {
+    /// This uses GROMACS default for XTC, TRR velocity and force, and energy logging.
     fn default() -> Self {
         Self {
             memory: Some(10),
