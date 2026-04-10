@@ -11,7 +11,6 @@ use std::{fs, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
 use bio_files::{gromacs, gromacs::gro::Gro};
-use candle_core::cpu_backend::unary_map;
 use lin_alg::{
     f32::{Quaternion, Vec3},
     f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
@@ -77,8 +76,11 @@ const DT_EQUILIBRATION: f32 = 0.0005;
 pub const WATER_TEMPLATE_60A: &[u8] =
     include_bytes!("../../param_data/water_60A.water_init_template");
 
-// From GROMACS. 4-point water model.
+// Included with GROMACS. 4-point water model. 30Å per side?
 pub const WATER_TEMPLATE_TIP4: &str = include_str!("../../param_data/tip4p.gro");
+// We generated this using a shrinking box.
+pub const OCTANOL_WATER_TEMPLATE: &str =
+    include_str!("../../param_data/octanol_water_saturated.gro");
 
 #[derive(Clone, Debug, PartialEq, Default, Decode, Encode)]
 pub enum SolventTemplateType {
@@ -87,9 +89,8 @@ pub enum SolventTemplateType {
     /// site, adding it manually; consider using the TIP3 template instead, as it's slightly smaller.
     #[default]
     Tip4Gromacs,
-    // todo: implement once you have a template.
-    /// Octanol saturated with water at x temperature and x pressure. X water molecules
-    /// per octanol molecule.
+    /// Octanol saturated with water at 300C and 1 bar.
+    /// 46Å per side box. 356 octanol mols, 135 water mols.
     OctanolWithWater,
     Custom(WaterInitTemplate),
 }
@@ -99,7 +100,8 @@ impl SolventTemplateType {
         match self {
             Self::Water60A => load_from_bytes_bincode(WATER_TEMPLATE_60A),
             Self::Tip4Gromacs => WaterInitTemplate::from_gro(WATER_TEMPLATE_TIP4),
-            Self::OctanolWithWater => unimplemented!(),
+            // Currently this method is only for WaterInitTemplate; it's not general-purpose.
+            Self::OctanolWithWater => Ok(Default::default()),
             Self::Custom(t) => Ok(t.clone()),
         }
     }
@@ -118,7 +120,7 @@ impl SolventTemplateType {
 /// 80Å/side: 1.20Mb.
 ///
 /// M/EP positions are not included: They can be inferred after.
-#[derive(Clone, Debug, PartialEq, Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Default, Encode, Decode)]
 pub struct WaterInitTemplate {
     // velocity is o velocity, instead of 3 separate velocities
     o_posits: Vec<Vec3>,

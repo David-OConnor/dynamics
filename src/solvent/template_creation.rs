@@ -299,6 +299,8 @@ fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
     .to_normalized()
 }
 
+/// Perhaps formally called *gradual isotropic compression*.
+///
 /// Create a solvent template by packing with a box which starts out too large, and gradually shrinks
 /// to the proper size. This may work in cases where a grid-based or other packing doens't work in the cases
 /// or long molecules like octanol. We initialize in a grid, then run a sim box. We shrink it graually enough
@@ -322,14 +324,15 @@ pub fn pack_solvent_with_shrinking_box(
     println!("Packing a custom solvent using a shrinking box...");
 
     // Side-length scale factor for the initial (large) box. Volume scales by the cube of this.
-    let initial_box_scale = 2.0;
+    // 2.0 seems insufficient for a naive packing of octanol.
+    let initial_box_scale = 3.0;
     let dt = 0.001;
     // Å shrunk per axis per step (total, both sides combined).
     let box_shrink_per_step = 0.02;
 
     // Steps of pure MD to run after the box has reached its target size.
     // As this will be used for a template, err on the side of too many steps.
-    let equilibration_steps = 4_000;
+    let equilibration_steps = 10_000;
 
     // ── 1. Build the large initial cell, centered on the same point as the target ────────────
     let target_center = cell.center();
@@ -539,7 +542,8 @@ pub fn pack_solvent_with_shrinking_box(
         // OPC water molecules (O, H1, H2, M virtual site)
         for (w_idx, w) in md_state.water.iter().enumerate() {
             let mol_id = (solvent_count + w_idx + 1) as u32;
-            for (atom, name) in [(&w.o, "OW"), (&w.h0, "HW1"), (&w.h1, "HW2"), (&w.m, "MW")] {
+            // Note: We don't save MW; we can compute that.
+            for (atom, name) in [(&w.o, "OW"), (&w.h0, "HW1"), (&w.h1, "HW2")] {
                 gro_atoms.push(AtomGro {
                     mol_id,
                     mol_name: "SOL".to_string(),
@@ -564,7 +568,7 @@ pub fn pack_solvent_with_shrinking_box(
             ),
         };
 
-        let path = save_dir.join(format!("solvent_shrink_gen.gro"));
+        let path = save_dir.join(format!("solvent_template_{mol_name}.gro"));
 
         match gro.save(&path) {
             Ok(()) => println!("Saved solvent template to {}", path.display()),
