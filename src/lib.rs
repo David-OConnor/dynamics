@@ -943,10 +943,12 @@ impl MdState {
         // used for placement (add_copies places atoms relative to the original Fixed bounds).
         // Recentering shifts bounds_low/bounds_high to the atom centroid, which can move
         // atoms that were legitimately near a wall to just outside the new bounds.
-
-        result.check_for_overlaps_oob()?;
-
+        //
+        // `OctanolWithWater` is loaded from a pre-equilibrated GRO template whose atoms can
+        // legitimately sit very close to the cell faces, so we skip this generic placement
+        // validation and preserve the template box as-is.
         if cfg.solvent != Solvent::OctanolWithWater {
+            result.check_for_overlaps_oob()?;
             result.cell.recenter(&result.atoms);
         }
 
