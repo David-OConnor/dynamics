@@ -72,25 +72,25 @@ pub fn collect_window(lambda: f64, snapshots: &[Snapshot]) -> LambdaWindow {
         "collect_window: empty snapshot slice"
     );
 
-    let n = snapshots.len() as f64;
+    let dh_dl: Vec<f64> = snapshots
+        .iter()
+        .filter_map(|s| s.energy_data.as_ref()?.dh_dl.map(|v| v as f64))
+        .collect();
 
-    // todo: Put back. removed temp after snapshot restructure.
-    // let mean = snapshots.iter().map(|s| s.dh_dl as f64).sum::<f64>() / n;
-    //
-    // let sem = if snapshots.len() > 1 {
-    //     let variance = snapshots
-    //         .iter()
-    //         .map(|s| (s.dh_dl as f64 - mean).powi(2))
-    //         .sum::<f64>()
-    //         / (n - 1.0);
-    //     Some((variance / n).sqrt())
-    // } else {
-    //     None
-    // };
+    assert!(
+        !dh_dl.is_empty(),
+        "collect_window: no dh/dlambda values were recorded in the snapshots"
+    );
 
-    // todo temp
-    let mean = 0.;
-    let sem = Some(0.);
+    let n = dh_dl.len() as f64;
+    let mean = dh_dl.iter().sum::<f64>() / n;
+
+    let sem = if dh_dl.len() > 1 {
+        let variance = dh_dl.iter().map(|v| (*v - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        Some((variance / n).sqrt())
+    } else {
+        None
+    };
 
     LambdaWindow {
         lambda,
@@ -131,4 +131,74 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> f64 {
 pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> f64 {
     let rt = GAS_CONST_R_KCAL * temperature_k;
     (dg_water - dg_octanol) / (2.302_585_093 * rt)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::snapshot::{SnapshotEnergyData, Snapshot};
+
+    use super::{collect_window, free_energy_ti, log_p};
+
+    fn snapshot_with_dh_dl(value: f32) -> Snapshot {
+        Snapshot {
+            energy_data: Some(SnapshotEnergyData {
+                energy_kinetic: 0.0,
+                energy_potential: 0.0,
+                energy_potential_between_mols: Vec::new(),
+                energy_potential_nonbonded: 0.0,
+                energy_potential_bonded: 0.0,
+                hydrogen_bonds: Vec::new(),
+                temperature: 0.0,
+                pressure: 0.0,
+                dh_dl: Some(value),
+                volume: 0.0,
+                density: 0.0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn collect_window_reads_dh_dl_from_snapshots() {
+        let snaps = vec![
+            snapshot_with_dh_dl(1.0),
+            snapshot_with_dh_dl(2.0),
+            snapshot_with_dh_dl(3.0),
+        ];
+
+        let window = collect_window(0.5, &snaps);
+
+        assert!((window.mean_dh_dl - 2.0).abs() < 1.0e-8);
+        assert!(window.sem_dh_dl.is_some());
+    }
+
+    #[test]
+    fn free_energy_ti_uses_trapezoidal_rule() {
+        let windows = vec![
+            super::LambdaWindow {
+                lambda: 0.0,
+                mean_dh_dl: 2.0,
+                sem_dh_dl: None,
+            },
+            super::LambdaWindow {
+                lambda: 0.5,
+                mean_dh_dl: 4.0,
+                sem_dh_dl: None,
+            },
+            super::LambdaWindow {
+                lambda: 1.0,
+                mean_dh_dl: 6.0,
+                sem_dh_dl: None,
+            },
+        ];
+
+        let dg = free_energy_ti(&windows);
+        assert!((dg - 4.0).abs() < 1.0e-8);
+    }
+
+    #[test]
+    fn log_p_uses_expected_sign() {
+        let logp = log_p(5.0, 3.0, 298.15);
+        assert!(logp > 0.0);
+    }
 }

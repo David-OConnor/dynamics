@@ -637,6 +637,9 @@ pub struct MdState {
     /// Used to track which molecule each atom is associated with in our flattened structures.
     /// This is the potential energy between every pair of molecules.
     pub potential_energy_between_mols: Vec<f64>,
+    /// Unscaled non-bonded interaction energy between the alchemical molecule and the
+    /// rest of the system for the current step, in kcal/mol.
+    alch_interaction_energy: f64,
     snapshot_queue_for_dcd: Vec<Snapshot>,
     snapshot_queue_for_trr: Vec<Snapshot>,
     snapshot_queue_for_xtc: Vec<Snapshot>,
@@ -1179,7 +1182,8 @@ impl MdState {
         self.potential_energy = 0.;
         self.potential_energy_nonbonded = 0.;
         self.potential_energy_bonded = 0.;
-        self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)]
+        self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)];
+        self.alch_interaction_energy = 0.0;
     }
 
     pub(crate) fn apply_all_forces(
@@ -1216,7 +1220,9 @@ impl MdState {
         // todo: When skipping long range forces, you may wish to use naive coulomb instead
         // todo of the short-range part of the recip. This depends on the application.
         if !self.cfg.overrides.long_range_recip_disabled {
-            if self.step_count.is_multiple_of(SPME_RATIO) {
+            let compute_spme_every_step = self.alch_mol_idx.is_some();
+
+            if compute_spme_every_step || self.step_count.is_multiple_of(SPME_RATIO) {
                 // Compute SPME recip forces as usual, and cache for use in steps where we don't.
 
                 // Note: This relies on SPME_RATIO being divisible by COMPUTATION_TIME_RATIO.
@@ -1227,7 +1233,7 @@ impl MdState {
 
                 let data = self.handle_spme_recip(dev);
 
-                if SPME_RATIO != 1 {
+                if !compute_spme_every_step && SPME_RATIO != 1 {
                     self.spme_force_prev = Some(data);
                 }
 
@@ -1287,8 +1293,8 @@ impl MdState {
     ///   ∂H/∂λ = −U_alch_interact
     ///
     /// where U_alch_interact is the non-bonded interaction energy of molecule
-    /// `alch_mol_idx` with all other molecules, taken from
-    /// `potential_energy_between_mols` (updated each step by `apply_nonbonded_forces`).
+    /// `alch_mol_idx` with all other molecules, accumulated while computing the
+    /// short-range and reciprocal non-bonded interactions for the current step.
     ///
     /// Returns 0.0 when `alch_mol_idx` is `None`.
     ///
@@ -1298,21 +1304,23 @@ impl MdState {
     /// `apply_nonbonded_forces`.  Without that scaling every window samples the
     /// fully-coupled ensemble and TI is equivalent to a single-point FEP estimate.
     pub fn compute_dh_dl(&self) -> f64 {
-        let m = match self.alch_mol_idx {
-            Some(m) => m,
-            None => return 0.0,
-        };
+        if self.alch_mol_idx.is_none() {
+            return 0.0;
+        }
 
-        let n = self.mol_start_indices.len();
-        // potential_energy_between_mols is a symmetric N×N matrix:
-        // both [m*n + j] and [j*n + m] hold the interaction energy for pair (m, j).
-        // Sum row m (j ≠ m) to get the total solute–solvent interaction energy.
-        let u_interact: f64 = (0..n)
-            .filter(|&j| j != m)
-            .map(|j| self.potential_energy_between_mols[m * n + j])
-            .sum();
+        -self.alch_interaction_energy
+    }
 
-        -u_interact
+    pub(crate) fn alchemical_atom_range(&self) -> Option<(usize, usize)> {
+        let mol_idx = self.alch_mol_idx?;
+        let start = *self.mol_start_indices.get(mol_idx)?;
+        let end = self
+            .mol_start_indices
+            .get(mol_idx + 1)
+            .copied()
+            .unwrap_or(self.atoms.len());
+
+        Some((start, end))
     }
 }
 
