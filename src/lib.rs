@@ -153,7 +153,7 @@ use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{
     ForcesOnWaterMol, Solvent,
-    init::{WATER_TEMPLATE_60A, WaterInitTemplate},
+    init::{OCTANOL_WATER_TEMPLATE, WATER_TEMPLATE_60A, WaterInitTemplate},
     template_creation::pack_solvent_with_shrinking_box,
 };
 
@@ -166,8 +166,7 @@ use crate::{
     params::FfParamSet,
     snapshot::Snapshot,
     solvent::{
-        WaterMolOpc, WaterMolx8, WaterMolx16,
-        init::{OCTANOL_WATER_TEMPLATE, water_mols_from_template},
+        WaterMolOpc, WaterMolx8, WaterMolx16, init::water_mols_from_template,
         octanol::octanol_mols_from_gro,
     },
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
