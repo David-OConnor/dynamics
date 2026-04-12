@@ -19,7 +19,7 @@ use lin_alg::{
 use rand::{
     Rng,
     distr::{Distribution, Uniform},
-    prelude::ThreadRng,
+    prelude::{SliceRandom, ThreadRng},
 };
 use rand_distr::Normal;
 
@@ -261,6 +261,275 @@ fn kinetic_energy_and_dof(mols: &[WaterMolOpc], zero_com_drift: bool) -> (f32, u
     (ke as f32 * 0.5 * NATIVE_TO_KCAL, dof)
 }
 
+fn temperature_from_water_velocities(mols: &[WaterMolOpc], zero_com_drift: bool) -> Option<f32> {
+    if mols.is_empty() {
+        return None;
+    }
+
+    let (ke_raw, dof) = kinetic_energy_and_dof(mols, zero_com_drift);
+    if ke_raw <= 0.0 || dof == 0 {
+        return None;
+    }
+
+    Some((2.0 * ke_raw) / (dof as f32 * GAS_CONST_R as f32))
+}
+
+fn rigid_body_centroid(atoms: &[AtomDynamics]) -> Vec3F64 {
+    let mut centroid = Vec3F64::new_zero();
+    let mut mass_total = 0.0_f64;
+
+    for atom in atoms {
+        let mass = atom.mass as f64;
+        centroid += Vec3F64::from(atom.posit) * mass;
+        mass_total += mass;
+    }
+
+    if mass_total <= f64::EPSILON {
+        let sum = atoms.iter().fold(Vec3F64::new_zero(), |acc, atom| {
+            acc + Vec3F64::from(atom.posit)
+        });
+        return sum * (1.0 / atoms.len().max(1) as f64);
+    }
+
+    centroid * (1.0 / mass_total)
+}
+
+fn water_centroid(water: &WaterMolOpc) -> Vec3F64 {
+    let atoms = [&water.o, &water.h0, &water.h1];
+    let mut centroid = Vec3F64::new_zero();
+    let mut mass_total = 0.0_f64;
+
+    for atom in atoms {
+        let mass = atom.mass as f64;
+        centroid += Vec3F64::from(atom.posit) * mass;
+        mass_total += mass;
+    }
+
+    centroid * (1.0 / mass_total.max(f64::EPSILON))
+}
+
+fn scale_centroid_position(
+    centroid: Vec3F64,
+    target_center: Vec3,
+    scale_x: f64,
+    scale_y: f64,
+    scale_z: f64,
+) -> Vec3F64 {
+    let center_f64: Vec3F64 = target_center.into();
+    let relative_pos = centroid - center_f64;
+    let scaled_relative_pos = Vec3F64::new(
+        relative_pos.x * scale_x,
+        relative_pos.y * scale_y,
+        relative_pos.z * scale_z,
+    );
+
+    center_f64 + scaled_relative_pos
+}
+
+fn shift_rigid_body(atoms: &mut [AtomDynamics], displacement: Vec3) {
+    for atom in atoms {
+        atom.posit += displacement;
+    }
+}
+
+fn shift_water_molecule(water: &mut WaterMolOpc, displacement: Vec3) {
+    water.o.posit += displacement;
+    water.h0.posit += displacement;
+    water.h1.posit += displacement;
+    water.m.posit += displacement;
+}
+
+fn water_conflicts_with_solvent(
+    water: &WaterMolOpc,
+    solvent_atom_posits: &[Vec3],
+    cell: &SimBox,
+) -> bool {
+    const MIN_O_TO_SOLVENT_SQ: f32 = 1.7 * 1.7;
+    const MIN_H_TO_SOLVENT_SQ: f32 = 1.0 * 1.0;
+
+    for solvent_posit in solvent_atom_posits {
+        let o_diff = water.o.posit - *solvent_posit;
+        if cell.min_image(o_diff).magnitude_squared() < MIN_O_TO_SOLVENT_SQ {
+            return true;
+        }
+
+        let h0_diff = water.h0.posit - *solvent_posit;
+        if cell.min_image(h0_diff).magnitude_squared() < MIN_H_TO_SOLVENT_SQ {
+            return true;
+        }
+
+        let h1_diff = water.h1.posit - *solvent_posit;
+        if cell.min_image(h1_diff).magnitude_squared() < MIN_H_TO_SOLVENT_SQ {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn water_conflicts_with_water(
+    candidate: &WaterMolOpc,
+    placed: &[WaterMolOpc],
+    cell: &SimBox,
+) -> bool {
+    const PBC_MIN_WATER_O_O_DIST_SQ: f32 = 2.8 * 2.8;
+
+    for water in placed {
+        let diff = water.o.posit - candidate.o.posit;
+        let direct_sq = diff.magnitude_squared();
+        if direct_sq < MIN_WATER_O_O_DIST_SQ {
+            return true;
+        }
+
+        let min_image_sq = cell.min_image(diff).magnitude_squared();
+        if min_image_sq < MIN_WATER_O_O_DIST_SQ {
+            return true;
+        }
+
+        if min_image_sq < PBC_MIN_WATER_O_O_DIST_SQ && min_image_sq < direct_sq {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn make_interleaved_water_offsets() -> Vec<Vec3F64> {
+    let mut offsets = Vec::new();
+
+    for &scale in &[0.22_f64, 0.38_f64] {
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if dx == 0 && dy == 0 && dz == 0 {
+                        continue;
+                    }
+
+                    offsets.push(Vec3F64::new(
+                        dx as f64 * scale,
+                        dy as f64 * scale,
+                        dz as f64 * scale,
+                    ));
+                }
+            }
+        }
+    }
+
+    offsets.sort_by(|a, b| {
+        let a_nonzero = usize::from(a.x != 0.0) + usize::from(a.y != 0.0) + usize::from(a.z != 0.0);
+        let b_nonzero = usize::from(b.x != 0.0) + usize::from(b.y != 0.0) + usize::from(b.z != 0.0);
+
+        a_nonzero
+            .cmp(&b_nonzero)
+            .then_with(|| a.magnitude_squared().total_cmp(&b.magnitude_squared()))
+    });
+
+    offsets
+}
+
+fn place_interleaved_opc_waters(
+    solvent_centers: &[Vec3F64],
+    solvent_spacing: Vec3F64,
+    solvent_atom_posits: &[Vec3],
+    water_count: usize,
+    cell: &SimBox,
+    temperature_tgt: f32,
+    rng: &mut ThreadRng,
+) -> Vec<WaterMolOpc> {
+    const MAX_WATER_ROT_ATTEMPTS: usize = 12;
+    const MIN_CENTER_OFFSET_FRAC: f64 = 0.12;
+    const MAX_FALLBACK_ATTEMPTS_PER_WATER: usize = 40;
+
+    if water_count == 0 || solvent_centers.is_empty() {
+        return Vec::new();
+    }
+
+    let offsets_unit = make_interleaved_water_offsets();
+    let cell_offsets: Vec<Vec<Vec3F64>> = solvent_centers
+        .iter()
+        .map(|_| {
+            let mut offsets = offsets_unit.clone();
+            offsets.shuffle(rng);
+            offsets
+        })
+        .collect();
+
+    let mut placed = Vec::with_capacity(water_count);
+    let distro = Uniform::<f32>::new(0.0, 1.0).unwrap();
+
+    let try_place_candidate =
+        |o_posit: Vec3, placed: &mut Vec<WaterMolOpc>, rng: &mut ThreadRng| -> bool {
+            if !cell.contains(o_posit) {
+                return false;
+            }
+
+            for _ in 0..MAX_WATER_ROT_ATTEMPTS {
+                let candidate =
+                    WaterMolOpc::new(o_posit, Vec3::new_zero(), random_quaternion(rng, distro));
+
+                if water_conflicts_with_solvent(&candidate, solvent_atom_posits, cell) {
+                    continue;
+                }
+
+                if water_conflicts_with_water(&candidate, placed, cell) {
+                    continue;
+                }
+
+                placed.push(candidate);
+                return true;
+            }
+
+            false
+        };
+
+    'round_robin: for candidate_idx in 0..offsets_unit.len() {
+        for (cell_idx, center) in solvent_centers.iter().enumerate() {
+            if placed.len() == water_count {
+                break 'round_robin;
+            }
+
+            let offset = cell_offsets[cell_idx][candidate_idx];
+            let o_posit = Vec3::new(
+                (center.x + offset.x * solvent_spacing.x) as f32,
+                (center.y + offset.y * solvent_spacing.y) as f32,
+                (center.z + offset.z * solvent_spacing.z) as f32,
+            );
+
+            let _ = try_place_candidate(o_posit, &mut placed, rng);
+        }
+    }
+
+    let fallback_attempts = water_count * MAX_FALLBACK_ATTEMPTS_PER_WATER;
+    for _ in 0..fallback_attempts {
+        if placed.len() == water_count {
+            break;
+        }
+
+        let center = solvent_centers[rng.random_range(0..solvent_centers.len())];
+        let dx = rng.random_range(-0.42_f64..0.42_f64);
+        let dy = rng.random_range(-0.42_f64..0.42_f64);
+        let dz = rng.random_range(-0.42_f64..0.42_f64);
+
+        if dx.abs() < MIN_CENTER_OFFSET_FRAC
+            && dy.abs() < MIN_CENTER_OFFSET_FRAC
+            && dz.abs() < MIN_CENTER_OFFSET_FRAC
+        {
+            continue;
+        }
+
+        let o_posit = Vec3::new(
+            (center.x + dx * solvent_spacing.x) as f32,
+            (center.y + dy * solvent_spacing.y) as f32,
+            (center.z + dz * solvent_spacing.z) as f32,
+        );
+
+        let _ = try_place_candidate(o_posit, &mut placed, rng);
+    }
+
+    init_velocities(&mut placed, temperature_tgt, true, rng);
+    placed
+}
+
 pub fn atoms_mut(mols: &mut [WaterMolOpc]) -> impl Iterator<Item = &mut AtomDynamics> {
     mols.iter_mut()
         .flat_map(|m| [&mut m.o, &mut m.h0, &mut m.h1].into_iter())
@@ -310,7 +579,8 @@ fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
 /// Note: This generates its own `MdState`, and exists outside our normal pipeline. IJt can, therefor,
 /// be called externally.
 ///
-/// We save a trajectory to disk, and a .gro file of the molecule set used, for playikng it back.
+/// We save a trajectory to disk, and a .gro file of the molecule set used, for playing it back.
+/// The `.gro` file can be used as a template; it has the final atom positions.
 pub fn pack_solvent_with_shrinking_box(
     dev: &ComputationDevice,
     mol_solvent: &MolDynamics,
@@ -332,7 +602,7 @@ pub fn pack_solvent_with_shrinking_box(
 
     // Steps of pure MD to run after the box has reached its target size.
     // As this will be used for a template, err on the side of too many steps.
-    let equilibration_steps = 10_000;
+    let equilibration_steps = 20_000;
 
     // ── 1. Build the large initial cell, centered on the same point as the target ────────────
     let target_center = cell.center();
@@ -365,8 +635,9 @@ pub fn pack_solvent_with_shrinking_box(
     let n_z = solvent_count.div_ceil(n_x * n_y);
     let (sx, sy, sz) = (lx / n_x as f64, ly / n_y as f64, lz / n_z as f64);
 
-    let mut rng = rand::rng();
     let mut mols: Vec<MolDynamics> = Vec::with_capacity(solvent_count);
+    let mut solvent_centers: Vec<Vec3F64> = Vec::with_capacity(solvent_count);
+    let solvent_spacing = Vec3F64::new(sx, sy, sz);
 
     let mut rng = rand::rng();
     let distro = Uniform::<f32>::new(0.0, 1.0).unwrap();
@@ -392,7 +663,19 @@ pub fn pack_solvent_with_shrinking_box(
         let mut mol_copy = mol_solvent.clone();
         mol_copy.atom_posits = Some(posits);
         mols.push(mol_copy);
+        solvent_centers.push(world_ctr);
     }
+
+    let solvent_atom_posits: Vec<Vec3> = mols
+        .iter()
+        .flat_map(|mol| {
+            mol.atom_posits
+                .as_ref()
+                .into_iter()
+                .flat_map(|posits| posits.iter().copied())
+        })
+        .map(Into::into)
+        .collect();
 
     // ── 3. Create MdState with the large cell ────────────────────────────────────────────────
     let cfg = MdConfig {
@@ -421,6 +704,33 @@ pub fn pack_solvent_with_shrinking_box(
     };
 
     let (mut md_state, _) = MdState::new(dev, &cfg, &mols, param_set)?;
+
+    if water_count > 0 {
+        let water_temperature_tgt =
+            temperature_from_water_velocities(&md_state.water, false).unwrap_or(300.0);
+        let placed_water = place_interleaved_opc_waters(
+            &solvent_centers,
+            solvent_spacing,
+            &solvent_atom_posits,
+            water_count,
+            &large_cell,
+            water_temperature_tgt,
+            &mut rng,
+        );
+
+        if placed_water.len() == water_count {
+            md_state.water = placed_water;
+            md_state.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; md_state.water.len()];
+            md_state.build_all_neighbors(dev);
+            md_state.regen_pme(dev);
+        } else {
+            eprintln!(
+                "pack_solvent_with_shrinking_box: placed {} / {water_count} interleaved waters; \
+                 retaining template-seeded waters.",
+                placed_water.len()
+            );
+        }
+    }
 
     // ── 4. Shrink loop ───────────────────────────────────────────────────────────────────────
     // Compute the number of steps required to reach the target cell size on the slowest axis.
@@ -469,32 +779,21 @@ pub fn pack_solvent_with_shrinking_box(
 
             // --- Replace the atom wrapping loop with molecule scaling ---
             for mol_atoms in md_state.atoms.chunks_mut(n_atoms) {
-                // 1. Calculate the current centroid of the molecule
-                let mut centroid: Vec3F64 = Vec3F64::new(0., 0., 0.);
-                for a in mol_atoms.iter() {
-                    let p: Vec3F64 = a.posit.into();
-                    centroid = centroid + p;
-                }
-                centroid *= 1.0 / n_atoms as f64;
-
-                // 2. Calculate vector from target_center to centroid, and scale it
-                let p: Vec3F64 = target_center.into();
-                let relative_pos: Vec3F64 = centroid - p;
-                let scaled_relative_pos = Vec3F64::new(
-                    relative_pos.x * scale_x,
-                    relative_pos.y * scale_y,
-                    relative_pos.z * scale_z,
-                );
-
-                // 3. Determine the new centroid and calculate the displacement vector
-                let p: Vec3 = scaled_relative_pos.into();
-                let new_centroid: Vec3F64 = (target_center + p).into();
+                let centroid = rigid_body_centroid(mol_atoms);
+                let new_centroid =
+                    scale_centroid_position(centroid, target_center, scale_x, scale_y, scale_z);
                 let displacement: Vec3 = (new_centroid - centroid).into();
 
-                // 4. Shift all atoms in the molecule by the displacement vector
-                for a in mol_atoms.iter_mut() {
-                    a.posit += displacement;
-                }
+                shift_rigid_body(mol_atoms, displacement);
+            }
+
+            for water in &mut md_state.water {
+                let centroid = water_centroid(water);
+                let new_centroid =
+                    scale_centroid_position(centroid, target_center, scale_x, scale_y, scale_z);
+                let displacement: Vec3 = (new_centroid - centroid).into();
+
+                shift_water_molecule(water, displacement);
             }
 
             md_state.cell = new_cell;

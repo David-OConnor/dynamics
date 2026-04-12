@@ -135,7 +135,7 @@ pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::snapshot::{SnapshotEnergyData, Snapshot};
+    use crate::snapshot::{Snapshot, SnapshotEnergyData};
 
     use super::{collect_window, free_energy_ti, log_p};
 

@@ -683,7 +683,7 @@ pub struct MdState {
     /// λ = 0: solute fully coupled; λ = 1: solute fully decoupled.
     /// For thermodynamic integration, hold this fixed for the duration of one
     /// simulation window and sweep across multiple windows.
-    pub lambda: f64,
+    pub lambda_alch: f64,
     /// Index assigned at the start of each MD run. Trajectory files are named
     /// `traj_N.dcd`, `traj_N.trr`, etc. so that successive runs never overwrite
     /// each other.  Chosen as the lowest N for which no such files exist yet.
