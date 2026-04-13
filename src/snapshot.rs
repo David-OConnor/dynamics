@@ -29,9 +29,7 @@ use crate::{
 
 // Append to any snapshot-saving files every this number of snapshots. E.g.
 // DCD, TRR, XTC. We want this to be such that we don't experience too much memory use.
-// // todo:  Update A/R. Likely higher. Lower now just to test.
-pub(crate) const TRAJ_FILE_SAVE_INTERVAL: usize = 100;
-// pub(crate) const TRAJ_FILE_SAVE_INTERVAL: usize = 3_000;
+const TRAJ_FILE_SAVE_INTERVAL: usize = 2_000;
 
 const TRAJ_OUT_PATH: &str = "./md_out";
 
@@ -132,17 +130,13 @@ pub struct Snapshot {
     pub atom_posits: Vec<Vec3>,
     pub atom_velocities: Option<Vec<Vec3>>,
     pub energy_data: Option<SnapshotEnergyData>,
-    // /// Posits and velocities by mol: Outer index is the molecule index, corresponding to molecules
-    // /// in `MdState`
-    // // todo: Experimenting with storing snaps as per-mol. This may replace the flat per-atom approach,
-    // // todo: but we're leaving per-atom fields in for now. This may effectively double the non-solvent
-    // // todo size of the snapshot.
-    // pub atom_posits_by_mol: Vec<Vec<Vec3>>,
     pub water_o_posits: Vec<Vec3>,
     pub water_h0_posits: Vec<Vec3>,
     pub water_h1_posits: Vec<Vec3>,
     /// Single velocity per solvent molecule, as it's rigid.
     pub water_velocities: Option<Vec<Vec3>>,
+    /// Force acting on each atom.
+    pub force: Option<Vec<Vec3>>,
 }
 
 impl Snapshot {
@@ -336,6 +330,23 @@ impl From<GromacsFrame> for Snapshot {
             water_h0_posits: Vec::new(),
             water_h1_posits: Vec::new(),
             water_velocities: None,
+            // kJ/(mol·nm) → kcal/(mol·Å): divide by 4.184 and by 10.
+            force: if frame.atom_forces.is_empty() {
+                None
+            } else {
+                const KJ_NM_TO_KCAL_ANG: f32 = 1.0 / 41.84;
+                Some(
+                    frame
+                        .atom_forces
+                        .iter()
+                        .map(|f| Vec3 {
+                            x: (f.x as f32) * KJ_NM_TO_KCAL_ANG,
+                            y: (f.y as f32) * KJ_NM_TO_KCAL_ANG,
+                            z: (f.z as f32) * KJ_NM_TO_KCAL_ANG,
+                        })
+                        .collect(),
+                )
+            },
         }
     }
 }
@@ -352,6 +363,7 @@ impl From<DcdFrame> for Snapshot {
             water_h0_posits: Vec::new(),
             water_h1_posits: Vec::new(),
             water_velocities: None,
+            force: None,
         }
     }
 }
@@ -479,10 +491,14 @@ impl MdState {
                         temperature = Some(self.measure_temperature() as f32);
                     }
 
-                    v.update_with_energy(self, pressure as f32, temperature.unwrap());
+                    v.update_with_energy(self, pressure, temperature.unwrap());
                 }
 
-                // todo: Handle force writing (`nstfout`).
+                if let Some(ratio_f) = oc.nstfout
+                    && i.is_multiple_of(ratio_f as usize)
+                {
+                    v.force = Some(self.atoms.iter().map(|a| a.force).collect());
+                }
 
                 v
             };
@@ -502,6 +518,17 @@ impl MdState {
     /// Peridically offloads the in-memory snapshot queues for various file-handlers onto disk.
     /// Clear the queues. Appends to DCD and TRR files.
     fn handle_ss_file_writes(&mut self) {
+        if !self.step_count.is_multiple_of(TRAJ_FILE_SAVE_INTERVAL) {
+            return;
+        }
+        self.flush_snapshot_queues();
+    }
+
+    /// Flush any remaining snapshots in the DCD/TRR/XTC queues to disk.
+    /// Call this at the end of a simulation run to ensure the last frames
+    /// (those accumulated since the most recent `TRAJ_FILE_SAVE_INTERVAL`
+    /// write) are not lost.
+    pub fn flush_snapshot_queues(&mut self) {
         // On the first call, choose the lowest run index N for which no trajectory files
         // exist yet, so that each fresh MD run writes to its own set of files (traj_N.*).
         if self.run_index.is_none() {
@@ -511,11 +538,6 @@ impl MdState {
                     && !out.join(format!("traj_{n}.trr")).exists()
                     && !out.join(format!("traj_{n}.xtc")).exists()
             });
-        }
-
-        // Clear queues as required.
-        if !self.step_count.is_multiple_of(TRAJ_FILE_SAVE_INTERVAL) {
-            return;
         }
 
         let n = self.run_index.unwrap_or(0);
@@ -552,7 +574,7 @@ impl MdState {
             self.snapshot_queue_for_trr.clear();
         }
 
-        // todo: Make sure this fails gracefully if python3 or mdtraj isn't available.
+        // todo: Make sure this fails gracefully if mdtraj isn't available.
         if !self.snapshot_queue_for_xtc.is_empty() {
             let frames: Vec<_> = self
                 .snapshot_queue_for_xtc
@@ -691,10 +713,25 @@ pub fn ss_to_gromacs_frames(ss: &[Snapshot]) -> Vec<GromacsFrame> {
                 Vec::new()
             };
 
+            // Forces: kcal/(mol·Å) → kJ/(mol·nm): multiply by 41.84.
+            let atom_forces = if let Some(forces) = &snap.force {
+                let to_kj_nm = |f: &Vec3| -> lin_alg::f64::Vec3 {
+                    lin_alg::f64::Vec3 {
+                        x: f.x as f64 * 41.84,
+                        y: f.y as f64 * 41.84,
+                        z: f.z as f64 * 41.84,
+                    }
+                };
+                forces.iter().map(to_kj_nm).collect()
+            } else {
+                Vec::new()
+            };
+
             GromacsFrame {
                 time: snap.time,
                 atom_posits,
                 atom_velocities,
+                atom_forces,
                 energy: None,
             }
         })

@@ -1185,6 +1185,8 @@ impl MdState {
         self.alch_interaction_energy = 0.0;
     }
 
+    /// Entry point for force application. This includes bonded, non-bonded (LJ and Coulomb/SPME), and
+    /// optionally external forces. (Indexed by atom).
     pub(crate) fn apply_all_forces(
         &mut self,
         dev: &ComputationDevice,

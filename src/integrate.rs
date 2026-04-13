@@ -70,12 +70,14 @@ impl MdState {
     /// This method orchestrates the dynamics at each time step. Uses a Verlet Velocity base,
     /// with different thermostat approaches depending on configuration.
     ///
-    /// `External force` is indexed by atom.
+    /// `External force` allows injection of a specific force into the system. It's indexed by atom.
     pub fn step(&mut self, dev: &ComputationDevice, dt: f32, external_force: Option<Vec<Vec3>>) {
         if let Some(f_ext) = &external_force
             && f_ext.len() != self.atoms.len()
         {
-            eprintln!("Error: External force vector length does not match number of atoms.");
+            eprintln!(
+                "Error: External force vector length does not match number of atoms; aborting step."
+            );
             return;
         }
 
