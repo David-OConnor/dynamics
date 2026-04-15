@@ -11,7 +11,8 @@ use bincode::{Decode, Encode};
 use lin_alg::f32::Vec3;
 
 use crate::{
-    CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComputationDevice, HydrogenConstraint, MdState,
+    CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComMotionRemoval, ComputationDevice,
+    HydrogenConstraint, MdState,
     barostat::measure_pressure,
     solvent::{
         ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
@@ -19,9 +20,6 @@ use crate::{
     },
     thermostat::{LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT},
 };
-
-const COM_REMOVAL_RATIO_LINEAR: usize = 10;
-const COM_REMOVAL_RATIO_ANGULAR: usize = 20;
 
 // The maximum allowed acceleration, in Å/ps^2.
 // For example, pathological starting conditions including hydrogen placement.
@@ -408,17 +406,25 @@ impl MdState {
             }
         };
 
-        if self.cfg.zero_com_drift {
-            // Linear calls angular, which is why we don't run both at the same time.
-            if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_ANGULAR) {
-                self.zero_angular_momentum();
-            } else if self.step_count.is_multiple_of(COM_REMOVAL_RATIO_LINEAR) {
-                self.zero_linear_momentum();
+        let next_step_count = self.step_count + 1;
+
+        if self.cfg.zero_com_drift
+            && self.cfg.com_removal_interval > 0
+            && next_step_count.is_multiple_of(self.cfg.com_removal_interval)
+        {
+            match self.cfg.com_motion_removal {
+                ComMotionRemoval::Linear => self.zero_linear_momentum(),
+                ComMotionRemoval::Angular => self.zero_angular_momentum(),
+                ComMotionRemoval::LinearAccelerationCorrection => {
+                    let interval_dt = dt * self.cfg.com_removal_interval as f32;
+                    self.zero_linear_momentum_acceleration_corrected(interval_dt);
+                }
+                ComMotionRemoval::None => {}
             }
         }
 
         self.time += dt as f64;
-        self.step_count += 1;
+        self.step_count = next_step_count;
 
         start = Instant::now(); // No ratio for neighbor times.
 
@@ -430,7 +436,7 @@ impl MdState {
 
         // We keeping the cell centered on the dynamics atoms. Note that we don't change the dimensions,
         // as these are under management by the barostat.
-        if self.step_count.is_multiple_of(CENTER_SIMBOX_RATIO) {
+        if self.cfg.recenter_sim_box && self.step_count.is_multiple_of(CENTER_SIMBOX_RATIO) {
             self.cell.recenter(&self.atoms);
             // todo: Will this interfere with carrying over state from the previous step?
             self.regen_pme(dev);

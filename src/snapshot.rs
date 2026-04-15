@@ -456,6 +456,7 @@ impl MdState {
                 let mut v = Snapshot::new(self);
                 v.update_with_velocities(self);
                 v.update_with_energy(self, pressure, temperature.unwrap());
+                v.force = Some(self.atoms.iter().map(|a| a.force).collect());
 
                 v
             };
@@ -471,36 +472,37 @@ impl MdState {
         }
 
         let oc = &self.cfg.snapshot_handlers.gromacs;
-        if let Some(ratio) = oc.nstxout
-            && i.is_multiple_of(ratio as usize)
-        {
-            let ss = {
-                let mut v = Snapshot::new(self);
 
-                if let Some(ratio_v) = oc.nstvout
-                    && i.is_multiple_of(ratio_v as usize)
-                {
-                    v.update_with_velocities(self);
+        // Check whether any GROMACS TRR output is due this step: positions,
+        // velocities, energy, or forces. A snapshot is created whenever *any*
+        // of these intervals fires, not only when nstxout fires.
+        let write_posit = oc.nstxout.is_some_and(|r| i.is_multiple_of(r as usize));
+        let write_vel = oc.nstvout.is_some_and(|r| i.is_multiple_of(r as usize));
+        let write_en = oc.nstenergy.is_some_and(|r| i.is_multiple_of(r as usize));
+        let write_f = oc.nstfout.is_some_and(|r| i.is_multiple_of(r as usize));
+
+        if write_posit || write_vel || write_en || write_f {
+            let ss = {
+                let mut s = Snapshot::new(self);
+
+                if write_vel {
+                    s.update_with_velocities(self);
                 }
 
                 // We are ignoring `nstcalcenergy`.
-                if let Some(ratio_e) = oc.nstenergy
-                    && i.is_multiple_of(ratio_e as usize)
-                {
+                if write_en {
                     if temperature.is_none() {
                         temperature = Some(self.measure_temperature() as f32);
                     }
 
-                    v.update_with_energy(self, pressure, temperature.unwrap());
+                    s.update_with_energy(self, pressure, temperature.unwrap());
                 }
 
-                if let Some(ratio_f) = oc.nstfout
-                    && i.is_multiple_of(ratio_f as usize)
-                {
-                    v.force = Some(self.atoms.iter().map(|a| a.force).collect());
+                if write_f {
+                    s.force = Some(self.atoms.iter().map(|a| a.force).collect());
                 }
 
-                v
+                s
             };
 
             self.snapshot_queue_for_trr.push(ss);

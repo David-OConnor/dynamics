@@ -115,12 +115,22 @@ impl SimBox {
 
         let half_ext = self.extent / 2.;
 
-        // todo: DRY with new.
         let mut center = Vec3::new_zero();
-        for atom in atoms {
+        let mut count = 0usize;
+
+        for atom in atoms.iter().filter(|a| !a.static_) {
             center += atom.posit;
+            count += 1;
         }
-        center /= atoms.len() as f32;
+
+        if count == 0 {
+            for atom in atoms {
+                center += atom.posit;
+            }
+            count = atoms.len();
+        }
+
+        center /= count as f32;
 
         self.bounds_low = center - half_ext;
         self.bounds_high = center + half_ext;
@@ -203,6 +213,38 @@ impl SimBox {
             || posit.x > self.bounds_high.x
             || posit.y > self.bounds_high.y
             || posit.z > self.bounds_high.z)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lin_alg::f32::Vec3;
+
+    use super::SimBox;
+    use crate::AtomDynamics;
+
+    #[test]
+    fn recenter_uses_dynamic_atoms_when_available() {
+        let mut cell = SimBox::new(Vec3::new(-5., -5., -5.), Vec3::new(5., 5., 5.));
+        let atoms = vec![
+            AtomDynamics {
+                posit: Vec3::new(100., 0., 0.),
+                static_: true,
+                ..Default::default()
+            },
+            AtomDynamics {
+                posit: Vec3::new(2., 0., 0.),
+                ..Default::default()
+            },
+            AtomDynamics {
+                posit: Vec3::new(4., 0., 0.),
+                ..Default::default()
+            },
+        ];
+
+        cell.recenter(&atoms);
+
+        assert_eq!(cell.center(), Vec3::new(3., 0., 0.));
     }
 }
 

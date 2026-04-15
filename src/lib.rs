@@ -133,7 +133,7 @@ use bio_files::{
     mol2::Mol2,
 };
 pub use bonded::{LINCS_ITER_DEFAULT, LINCS_ORDER_DEFAULT, SHAKE_TOL_DEFAULT};
-pub use config::MdConfig;
+pub use config::{ComMotionRemoval, MdConfig};
 #[cfg(feature = "cuda")]
 use cudarc::{
     driver::{CudaContext, CudaFunction, CudaStream},
@@ -951,7 +951,9 @@ impl MdState {
         // validation and preserve the template box as-is.
         if cfg.solvent != Solvent::OctanolWithWater {
             result.check_for_overlaps_oob()?;
-            result.cell.recenter(&result.atoms);
+            if cfg.recenter_sim_box {
+                result.cell.recenter(&result.atoms);
+            }
         }
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,

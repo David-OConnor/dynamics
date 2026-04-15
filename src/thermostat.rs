@@ -5,7 +5,7 @@ use rand::{Rng, distr::Distribution};
 use rand_distr::{ChiSquared, StandardNormal};
 
 use crate::{
-    HydrogenConstraint, MdState, NATIVE_TO_KCAL,
+    ComMotionRemoval, HydrogenConstraint, MdState, NATIVE_TO_KCAL,
     solvent::{H_MASS, MASS_WATER_MOL, O_MASS},
 };
 
@@ -107,7 +107,12 @@ impl MdState {
             }
 
             if self.cfg.zero_com_drift {
-                c += 6;
+                c += match self.cfg.com_motion_removal {
+                    ComMotionRemoval::Linear => 3,
+                    ComMotionRemoval::Angular => 6,
+                    ComMotionRemoval::LinearAccelerationCorrection => 3,
+                    ComMotionRemoval::None => 0,
+                };
             }
             c
         };
@@ -224,5 +229,31 @@ impl MdState {
             w.h1.vel.y = c * w.h1.vel.y + sigma_h * h1y;
             w.h1.vel.z = c * w.h1.vel.z + sigma_h * h1z;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AtomDynamics, ComMotionRemoval, MdState};
+
+    #[test]
+    fn thermo_dof_matches_com_motion_mode() {
+        let atoms = vec![AtomDynamics::default(), AtomDynamics::default()];
+
+        let mut linear = MdState {
+            atoms: atoms.clone(),
+            ..Default::default()
+        };
+        linear.cfg.zero_com_drift = true;
+        linear.cfg.com_motion_removal = ComMotionRemoval::Linear;
+        assert_eq!(linear.dof_for_thermo(), 3);
+
+        let mut angular = MdState {
+            atoms,
+            ..Default::default()
+        };
+        angular.cfg.zero_com_drift = true;
+        angular.cfg.com_motion_removal = ComMotionRemoval::Angular;
+        assert_eq!(angular.dof_for_thermo(), 0);
     }
 }

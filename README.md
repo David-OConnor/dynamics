@@ -358,6 +358,8 @@ def main():
     
     for _ in range(n_steps):
         md.step(dt)
+        
+    md.flush_snapshot_queues()
     
     snap = md.snapshots[len(md.snapshots) - 1]  # A/R.
     print(f"KE: {snap.energy_kinetic}, PE: {snap.energy_potential}, Atom posits:")
@@ -464,6 +466,7 @@ fn main() {
     for _ in 0..n_steps {
         md.step(&dev, dt);
     }
+    md.flush_snaps * ***hot_queues();
 
     let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
     println!(

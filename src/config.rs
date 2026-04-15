@@ -20,6 +20,22 @@ use crate::{
     thermostat::{TAU_TEMP_DEFAULT, TEMP_DEFAULT},
 };
 
+/// GROMACS-style center-of-mass motion removal mode.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ComMotionRemoval {
+    /// Remove center-of-mass translational velocity.
+    #[default]
+    Linear,
+    /// Remove center-of-mass translational and rotational velocity.
+    Angular,
+    /// Remove center-of-mass translational velocity and correct COM position
+    /// assuming nearly constant acceleration over the removal interval.
+    LinearAccelerationCorrection,
+    /// Leave center-of-mass motion unconstrained.
+    None,
+}
+
 /// This is the primary way of configurating an MD run. It's passed at init, along with the
 /// molecule list and FF params.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -27,8 +43,13 @@ use crate::{
 pub struct MdConfig {
     /// Defaults to Velocity Verlet.
     pub integrator: Integrator,
-    /// If enabled, zero the drift in center of mass of the system.
+    /// Legacy on/off switch for COM motion removal.
+    /// Use together with `com_motion_removal` and `com_removal_interval`.
     pub zero_com_drift: bool,
+    /// GROMACS-style COM-motion removal mode.
+    pub com_motion_removal: ComMotionRemoval,
+    /// Interval, in steps, for COM-motion removal. GROMACS defaults to 100.
+    pub com_removal_interval: usize,
     /// Kelvin. Defaults to 310 K.
     pub temp_target: f32,
     /// None to disable it.
@@ -77,6 +98,9 @@ pub struct MdConfig {
     pub coulomb_cutoff: f32,
     /// A hard distance cutoff for VDW forces. Å
     pub lj_cutoff: f32,
+    /// If enabled, keep the cell centered on the dynamic atoms at init and during the run.
+    /// Disable this for pulling / driven systems where you want the box to remain fixed.
+    pub recenter_sim_box: bool,
     pub overrides: MdOverrides,
 }
 
@@ -84,7 +108,9 @@ impl Default for MdConfig {
     fn default() -> Self {
         Self {
             integrator: Default::default(),
-            zero_com_drift: false,     // todo: True?
+            zero_com_drift: true,
+            com_motion_removal: ComMotionRemoval::Linear,
+            com_removal_interval: 100,
             temp_target: TEMP_DEFAULT, // GROMACS uses this.
             barostat_cfg: Some(Default::default()),
             hydrogen_constraint: Default::default(),
@@ -105,6 +131,7 @@ impl Default for MdConfig {
             spme_alpha: 0.26,
             coulomb_cutoff: 10.,
             lj_cutoff: 10.,
+            recenter_sim_box: true,
             overrides: Default::default(),
         }
     }
@@ -301,6 +328,8 @@ impl From<MdpParams> for MdConfig {
         Self {
             integrator,
             zero_com_drift: true,
+            com_motion_removal: def.com_motion_removal,
+            com_removal_interval: def.com_removal_interval,
             temp_target: p.ref_t.first().copied().unwrap_or(300.0),
             barostat_cfg,
             hydrogen_constraint,
@@ -318,6 +347,7 @@ impl From<MdpParams> for MdConfig {
             spme_alpha,
             coulomb_cutoff: p.rcoulomb * NM_TO_ANGSTROM,
             lj_cutoff: p.rvdw * NM_TO_ANGSTROM,
+            recenter_sim_box: def.recenter_sim_box,
         }
     }
 }

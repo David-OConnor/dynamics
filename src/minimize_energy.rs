@@ -145,7 +145,9 @@ impl MdState {
         self.reset_f_acc_pe_virial();
 
         // Keep consistent with the normal cadence.
-        self.cell.recenter(&self.atoms);
+        if self.cfg.recenter_sim_box {
+            self.cell.recenter(&self.atoms);
+        }
 
         // Undo our config change.
         self.cfg.overrides.long_range_recip_disabled = prev_long_range;

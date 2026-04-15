@@ -10,13 +10,14 @@ use crate::{
 const EPS: f64 = 1e-6;
 
 impl MdState {
-    /// Remove center-of-mass drift. This can help stabilize system energy.
-    /// We perform the sums here as f64.
-    pub fn zero_linear_momentum(&mut self) {
+    fn dynamic_mass_and_momentum(&self) -> (f64, Vec3F64) {
         let mut mass_sum = 0.0;
-        let mut p_sum = Vec3F64::new_zero(); // Σ m v
+        let mut p_sum = Vec3F64::new_zero();
 
         for a in &self.atoms {
+            if a.static_ {
+                continue;
+            }
             mass_sum += a.mass as f64;
             let p: Vec3F64 = (a.vel * a.mass).into();
             p_sum += p;
@@ -32,6 +33,30 @@ impl MdState {
             p_sum += p_o + p_h0 + p_h1;
         }
 
+        (mass_sum, p_sum)
+    }
+
+    fn shift_dynamic_positions(&mut self, displacement: Vec3) {
+        for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
+            a.posit += displacement;
+        }
+
+        for w in &mut self.water {
+            w.o.posit += displacement;
+            w.h0.posit += displacement;
+            w.h1.posit += displacement;
+            w.m.posit += displacement;
+        }
+    }
+
+    /// Remove center-of-mass drift. This can help stabilize system energy.
+    /// We perform the sums here as f64.
+    pub fn zero_linear_momentum(&mut self) {
+        let (mass_sum, p_sum) = self.dynamic_mass_and_momentum();
+
         if mass_sum <= EPS {
             return;
         }
@@ -40,6 +65,9 @@ impl MdState {
 
         // Subtract uniformly so Σ m v' = 0
         for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
             a.vel -= vel_com;
         }
 
@@ -52,6 +80,29 @@ impl MdState {
         }
     }
 
+    /// GROMACS-style linear acceleration correction: use the current COM velocity
+    /// to estimate the displacement accumulated over the removal interval under
+    /// nearly constant COM acceleration, shift positions back uniformly, then
+    /// remove the translational COM velocity.
+    pub(crate) fn zero_linear_momentum_acceleration_corrected(&mut self, interval_dt: f32) {
+        if interval_dt <= 0.0 {
+            self.zero_linear_momentum();
+            return;
+        }
+
+        let (mass_sum, p_sum) = self.dynamic_mass_and_momentum();
+        if mass_sum <= EPS {
+            return;
+        }
+
+        let vel_com: Vec3 = (p_sum / mass_sum).into();
+
+        // If the COM acceleration has been nearly constant since the previous
+        // removal event, the displacement is 0.5 * a * T^2 = 0.5 * v_end * T.
+        self.shift_dynamic_positions(-(vel_com * (0.5 * interval_dt)));
+        self.zero_linear_momentum();
+    }
+
     // todo: Assess if you want this for multi-molecule systems.
     /// Remove rigid-body rotation.
     /// Computes ω from I ω = L about the atoms' COM, then sets v' = v - ω × (r - r_cm).
@@ -60,6 +111,9 @@ impl MdState {
         let mut m_r_sum = Vec3F64::new_zero();
 
         for a in &self.atoms {
+            if a.static_ {
+                continue;
+            }
             mass_sum += a.mass as f64;
 
             let m_r: Vec3F64 = (a.posit * a.mass).into();
@@ -92,6 +146,9 @@ impl MdState {
         let mut L = Vec3::new_zero();
 
         for a in &self.atoms {
+            if a.static_ {
+                continue;
+            }
             let m = a.mass;
 
             let r = a.posit - rot_com;
@@ -188,6 +245,9 @@ impl MdState {
 
         // v' = v - ω × (r - r_cm)
         for a in &mut self.atoms {
+            if a.static_ {
+                continue;
+            }
             let r = a.posit - rot_com;
             a.vel -= omega.cross(r);
         }
@@ -205,5 +265,119 @@ impl MdState {
 
         // Clean up any translation introduced by roundoff
         self.zero_linear_momentum();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lin_alg::f32::Vec3;
+
+    use crate::{AtomDynamics, MdState};
+
+    fn atom(posit: Vec3, vel: Vec3, mass: f32, static_: bool) -> AtomDynamics {
+        AtomDynamics {
+            posit,
+            vel,
+            mass,
+            static_,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn zero_linear_momentum_ignores_static_atoms() {
+        let mut state = MdState {
+            atoms: vec![
+                atom(
+                    Vec3::new(10., 10., 10.),
+                    Vec3::new(100., -20., 3.),
+                    100.0,
+                    true,
+                ),
+                atom(Vec3::new(0., 0., 0.), Vec3::new(4., 0., 0.), 2.0, false),
+                atom(Vec3::new(1., 0., 0.), Vec3::new(-2., 0., 0.), 4.0, false),
+            ],
+            ..Default::default()
+        };
+
+        let static_vel_before = state.atoms[0].vel;
+        state.zero_linear_momentum();
+
+        assert_eq!(state.atoms[0].vel, static_vel_before);
+
+        let p_sum = state
+            .atoms
+            .iter()
+            .filter(|a| !a.static_)
+            .fold(Vec3::new_zero(), |acc, a| acc + a.vel * a.mass);
+
+        assert!(
+            p_sum.magnitude() < 1e-5,
+            "dynamic momentum not zeroed: {p_sum:?}"
+        );
+    }
+
+    #[test]
+    fn zero_angular_momentum_leaves_static_atoms_unchanged() {
+        let mut state = MdState {
+            atoms: vec![
+                atom(
+                    Vec3::new(20., 20., 20.),
+                    Vec3::new(50., -10., 5.),
+                    50.0,
+                    true,
+                ),
+                atom(Vec3::new(-1., 0., 0.), Vec3::new(0., -1., 0.), 1.0, false),
+                atom(Vec3::new(1., 0., 0.), Vec3::new(0., 1., 0.), 1.0, false),
+                atom(Vec3::new(0., 1., 0.), Vec3::new(-1., 0., 0.), 1.0, false),
+            ],
+            ..Default::default()
+        };
+
+        let static_vel_before = state.atoms[0].vel;
+        state.zero_angular_momentum();
+
+        assert_eq!(state.atoms[0].vel, static_vel_before);
+
+        let dynamic_speed_sq: f32 = state
+            .atoms
+            .iter()
+            .filter(|a| !a.static_)
+            .map(|a| a.vel.magnitude_squared())
+            .sum();
+
+        assert!(
+            dynamic_speed_sq < 1e-4,
+            "dynamic angular motion was not removed: {dynamic_speed_sq}"
+        );
+    }
+
+    #[test]
+    fn acceleration_correction_shifts_dynamic_positions_only() {
+        let mut state = MdState {
+            atoms: vec![
+                atom(Vec3::new(50., 0., 0.), Vec3::new(9., 0., 0.), 10.0, true),
+                atom(Vec3::new(1., 0., 0.), Vec3::new(2., 0., 0.), 2.0, false),
+                atom(Vec3::new(3., 0., 0.), Vec3::new(2., 0., 0.), 2.0, false),
+            ],
+            ..Default::default()
+        };
+
+        state.zero_linear_momentum_acceleration_corrected(4.0);
+
+        assert_eq!(state.atoms[0].posit, Vec3::new(50., 0., 0.));
+        assert_eq!(state.atoms[1].posit, Vec3::new(-3., 0., 0.));
+        assert_eq!(state.atoms[2].posit, Vec3::new(-1., 0., 0.));
+
+        let p_sum = state
+            .atoms
+            .iter()
+            .filter(|a| !a.static_)
+            .fold(Vec3::new_zero(), |acc, a| acc + a.vel * a.mass);
+
+        assert!(
+            p_sum.magnitude() < 1e-5,
+            "dynamic momentum not zeroed: {p_sum:?}"
+        );
     }
 }
