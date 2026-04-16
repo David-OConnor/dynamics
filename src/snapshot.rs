@@ -140,6 +140,10 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    fn wrap_atom_posits(cell: &SimBox, atom_posits: impl IntoIterator<Item = Vec3>) -> Vec<Vec3> {
+        atom_posits.into_iter().map(|p| cell.wrap(p)).collect()
+    }
+
     /// Initialize with position data only. We construct these with positions only, then augment
     /// with velocity and energy data as required.
     pub fn new(state: &MdState) -> Self {
@@ -155,7 +159,9 @@ impl Snapshot {
 
         Self {
             time: state.time,
-            atom_posits: state.atoms.iter().map(|a| a.posit).collect(),
+            // Keep trajectory/output coordinates in the primary unit cell so playback matches
+            // GROMACS-style PBC visualization even though the force path already uses PBC.
+            atom_posits: Self::wrap_atom_posits(&state.cell, state.atoms.iter().map(|a| a.posit)),
             water_o_posits,
             water_h0_posits,
             water_h1_posits,
@@ -254,7 +260,7 @@ impl Snapshot {
     }
 
     pub fn to_dcd(&self, cell: &SimBox, write_water: bool) -> DcdFrame {
-        let mut atom_posits = self.atom_posits.clone();
+        let mut atom_posits = Self::wrap_atom_posits(cell, self.atom_posits.iter().copied());
 
         if write_water {
             for i in 0..self.water_o_posits.len() {
@@ -288,6 +294,45 @@ impl Snapshot {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lin_alg::f32::Vec3;
+
+    use crate::barostat::SimBox;
+
+    use super::Snapshot;
+
+    #[test]
+    fn wrap_atom_posits_keeps_solute_coordinates_in_primary_box() {
+        let cell = SimBox::new(Vec3::new(0., 0., 0.), Vec3::new(10., 20., 30.));
+        let wrapped = Snapshot::wrap_atom_posits(
+            &cell,
+            [
+                Vec3::new(12.5, -2.0, 31.0),
+                Vec3::new(-0.1, 19.5, -0.25),
+                Vec3::new(9.0, 5.0, 29.5),
+            ],
+        );
+
+        assert_eq!(wrapped[0], Vec3::new(2.5, 18.0, 1.0));
+        assert_eq!(wrapped[1], Vec3::new(9.9, 19.5, 29.75));
+        assert_eq!(wrapped[2], Vec3::new(9.0, 5.0, 29.5));
+    }
+
+    #[test]
+    fn to_dcd_wraps_solute_positions_before_export() {
+        let cell = SimBox::new(Vec3::new(-5., -5., -5.), Vec3::new(5., 5., 5.));
+        let snapshot = Snapshot {
+            atom_posits: vec![Vec3::new(6.0, -5.5, 15.0)],
+            ..Default::default()
+        };
+
+        let frame = snapshot.to_dcd(&cell, false);
+
+        assert_eq!(frame.atom_posits, vec![Vec3::new(-4.0, 4.5, -5.0)]);
     }
 }
 
