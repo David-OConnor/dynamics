@@ -85,24 +85,19 @@ impl MdState {
     pub(crate) fn dof_for_thermo(&self) -> usize {
         // 3 positional + 3 rotational for each solvent mol.
         let mut result = 6 * self.water.len();
-
-        if !self.solvent_only_sim_at_init {
-            result += 3 * self.atoms.iter().filter(|a| !a.static_).count();
-        }
+        result += 3 * self.atoms.iter().filter(|a| !a.static_).count();
 
         let num_constraints = {
             let mut c = 0;
 
-            if !self.solvent_only_sim_at_init {
-                for atom in &self.atoms {
-                    if matches!(
-                        self.cfg.hydrogen_constraint,
-                        HydrogenConstraint::Shake { shake_tolerance: _ }
-                    ) && atom.element == Element::Hydrogen
-                        && !atom.static_
-                    {
-                        c += 1;
-                    }
+            for atom in &self.atoms {
+                if matches!(
+                    self.cfg.hydrogen_constraint,
+                    HydrogenConstraint::Shake { shake_tolerance: _ }
+                ) && atom.element == Element::Hydrogen
+                    && !atom.static_
+                {
+                    c += 1;
                 }
             }
 

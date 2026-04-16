@@ -667,6 +667,9 @@ pub struct MdState {
     // todo: Sub-struct for ambient cache like num_static atoms and thermo_dof
     /// Degrees of freedom, used in temperature and kinetic energy calculations.
     thermo_dof: usize,
+    /// Count of solute atoms stored at the front of `atoms`; any later atoms belong to
+    /// explicit solvent molecules such as octanol or custom solvent templates.
+    solute_atom_count: usize,
     // todo: Deprecate this if you deprecate per-atom posits and vels in snapshots?
     /// Used to track which molecule each atom is associated with in our flattened structures.
     pub mol_start_indices: Vec<usize>,
@@ -783,8 +786,9 @@ impl MdState {
         // These Vecs all share indices, and all include all molecules.
         let mut atoms_md = Vec::new();
         let mut adjacency_list = Vec::new();
+        let mut solute_atom_count = 0;
 
-        for mol in all_mols {
+        for (mol_i, mol) in all_mols.iter().enumerate() {
             if !mol.atoms.is_empty() {
                 mol_start_indices.push(atoms_md.len());
             }
@@ -902,6 +906,10 @@ impl MdState {
             }
 
             atom_ct_prior_to_this_mol += atoms.len();
+
+            if mol_i + 1 == mols.len() {
+                solute_atom_count = atoms_md.len();
+            }
         }
 
         // Compute net charge from all solute atoms (internal Amber charge units → elementary).
@@ -936,6 +944,7 @@ impl MdState {
             force_field_params,
             mass_accel_factor,
             _num_static_atoms: num_static_atoms,
+            solute_atom_count,
             mol_start_indices,
             potential_energy_between_mols,
             ..Default::default()
@@ -1048,7 +1057,7 @@ impl MdState {
         result.pack_atoms();
 
         if !result.cfg.overrides.skip_water_relaxation {
-            result.md_on_water_only(dev);
+            result.md_on_solute_only(dev);
         }
 
         if let Some(max_iters) = result.cfg.max_init_relaxation_iters {

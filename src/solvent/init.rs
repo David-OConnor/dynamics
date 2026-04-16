@@ -675,6 +675,25 @@ pub(crate) fn pack_custom_solvent(
 }
 
 impl MdState {
+    fn mark_solute_static_for_init_relaxation(&mut self) -> Vec<bool> {
+        let mut static_state = Vec::with_capacity(self.atoms.len());
+
+        for (i, atom) in self.atoms.iter_mut().enumerate() {
+            static_state.push(atom.static_);
+            if i < self.solute_atom_count {
+                atom.static_ = true;
+            }
+        }
+
+        static_state
+    }
+
+    fn restore_static_state(&mut self, static_state: &[bool]) {
+        for (atom, &was_static) in self.atoms.iter_mut().zip(static_state.iter()) {
+            atom.static_ = was_static;
+        }
+    }
+
     /// Use this to help initialize solvent molecules to realistic geometry of hydrogen bond networks,
     /// prior to the first proper simulation step. Runs MD on solvent only.
     /// Make sure to only run this after state is properly initialized, e.g. towards the end
@@ -684,33 +703,88 @@ impl MdState {
     /// into position. As they settle, the thermostat will bring the velocities down to set
     /// the target temp. This sim should run long enough to the solvent is stable by the time
     /// the main sim starts.
-    pub fn md_on_water_only(&mut self, dev: &ComputationDevice) {
-        println!("Initializing solvent H bond networks...");
+    pub fn md_on_solute_only(&mut self, dev: &ComputationDevice) {
+        println!("Initializing solvent structure prior to production MD...");
         let start = Instant::now();
 
         // This disables things like snapshot saving, and certain prints.
         self.solvent_only_sim_at_init = true;
+        let thermo_dof_prev = self.thermo_dof;
 
-        // Mark all non-solvent atoms as static; keep track of their original state here.
-        let mut static_state = Vec::with_capacity(self.atoms.len());
-        for a in &mut self.atoms {
-            static_state.push(a.static_);
-            a.static_ = true;
-        }
+        // Freeze the solute atoms while leaving explicit solvent atoms in `self.atoms`
+        // free to relax alongside rigid OPC water.
+        let static_state = self.mark_solute_static_for_init_relaxation();
+        self.thermo_dof = self.dof_for_thermo();
 
         for _ in 0..NUM_EQUILIBRATION_STEPS {
             self.step(dev, DT_EQUILIBRATION, None);
         }
 
-        // Restore the original static state.
-        for (i, a) in self.atoms.iter_mut().enumerate() {
-            a.static_ = static_state[i];
-        }
-
+        self.restore_static_state(&static_state);
         self.solvent_only_sim_at_init = false;
+        self.thermo_dof = thermo_dof_prev;
         self.step_count = 0; // Reset.
 
         let elapsed = start.elapsed().as_millis();
-        println!("Water H bond networks complete in {elapsed} ms");
+        println!("Solvent initialization MD complete in {elapsed} ms");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AtomDynamics, MdState};
+
+    #[test]
+    fn init_relaxation_freezes_only_solute_atoms() {
+        let mut state = MdState {
+            atoms: vec![
+                AtomDynamics {
+                    static_: false,
+                    ..Default::default()
+                },
+                AtomDynamics {
+                    static_: false,
+                    ..Default::default()
+                },
+                AtomDynamics {
+                    static_: false,
+                    ..Default::default()
+                },
+            ],
+            solute_atom_count: 2,
+            ..Default::default()
+        };
+
+        let static_state = state.mark_solute_static_for_init_relaxation();
+
+        assert!(state.atoms[0].static_);
+        assert!(state.atoms[1].static_);
+        assert!(!state.atoms[2].static_);
+
+        state.restore_static_state(&static_state);
+
+        assert!(!state.atoms[0].static_);
+        assert!(!state.atoms[1].static_);
+        assert!(!state.atoms[2].static_);
+    }
+
+    #[test]
+    fn thermo_dof_includes_dynamic_solvent_atoms_during_init_relaxation() {
+        let mut state = MdState {
+            atoms: vec![
+                AtomDynamics {
+                    static_: true,
+                    ..Default::default()
+                },
+                AtomDynamics {
+                    static_: false,
+                    ..Default::default()
+                },
+            ],
+            solvent_only_sim_at_init: true,
+            ..Default::default()
+        };
+
+        assert_eq!(state.dof_for_thermo(), 3);
     }
 }
