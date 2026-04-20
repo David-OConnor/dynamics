@@ -519,19 +519,18 @@ impl MdState {
             }
 
             a.accel = a.force * self.mass_accel_factor[i];
-            // We are currently experiencing non-deconflicted octanol, at least with a bulky
-            // solute, at init. It will be fixed during equilibration, but we will get this message
-            // if not explicitly blocked.
-            if !(self.solvent_only_sim_at_init && self.cfg.solvent == Solvent::OctanolWithWater)
-                && a.accel.magnitude_squared() > MAX_ACCEL_SQ
-            {
-                println!(
-                    "Error: Acceleration out of bounds for atom {} on step {}. Clamping {:.3} to {:.3}",
-                    i,
-                    self.step_count,
-                    a.accel.magnitude(),
-                    MAX_ACCEL
-                );
+            if a.accel.magnitude_squared() > MAX_ACCEL_SQ {
+                if !(self.solvent_only_sim_at_init && self.cfg.solvent == Solvent::OctanolWithWater)
+                {
+                    println!(
+                        "Error: Acceleration out of bounds for atom {} on step {}. Clamping {:.3} to {:.3}",
+                        i,
+                        self.step_count,
+                        a.accel.magnitude(),
+                        MAX_ACCEL
+                    );
+                }
+
                 a.accel = a.accel.to_normalized() * MAX_ACCEL;
             }
 

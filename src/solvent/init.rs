@@ -68,8 +68,7 @@ const PBC_MIN_WATER_O_O_DIST_SQ: f32 = PBC_MIN_WATER_O_O_DIST * PBC_MIN_WATER_O_
 // improve things. Note that we initialize from a pre-equilibrated template, so we shouldn't
 // need many effects. This mainly deals with template tiling effects, and solvent-solute conflicts.
 const NUM_EQUILIBRATION_STEPS_WATER: usize = 200;
-// todo: Experimenting.
-const NUM_EQUILIBRATION_STEPS_OTHER_SOLVENT: usize = 200;
+const NUM_EQUILIBRATION_STEPS_OTHER_SOLVENT: usize = 600;
 
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 // We seem to get better settling results with a low dt.

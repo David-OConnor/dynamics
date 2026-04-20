@@ -301,9 +301,8 @@ impl Snapshot {
 mod tests {
     use lin_alg::f32::Vec3;
 
-    use crate::barostat::SimBox;
-
     use super::Snapshot;
+    use crate::barostat::SimBox;
 
     #[test]
     fn wrap_atom_posits_keeps_solute_coordinates_in_primary_box() {
