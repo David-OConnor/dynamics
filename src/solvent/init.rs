@@ -18,7 +18,7 @@ use lin_alg::{
 use rand::Rng;
 
 use crate::{
-    AtomDynamics, ComputationDevice, MdState, MolDynamics,
+    AtomDynamics, ComputationDevice, MdState, MolDynamics, Solvent,
     barostat::SimBox,
     partial_charge_inference::{files::load_from_bytes_bincode, save},
     sa_surface,
@@ -67,7 +67,10 @@ const PBC_MIN_WATER_O_O_DIST_SQ: f32 = PBC_MIN_WATER_O_O_DIST * PBC_MIN_WATER_O_
 // Higher is more accurate, but slower. After hydrogen bond networks are settled, higher doensn't
 // improve things. Note that we initialize from a pre-equilibrated template, so we shouldn't
 // need many effects. This mainly deals with template tiling effects, and solvent-solute conflicts.
-const NUM_EQUILIBRATION_STEPS: usize = 200;
+const NUM_EQUILIBRATION_STEPS_WATER: usize = 200;
+// todo: Experimenting.
+const NUM_EQUILIBRATION_STEPS_OTHER_SOLVENT: usize = 200;
+
 // Like in our normal setup with constraint H, 0.002ps may be the safe upper bound.
 // We seem to get better settling results with a low dt.
 const DT_EQUILIBRATION: f32 = 0.0005;
@@ -716,7 +719,15 @@ impl MdState {
         let static_state = self.mark_solute_static_for_init_relaxation();
         self.thermo_dof = self.dof_for_thermo();
 
-        for _ in 0..NUM_EQUILIBRATION_STEPS {
+        let steps = match self.cfg.solvent {
+            Solvent::None => 0,
+            Solvent::WaterOpc | Solvent::WaterOpcSpecifyMolCount(_) => {
+                NUM_EQUILIBRATION_STEPS_WATER
+            }
+            Solvent::OctanolWithWater | Solvent::Custom(_) => NUM_EQUILIBRATION_STEPS_OTHER_SOLVENT,
+        };
+
+        for _ in 0..steps {
             self.step(dev, DT_EQUILIBRATION, None);
         }
 
