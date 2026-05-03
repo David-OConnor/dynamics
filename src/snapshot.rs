@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    f32::consts::PI,
+    f32::consts::{PI, TAU},
     fs,
     io::{self, ErrorKind},
     path::Path,
@@ -20,6 +20,7 @@ use bio_files::{
 #[cfg(feature = "cuda")]
 use cudarc::{driver::CudaContext, nvrtc::Ptx};
 use lin_alg::f32::Vec3;
+use na_seq::Element;
 
 use crate::{AtomDynamics, MdState, barostat::SimBox, solvent::MASS_WATER_MOL};
 #[cfg(feature = "cuda")]
@@ -194,13 +195,23 @@ impl Snapshot {
         let volume = state.cell.volume();
         let density = mass as f32 / volume;
 
+        let hydrogen_bonds = compute_h_bonds(
+            &state.atoms,
+            &self.atom_posits,
+            &state.adjacency_list,
+            &self.water_o_posits,
+            &self.water_h0_posits,
+            &self.water_h1_posits,
+            &state.cell,
+        );
+
         self.energy_data = Some(SnapshotEnergyData {
             energy_kinetic: state.kinetic_energy as f32,
             energy_potential: state.potential_energy as f32,
             energy_potential_between_mols,
             energy_potential_nonbonded: state.potential_energy_nonbonded as f32,
             energy_potential_bonded: state.potential_energy_bonded as f32,
-            hydrogen_bonds: Vec::new(), // Populated later A/R.
+            hydrogen_bonds,
             temperature,
             pressure,
             dh_dl: Some(state.compute_dh_dl() as f32),
@@ -253,11 +264,31 @@ impl Snapshot {
         Ok(per_mol)
     }
 
-    /// The element indices must match the atom posits.
-    pub fn populate_hydrogen_bonds(&mut self, _atoms: &[AtomDynamics]) {
-        // let result = create_hydrogen_bonds(&atoms, &self.atom_posits, &self.water_o_posits, &self.bonds);
-
-        // self.hydrogen_bonds = result;
+    /// Populate `SnapshotEnergyData::hydrogen_bonds` for an existing snapshot.
+    ///
+    /// Useful as a post-processing step on snapshots loaded from disk (DCD/TRR/XTC),
+    /// where energy data may not have been written by `update_with_energy`.
+    /// `atoms`, `adjacency_list`, and `cell` must come from the same `MdState`
+    /// the snapshot was produced from. Atom indices in `adjacency_list` must
+    /// match `atoms` / `self.atom_posits`.
+    pub fn populate_hydrogen_bonds(
+        &mut self,
+        atoms: &[AtomDynamics],
+        adjacency_list: &[Vec<usize>],
+        cell: &SimBox,
+    ) {
+        let h_bonds = compute_h_bonds(
+            atoms,
+            &self.atom_posits,
+            adjacency_list,
+            &self.water_o_posits,
+            &self.water_h0_posits,
+            &self.water_h1_posits,
+            cell,
+        );
+        if let Some(energy) = self.energy_data.as_mut() {
+            energy.hydrogen_bonds = h_bonds;
+        }
     }
 
     pub fn to_dcd(&self, cell: &SimBox, write_water: bool) -> DcdFrame {
@@ -424,15 +455,30 @@ pub enum HBondAtomType {
     WaterH1,
 }
 
-/// C+P from Molchanica.
+// Note: Chimera shows H bonds as ranging generally from 2.8 to 3.3.
+// Note: These values all depend on which is the donor. Your code doesn't take this into account.
+// Copy + Pasted from Molchanica (`bond_inference.rs`); converted from f64 to f32.
+const H_BOND_O_O_DIST: f32 = 2.7;
+const H_BOND_N_N_DIST: f32 = 3.05;
+const H_BOND_O_N_DIST: f32 = 2.9;
+
+const H_BOND_N_F_DIST: f32 = 2.75;
+const H_BOND_N_S_DIST: f32 = 3.35;
+
+const H_BOND_DIST_THRESH: f32 = 0.3;
+const H_BOND_DIST_GRID: f32 = 3.6;
+
+const H_BOND_ANGLE_THRESH: f32 = TAU / 3.;
+
+// H-bond strength scoring: distance and angle ranges.
+const H_BOND_STRENGTH_DIST_MIN: f32 = 2.4; // Å — strongest
+const H_BOND_STRENGTH_DIST_MAX: f32 = 3.6; // Å — cutoff
+const H_BOND_STRENGTH_ANGLE_MIN: f32 = PI * 2. / 3.; // 120° — weakest accepted
+
+/// Copy + Pasted from Molchanica (`bond_inference.rs`); converted from f64 to f32.
 /// Calculate hydrogen bond strength from donor heavy-atom, hydrogen, and acceptor positions.
 /// Uses the D···A distance and the D-H···A angle (at H). Returns a value in [0, 1].
 fn h_bond_strength(donor_posit: Vec3, h_posit: Vec3, acc_posit: Vec3) -> f32 {
-    // H-bond strength scoring: distance and angle ranges.
-    const H_BOND_STRENGTH_DIST_MIN: f64 = 2.4; // Å — strongest
-    const H_BOND_STRENGTH_DIST_MAX: f64 = 3.6; // Å — cutoff
-    const H_BOND_STRENGTH_ANGLE_MIN: f64 = PI * 2. / 3.; // 120° — weakest accepted
-
     let dist = (donor_posit - acc_posit).magnitude();
     let dist_score = ((H_BOND_STRENGTH_DIST_MAX - dist)
         / (H_BOND_STRENGTH_DIST_MAX - H_BOND_STRENGTH_DIST_MIN))
@@ -446,7 +492,25 @@ fn h_bond_strength(donor_posit: Vec3, h_posit: Vec3, acc_posit: Vec3) -> f32 {
     let angle_score =
         ((angle - H_BOND_STRENGTH_ANGLE_MIN) / (PI - H_BOND_STRENGTH_ANGLE_MIN)).clamp(0., 1.);
 
-    (dist_score * angle_score) as f32
+    dist_score * angle_score
+}
+
+/// Copy + Pasted from Molchanica (`bond_inference.rs`).
+fn h_bond_candidate_el(element: Element) -> bool {
+    matches!(
+        element,
+        Element::Nitrogen | Element::Oxygen | Element::Sulfur | Element::Fluorine
+    )
+}
+
+/// Copy + Pasted from Molchanica (`bond_inference.rs`); converted from f64 to f32.
+/// Spatial grid cell key for a 3D position.
+fn cell_key(pos: Vec3) -> (i32, i32, i32) {
+    (
+        (pos.x / H_BOND_DIST_GRID).floor() as i32,
+        (pos.y / H_BOND_DIST_GRID).floor() as i32,
+        (pos.z / H_BOND_DIST_GRID).floor() as i32,
+    )
 }
 
 /// Used for visualizing hydrogen bonds on a given snapshot. Similar to one used in Molchanica.
@@ -456,6 +520,209 @@ pub struct HydrogenBond {
     pub acceptor: (HBondAtomType, usize),
     pub hydrogen: (HBondAtomType, usize),
     pub strength: f32,
+}
+
+/// One acceptor entry in the spatial grid: tagged index, position, element.
+type AcceptorEntry = ((HBondAtomType, usize), Vec3, Element);
+type AcceptorGrid = HashMap<(i32, i32, i32), Vec<AcceptorEntry>>;
+
+/// Copy + Pasted from Molchanica (`bond_inference.rs`); adapted to take typed
+/// (HBondAtomType, usize) indices and to apply the simulation cell's
+/// minimum-image convention for distance/angle math.
+///
+/// Returns Some(HydrogenBond) when the donor / hydrogen / acceptor triplet
+/// satisfies the distance and D-H···A angle thresholds.
+fn hydrogen_bond_inner(
+    cell: &SimBox,
+    donor_idx: (HBondAtomType, usize),
+    h_idx: (HBondAtomType, usize),
+    acc_idx: (HBondAtomType, usize),
+    donor_posit: Vec3,
+    h_posit: Vec3,
+    acc_posit: Vec3,
+    donor_element: Element,
+    acc_element: Element,
+) -> Option<HydrogenBond> {
+    let d_e = donor_element;
+    let a_e = acc_element;
+    // todo: Take into account typical lengths of donor and receptor; here your order isn't used.
+    let dist_thresh = if d_e == Element::Oxygen && a_e == Element::Oxygen {
+        H_BOND_O_O_DIST
+    } else if d_e == Element::Nitrogen && a_e == Element::Nitrogen {
+        H_BOND_N_N_DIST
+    } else if (d_e == Element::Oxygen && a_e == Element::Nitrogen)
+        || (d_e == Element::Nitrogen && a_e == Element::Oxygen)
+    {
+        H_BOND_O_N_DIST
+    } else if (d_e == Element::Fluorine && a_e == Element::Nitrogen)
+        || (d_e == Element::Nitrogen && a_e == Element::Fluorine)
+    {
+        H_BOND_N_F_DIST
+    } else {
+        H_BOND_N_S_DIST // Good enough for other combos involving S and F, for now.
+    };
+
+    let dist_thresh_min = dist_thresh - H_BOND_DIST_THRESH;
+    let dist_thresh_max = dist_thresh + H_BOND_DIST_THRESH;
+
+    // Use minimum-image displacement so atoms wrapped to opposite sides of the
+    // box are still recognized as close.
+    let donor_acc = cell.min_image(acc_posit - donor_posit);
+    let dist = donor_acc.magnitude();
+    if dist < dist_thresh_min || dist > dist_thresh_max {
+        return None;
+    }
+
+    let donor_h = cell.min_image(h_posit - donor_posit);
+    let donor_acceptor = -donor_acc; // i.e. donor - acceptor (already min-imaged).
+
+    let angle = donor_acceptor
+        .to_normalized()
+        .dot(donor_h.to_normalized())
+        .clamp(-1., 1.)
+        .acos();
+
+    if angle > H_BOND_ANGLE_THRESH {
+        // For strength we use the same min-imaged geometry: shift the acceptor
+        // position to the donor's image so h_bond_strength sees a coherent
+        // triplet without needing PBC awareness itself.
+        let acc_imaged = donor_posit + donor_acc;
+        let strength = h_bond_strength(donor_posit, h_posit, acc_imaged);
+        Some(HydrogenBond {
+            donor: donor_idx,
+            acceptor: acc_idx,
+            hydrogen: h_idx,
+            strength,
+        })
+    } else {
+        None
+    }
+}
+
+/// Compute hydrogen bonds in a snapshot, covering solute–solute, solute–water,
+/// water–solute, and water–water donor/acceptor pairs.
+///
+/// Solute donors are taken from the adjacency list (heavy N/O/S/F atoms with a
+/// covalently-bonded hydrogen). Each water molecule contributes two donors
+/// (O–H0 and O–H1) and one acceptor (O). The returned `HydrogenBond` indices
+/// are tagged with `HBondAtomType` so callers can dispatch into either
+/// `MdState::atoms` or `MdState::water`.
+fn compute_h_bonds(
+    atoms: &[AtomDynamics],
+    atom_posits: &[Vec3],
+    adjacency_list: &[Vec<usize>],
+    water_o_posits: &[Vec3],
+    water_h0_posits: &[Vec3],
+    water_h1_posits: &[Vec3],
+    cell: &SimBox,
+) -> Vec<HydrogenBond> {
+    // Build the acceptor grid (solute heavy candidates + water O).
+    let mut grid: AcceptorGrid = HashMap::new();
+
+    for (i, atom) in atoms.iter().enumerate() {
+        if !h_bond_candidate_el(atom.element) {
+            continue;
+        }
+        let posit = atom_posits[i];
+        grid.entry(cell_key(posit))
+            .or_default()
+            .push(((HBondAtomType::Standard, i), posit, atom.element));
+    }
+    for (i, &posit) in water_o_posits.iter().enumerate() {
+        grid.entry(cell_key(posit))
+            .or_default()
+            .push(((HBondAtomType::WaterO, i), posit, Element::Oxygen));
+    }
+
+    // Build donor candidates: (donor heavy idx, H idx, donor posit, H posit, donor element).
+    let mut donor_candidates: Vec<(
+        (HBondAtomType, usize),
+        (HBondAtomType, usize),
+        Vec3,
+        Vec3,
+        Element,
+    )> = Vec::new();
+
+    // Solute donors: find heavy–H pairs via the adjacency list.
+    for (i, atom) in atoms.iter().enumerate() {
+        if !h_bond_candidate_el(atom.element) {
+            continue;
+        }
+        let Some(neighbors) = adjacency_list.get(i) else {
+            continue;
+        };
+        for &j in neighbors {
+            if j >= atoms.len() {
+                continue;
+            }
+            if atoms[j].element == Element::Hydrogen {
+                donor_candidates.push((
+                    (HBondAtomType::Standard, i),
+                    (HBondAtomType::Standard, j),
+                    atom_posits[i],
+                    atom_posits[j],
+                    atom.element,
+                ));
+            }
+        }
+    }
+
+    // Water donors: each water has O–H0 and O–H1.
+    for i in 0..water_o_posits.len() {
+        let o_pos = water_o_posits[i];
+        donor_candidates.push((
+            (HBondAtomType::WaterO, i),
+            (HBondAtomType::WaterH0, i),
+            o_pos,
+            water_h0_posits[i],
+            Element::Oxygen,
+        ));
+        donor_candidates.push((
+            (HBondAtomType::WaterO, i),
+            (HBondAtomType::WaterH1, i),
+            o_pos,
+            water_h1_posits[i],
+            Element::Oxygen,
+        ));
+    }
+
+    let mut result = Vec::new();
+
+    for (donor_idx, h_idx, donor_posit, h_posit, donor_element) in donor_candidates {
+        let center = cell_key(donor_posit);
+
+        for dx in -1i32..=1 {
+            for dy in -1i32..=1 {
+                for dz in -1i32..=1 {
+                    let key = (center.0 + dx, center.1 + dy, center.2 + dz);
+                    let Some(acceptors) = grid.get(&key) else {
+                        continue;
+                    };
+                    for &(acc_idx, acc_posit, acc_element) in acceptors {
+                        // Skip self (donor heavy can't be its own acceptor).
+                        if acc_idx == donor_idx {
+                            continue;
+                        }
+                        if let Some(bond) = hydrogen_bond_inner(
+                            cell,
+                            donor_idx,
+                            h_idx,
+                            acc_idx,
+                            donor_posit,
+                            h_posit,
+                            acc_posit,
+                            donor_element,
+                            acc_element,
+                        ) {
+                            result.push(bond);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result
 }
 
 impl Snapshot {
