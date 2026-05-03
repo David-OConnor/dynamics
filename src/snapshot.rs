@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    f32::consts::PI,
     fs,
     io::{self, ErrorKind},
     path::Path,
@@ -413,6 +414,8 @@ impl From<DcdFrame> for Snapshot {
 }
 
 /// Used for visualizing hydrogen bonds on a given snapshot.
+/// We distinguish this, as we handle water molecules separately in our
+/// state.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HBondAtomType {
     Standard,
@@ -421,12 +424,38 @@ pub enum HBondAtomType {
     WaterH1,
 }
 
-/// Used for visualizing hydrogen bonds on a given snapshot.
+/// C+P from Molchanica.
+/// Calculate hydrogen bond strength from donor heavy-atom, hydrogen, and acceptor positions.
+/// Uses the D···A distance and the D-H···A angle (at H). Returns a value in [0, 1].
+fn h_bond_strength(donor_posit: Vec3, h_posit: Vec3, acc_posit: Vec3) -> f32 {
+    // H-bond strength scoring: distance and angle ranges.
+    const H_BOND_STRENGTH_DIST_MIN: f64 = 2.4; // Å — strongest
+    const H_BOND_STRENGTH_DIST_MAX: f64 = 3.6; // Å — cutoff
+    const H_BOND_STRENGTH_ANGLE_MIN: f64 = PI * 2. / 3.; // 120° — weakest accepted
+
+    let dist = (donor_posit - acc_posit).magnitude();
+    let dist_score = ((H_BOND_STRENGTH_DIST_MAX - dist)
+        / (H_BOND_STRENGTH_DIST_MAX - H_BOND_STRENGTH_DIST_MIN))
+        .clamp(0., 1.);
+
+    // D-H···A angle measured at the hydrogen. 180° (π) is ideal / linear.
+    let vec_hd = (donor_posit - h_posit).to_normalized();
+    let vec_ha = (acc_posit - h_posit).to_normalized();
+    let angle = vec_hd.dot(vec_ha).clamp(-1., 1.).acos();
+
+    let angle_score =
+        ((angle - H_BOND_STRENGTH_ANGLE_MIN) / (PI - H_BOND_STRENGTH_ANGLE_MIN)).clamp(0., 1.);
+
+    (dist_score * angle_score) as f32
+}
+
+/// Used for visualizing hydrogen bonds on a given snapshot. Similar to one used in Molchanica.
 #[derive(Clone, Debug)]
 pub struct HydrogenBond {
     pub donor: (HBondAtomType, usize),
     pub acceptor: (HBondAtomType, usize),
     pub hydrogen: (HBondAtomType, usize),
+    pub strength: f32,
 }
 
 impl Snapshot {
