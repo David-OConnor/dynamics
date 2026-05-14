@@ -33,6 +33,7 @@
 //! short-range path does not yet apply alchemical scaling or accumulate ∂H/∂λ.
 //!
 //! # Soft-core potentials
+//! [GROMACS docs](https://manual.gromacs.org/nightly/reference-manual/functions/free-energy-interactions.html)
 //!
 //! Near λ = 0 or 1, the simple linear LJ coupling diverges when two atoms overlap.
 //! Production simulations should replace linear LJ scaling with a soft-core potential
