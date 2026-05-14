@@ -250,17 +250,7 @@ pub fn try_free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalErr
 /// decoupling free energy is larger in octanol than in water.
 ///
 /// # Panics
-/// Panics if any input is invalid. Use [`try_log_p`] to handle errors.
-pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> f64 {
-    try_log_p(dg_water, dg_octanol, temperature_k).unwrap_or_else(|e| panic!("log_p: {e}"))
-}
-
-/// Fallible variant of [`log_p`].
-pub fn try_log_p(
-    dg_water: f64,
-    dg_octanol: f64,
-    temperature_k: f64,
-) -> Result<f64, AlchemicalError> {
+pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> Result<f64, AlchemicalError> {
     validate_free_energy(dg_water)?;
     validate_free_energy(dg_octanol)?;
     validate_temperature(temperature_k)?;
@@ -370,7 +360,7 @@ fn validate_free_energy(dg: f64) -> Result<(), AlchemicalError> {
 mod tests {
     use super::{
         AlchemicalError, collect_window, free_energy_ti, log_p, try_collect_window,
-        try_free_energy_ti, try_log_p,
+        try_free_energy_ti,
     };
     use crate::snapshot::{Snapshot, SnapshotEnergyData};
 
@@ -433,7 +423,7 @@ mod tests {
 
     #[test]
     fn log_p_uses_expected_sign() {
-        let logp = log_p(3.0, 5.0, 298.15);
+        let logp = log_p(3.0, 5.0, 298.15).unwrap();
         assert!(logp > 0.0);
     }
 
@@ -474,7 +464,7 @@ mod tests {
 
     #[test]
     fn try_log_p_rejects_nonphysical_temperature() {
-        let err = try_log_p(1.0, 0.0, 0.0).unwrap_err();
+        let err = log_p(1.0, 0.0, 0.0).unwrap_err();
 
         assert_eq!(err, AlchemicalError::InvalidTemperature(0.0));
     }
