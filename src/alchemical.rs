@@ -1,4 +1,6 @@
 //! Alchemical free-energy calculations for high-level solvation and LogP workflows.
+//! This computes a result after varying simulation interactions between solute and solvent,
+//! and measuring potential energy at each variation.
 //!
 //! # Overview
 //!

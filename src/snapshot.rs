@@ -10,24 +10,19 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
+
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
     dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
     gromacs,
-    gromacs::{GromacsFrame, GromacsOutput, OutputControl, output::write_trr},
+    gromacs::{GromacsFrame, GromacsOutput, OutputControl, trr::write_trr},
     xtc::write_xtc,
 };
-#[cfg(feature = "cuda")]
-use cudarc::{driver::CudaContext, nvrtc::Ptx};
+
 use lin_alg::f32::Vec3;
 use na_seq::Element;
 
 use crate::{AtomDynamics, MdState, barostat::SimBox, solvent::MASS_WATER_MOL};
-#[cfg(feature = "cuda")]
-use crate::{
-    PTX,
-    gpu_interface::{ForcesPositsGpu, PerNeighborGpu},
-};
 
 // Append to any snapshot-saving files every this number of snapshots. E.g.
 // DCD, TRR, XTC. We want this to be such that we don't experience too much memory use.
