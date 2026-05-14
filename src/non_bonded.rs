@@ -258,8 +258,8 @@ fn calc_force_cpu(
     lj_tables: &LjTables,
     overrides: &MdOverrides,
     mol_start_indices: &[usize],
-    // For alchemical free-energy computation. This is CPU-only for now.
-    // Ignored unless the BodyRef has alchemical = true.
+    // For alchemical free-energy computation. Ignored unless a pair has
+    // alch_interaction = true.
     lambda_alch: f64,
     spme_alpha: f32,
     coulomb_cutoff: f32,
@@ -477,20 +477,30 @@ impl MdState {
                 }
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu(stream) => {
-                    let (f_std, f_wat, virial, energy, energy_between_mols) = force_nonbonded_gpu(
-                        stream,
-                        self.gpu_kernel.as_ref().unwrap(),
-                        self.gpu_kernel_zero_f32.as_ref().unwrap(),
-                        self.gpu_kernel_zero_f64.as_ref().unwrap(),
-                        &self.nb_pairs,
-                        &self.atoms,
-                        &self.water,
-                        self.cell.extent,
-                        self.forces_posits_gpu.as_mut().unwrap(),
-                        self.per_neighbor_gpu.as_ref().unwrap(),
-                        &self.cfg.overrides,
-                    );
-                    (f_std, f_wat, virial, energy, energy_between_mols, 0.0)
+                    let (f_std, f_wat, virial, energy, energy_between_mols, alch_energy) =
+                        force_nonbonded_gpu(
+                            stream,
+                            self.gpu_kernel.as_ref().unwrap(),
+                            self.gpu_kernel_alchemical.as_ref().unwrap(),
+                            self.gpu_kernel_zero_f32.as_ref().unwrap(),
+                            self.gpu_kernel_zero_f64.as_ref().unwrap(),
+                            &self.nb_pairs,
+                            &self.atoms,
+                            &self.water,
+                            self.cell.extent,
+                            self.forces_posits_gpu.as_mut().unwrap(),
+                            self.per_neighbor_gpu.as_ref().unwrap(),
+                            &self.cfg.overrides,
+                            self.lambda_alch,
+                        );
+                    (
+                        f_std,
+                        f_wat,
+                        virial,
+                        energy,
+                        energy_between_mols,
+                        alch_energy,
+                    )
                 }
             };
 

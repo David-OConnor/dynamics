@@ -645,6 +645,8 @@ pub struct MdState {
     #[cfg(feature = "cuda")]
     gpu_kernel: Option<CudaFunction>, // Option only due to not impling Default.
     #[cfg(feature = "cuda")]
+    gpu_kernel_alchemical: Option<CudaFunction>,
+    #[cfg(feature = "cuda")]
     gpu_kernel_zero_f32: Option<CudaFunction>,
     #[cfg(feature = "cuda")]
     gpu_kernel_zero_f64: Option<CudaFunction>,
@@ -1031,6 +1033,11 @@ impl MdState {
             let ctx = CudaContext::new(0).unwrap();
             let module = ctx.load_module(Ptx::from_src(PTX)).unwrap();
             result.gpu_kernel = Some(module.load_function("nonbonded_force_kernel").unwrap());
+            result.gpu_kernel_alchemical = Some(
+                module
+                    .load_function("nonbonded_force_alchemical_kernel")
+                    .unwrap(),
+            );
             result.gpu_kernel_zero_f32 = Some(module.load_function("zero_f32").unwrap());
             result.gpu_kernel_zero_f64 = Some(module.load_function("zero_f64").unwrap());
 

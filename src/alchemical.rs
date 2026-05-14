@@ -29,8 +29,8 @@
 //! pair list so cross interactions with the alchemical molecule are scaled by
 //! `(1 − λ)`.
 //!
-//! Alchemical scaling is currently implemented for the CPU force path. The CUDA
-//! short-range path does not yet apply alchemical scaling or accumulate ∂H/∂λ.
+//! Alchemical scaling is implemented for the CPU force path and for CUDA
+//! short-range non-bonded forces.
 //!
 //! # Soft-core potentials
 //! [GROMACS docs](https://manual.gromacs.org/nightly/reference-manual/functions/free-energy-interactions.html)
@@ -46,8 +46,7 @@
 //! The electrostatic coupling can remain linear; switch it off before LJ to avoid
 //! charge–charge singularities.
 //!
-//! todo: Use GPU for short-range forces if available; currently this is CPU only. And use "soft-core"
-//! todo: LJ (?)
+//! todo: Use soft-core LJ (?)
 
 use std::{
     error::Error,
@@ -282,13 +281,6 @@ impl MdState {
         mol_idx: usize,
         lambda: f64,
     ) -> Result<(), AlchemicalError> {
-        #[cfg(feature = "cuda")]
-        if matches!(dev, ComputationDevice::Gpu(_)) {
-            return Err(AlchemicalError::UnsupportedDevice(
-                "alchemical scaling is currently implemented for the CPU force path only",
-            ));
-        }
-
         validate_lambda(lambda)?;
 
         let mol_count = self.mol_start_indices.len();

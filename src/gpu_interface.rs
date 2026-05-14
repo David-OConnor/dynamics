@@ -26,6 +26,7 @@ pub(crate) struct ForcesPositsGpu {
 
     pub virial_gpu: CudaSlice<f64>,
     pub energy_gpu: CudaSlice<f64>,
+    pub alch_energy_gpu: CudaSlice<f64>,
 
     pub cutoff_ewald: f32,
     pub alpha_ewald: f32,
@@ -54,6 +55,7 @@ impl ForcesPositsGpu {
 
         let virial_gpu = stream.clone_htod(&[0.0f64]).unwrap();
         let energy_gpu = stream.clone_htod(&[0.0f64]).unwrap();
+        let alch_energy_gpu = stream.clone_htod(&[0.0f64]).unwrap();
 
         let pos_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
         let pos_w_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
@@ -69,6 +71,7 @@ impl ForcesPositsGpu {
             forces_on_water_h1,
             virial_gpu,
             energy_gpu,
+            alch_energy_gpu,
             cutoff_ewald,
             alpha_ewald,
 
@@ -102,6 +105,8 @@ pub(crate) struct PerNeighborGpu {
     pub calc_ljs: CudaSlice<u8>,
     pub calc_coulombs: CudaSlice<u8>,
     pub symmetric: CudaSlice<u8>,
+    pub alch_interactions: CudaSlice<u8>,
+    pub has_alchemical_interactions: bool,
 }
 
 impl PerNeighborGpu {
@@ -129,6 +134,7 @@ impl PerNeighborGpu {
         let mut calc_ljs = Vec::with_capacity(n);
         let mut calc_coulombs = Vec::with_capacity(n);
         let mut symmetric = Vec::with_capacity(n);
+        let mut alch_interactions = Vec::with_capacity(n);
 
         // Unpack BodyRef to fields. It doesn't map neatly to CUDA flattening primitives.
 
@@ -199,6 +205,7 @@ impl PerNeighborGpu {
             calc_ljs.push(pair.calc_lj);
             calc_coulombs.push(pair.calc_coulomb);
             symmetric.push(pair.symmetric);
+            alch_interactions.push(pair.alch_interaction);
         }
 
         // Transfer to GPU.
@@ -221,12 +228,15 @@ impl PerNeighborGpu {
             assert_eq!(calc_ljs.len(), n);
             assert_eq!(calc_coulombs.len(), n);
             assert_eq!(symmetric.len(), n);
+            assert_eq!(alch_interactions.len(), n);
         }
 
         let scale_14: Vec<_> = scale_14s.iter().map(|v| *v as u8).collect();
         let calc_ljs: Vec<_> = calc_ljs.iter().map(|v| *v as u8).collect();
         let calc_coulombs: Vec<_> = calc_coulombs.iter().map(|v| *v as u8).collect();
         let symmetric: Vec<_> = symmetric.iter().map(|v| *v as u8).collect();
+        let has_alchemical_interactions = alch_interactions.iter().any(|v| *v);
+        let alch_interactions: Vec<_> = alch_interactions.iter().map(|v| *v as u8).collect();
 
         let tgt_is = stream.clone_htod(&tgt_is).unwrap();
         let src_is = stream.clone_htod(&src_is).unwrap();
@@ -247,6 +257,7 @@ impl PerNeighborGpu {
         let calc_ljs = stream.clone_htod(&calc_ljs).unwrap();
         let calc_coulombs = stream.clone_htod(&calc_coulombs).unwrap();
         let symmetric = stream.clone_htod(&symmetric).unwrap();
+        let alch_interactions = stream.clone_htod(&alch_interactions).unwrap();
 
         Self {
             tgt_is,
@@ -263,6 +274,8 @@ impl PerNeighborGpu {
             calc_ljs,
             calc_coulombs,
             symmetric,
+            alch_interactions,
+            has_alchemical_interactions,
         }
     }
 }
@@ -307,10 +320,12 @@ fn upload_positions(
 /// Inputs are structured differently here from our other one; uses pre-paired inputs and outputs, and
 /// a common index. Exclusions (e.g. Amber-style 1-2 adn 1-3) are handled upstream.
 ///
-/// Returns (force on non-solvent, force on solvent, virial sum, potential energy total, per-mol-pair potential energy)
+/// Returns (force on non-solvent, force on solvent, virial sum, potential energy total,
+/// per-mol-pair potential energy, unscaled alchemical interaction energy)
 pub fn force_nonbonded_gpu(
     stream: &Arc<CudaStream>,
     kernel: &CudaFunction,
+    kernel_alchemical: &CudaFunction,
     kernel_zero_f32: &CudaFunction,
     kernel_zero_f64: &CudaFunction,
     pairs: &[NonBondedPair],
@@ -321,7 +336,8 @@ pub fn force_nonbonded_gpu(
     forces: &mut ForcesPositsGpu,
     per_neighbor: &PerNeighborGpu,
     overrides: &MdOverrides,
-) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>) {
+    lambda_alch: f64,
+) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>, f64) {
     upload_positions(stream, forces, atoms_dyn, water);
 
     let n = pairs.len();
@@ -341,9 +357,16 @@ pub fn force_nonbonded_gpu(
     let n_u32 = n as u32;
     let coulomb_disabled = overrides.coulomb_disabled as u8;
     let lj_disabled = overrides.lj_disabled as u8;
+    let alchemical_enabled = per_neighbor.has_alchemical_interactions;
+    let lambda_alch = lambda_alch as f32;
 
     let cfg = LaunchConfig::for_num_elems(n_u32);
-    let mut launch_args = stream.launch_builder(kernel);
+    let kernel_to_launch = if alchemical_enabled {
+        kernel_alchemical
+    } else {
+        kernel
+    };
+    let mut launch_args = stream.launch_builder(kernel_to_launch);
 
     // todo: How do we store and pass references to thsee? A struct of CudaSlices?
     // These forces and positions are per-atom; much smaller than the per-pair arrays.
@@ -355,6 +378,9 @@ pub fn force_nonbonded_gpu(
     //
     launch_args.arg(&mut forces.virial_gpu);
     launch_args.arg(&mut forces.energy_gpu);
+    if alchemical_enabled {
+        launch_args.arg(&mut forces.alch_energy_gpu);
+    }
     //
     launch_args.arg(&forces.pos_dyn);
     launch_args.arg(&forces.pos_w_o);
@@ -377,6 +403,9 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&per_neighbor.calc_ljs);
     launch_args.arg(&per_neighbor.calc_coulombs);
     launch_args.arg(&per_neighbor.symmetric);
+    if alchemical_enabled {
+        launch_args.arg(&per_neighbor.alch_interactions);
+    }
     //
     launch_args.arg(&cell_extent);
     launch_args.arg(&forces.cutoff_ewald);
@@ -384,6 +413,9 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&n_u32);
     launch_args.arg(&coulomb_disabled);
     launch_args.arg(&lj_disabled);
+    if alchemical_enabled {
+        launch_args.arg(&lambda_alch);
+    }
 
     unsafe {
         if launch_args.launch(cfg).is_err() {
@@ -419,10 +451,22 @@ pub fn force_nonbonded_gpu(
 
     let virial = stream.clone_dtoh(&forces.virial_gpu).unwrap()[0];
     let energy = stream.clone_dtoh(&forces.energy_gpu).unwrap()[0];
+    let alch_energy = if alchemical_enabled {
+        stream.clone_dtoh(&forces.alch_energy_gpu).unwrap()[0]
+    } else {
+        0.0
+    };
 
     let forces_on_dyn = forces_on_dyn.into_iter().map(|f| f.into()).collect();
 
-    (forces_on_dyn, forces_on_water, virial, energy, Vec::new())
+    (
+        forces_on_dyn,
+        forces_on_water,
+        virial,
+        energy,
+        Vec::new(),
+        alch_energy,
+    )
 }
 
 /// Zero forces and accumulators on the device. Run this each step.
@@ -487,4 +531,9 @@ fn zero_forces_and_accums(
     l6.arg(&mut forces.energy_gpu);
     l6.arg(&one);
     unsafe { l6.launch(cfg1) }.unwrap();
+
+    let mut l7 = stream.launch_builder(&zero_f64);
+    l7.arg(&mut forces.alch_energy_gpu);
+    l7.arg(&one);
+    unsafe { l7.launch(cfg1) }.unwrap();
 }
