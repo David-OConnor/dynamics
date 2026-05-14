@@ -1,9 +1,9 @@
-//! Alchemical free energy calculations for LogP estimation.
+//! Alchemical free-energy calculations for high-level solvation and LogP workflows.
 //!
 //! # Overview
 //!
-//! LogP (the octanol-solvent partition coefficient) can be estimated from alchemical
-//! free energy simulations using thermodynamic integration (TI):
+//! Solvation free energies and partition coefficients can be estimated from
+//! alchemical free-energy simulations using thermodynamic integration (TI):
 //!
 //! 1. Run **N separate MD simulations** at different λ values (e.g., 0.0, 0.05, …, 1.0),
 //!    **in both solvent and octanol**. λ = 0 means the solute interacts normally with the
@@ -11,8 +11,8 @@
 //!
 //! 2. At each simulation frame, record **∂H/∂λ** — the derivative of the Hamiltonian
 //!    with respect to λ. For linear coupling this equals minus the solute–solvent
-//!    interaction energy, which is already tracked in `MdState::potential_energy_between_mols`.
-//!    This is stored per frame in [`Snapshot::dh_dl`].
+//!    interaction energy accumulated during the non-bonded force calculation.
+//!    This is stored per frame in [`crate::snapshot::SnapshotEnergyData::dh_dl`].
 //!
 //! 3. Average ⟨∂H/∂λ⟩ over each λ window's trajectory into a [`LambdaWindow`].
 //!
@@ -20,14 +20,15 @@
 //!
 //! 5. Repeat for octanol and compute **LogP** via [`log_p`].
 //!
-//! # Force scaling requirement
+//! # Running a λ window
 //!
-//! For physically correct intermediate-λ sampling, the non-bonded forces on the
-//! alchemical molecule must be scaled by `(1 − λ)` in `apply_nonbonded_forces()`.
-//! Without this, each window samples the fully-coupled (λ = 0) ensemble and TI
-//! reduces to a single endpoint calculation.  The infrastructure here is ready;
-//! add the force scaling in `non_bonded.rs` using `MdState::alch_mol_idx` and
-//! `MdState::lambda` to complete the implementation.
+//! Use [`MdState::configure_alchemical_window`] before running each λ window. It
+//! validates the molecule index and λ value and rebuilds the cached non-bonded
+//! pair list so cross interactions with the alchemical molecule are scaled by
+//! `(1 − λ)`.
+//!
+//! Alchemical scaling is currently implemented for the CPU force path. The CUDA
+//! short-range path does not yet apply alchemical scaling or accumulate ∂H/∂λ.
 //!
 //! # Soft-core potentials
 //!
@@ -41,10 +42,73 @@
 //!
 //! The electrostatic coupling can remain linear; switch it off before LJ to avoid
 //! charge–charge singularities.
+//!
+//! todo: Use GPU for short-range forces if available; currently this is CPU only. And use "soft-core"
+//! todo: LJ (?)
 
-use crate::snapshot::Snapshot;
+use std::{
+    error::Error,
+    fmt::{self, Display, Formatter},
+};
+
+use crate::{ComputationDevice, MdState, snapshot::Snapshot};
 
 const GAS_CONST_R_KCAL: f64 = 0.001_987_204_1; // kcal / (mol · K)
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlchemicalError {
+    EmptySnapshots,
+    MissingDhDl,
+    InvalidLambda(f64),
+    InvalidTemperature(f64),
+    InvalidFreeEnergy(f64),
+    NotEnoughWindows(usize),
+    NonFiniteMeanDhDl { lambda: f64, mean_dh_dl: f64 },
+    UnsortedWindows { previous: f64, next: f64 },
+    InvalidMoleculeIndex { mol_idx: usize, mol_count: usize },
+    AlchemicalMoleculeNotSet,
+    UnsupportedDevice(&'static str),
+}
+
+impl Display for AlchemicalError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptySnapshots => write!(f, "snapshot slice is empty"),
+            Self::MissingDhDl => write!(f, "no dh/dlambda values were recorded in the snapshots"),
+            Self::InvalidLambda(lambda) => {
+                write!(f, "lambda must be finite and in [0, 1], got {lambda}")
+            }
+            Self::InvalidTemperature(temperature) => {
+                write!(
+                    f,
+                    "temperature must be finite and positive, got {temperature}"
+                )
+            }
+            Self::InvalidFreeEnergy(dg) => write!(f, "free energy must be finite, got {dg}"),
+            Self::NotEnoughWindows(n) => {
+                write!(f, "at least two lambda windows are required, got {n}")
+            }
+            Self::NonFiniteMeanDhDl { lambda, mean_dh_dl } => write!(
+                f,
+                "mean dh/dlambda must be finite for lambda {lambda}, got {mean_dh_dl}"
+            ),
+            Self::UnsortedWindows { previous, next } => write!(
+                f,
+                "lambda windows must be strictly increasing, got {previous} followed by {next}"
+            ),
+            Self::InvalidMoleculeIndex { mol_idx, mol_count } => write!(
+                f,
+                "alchemical molecule index {mol_idx} is out of range for {mol_count} molecules"
+            ),
+            Self::AlchemicalMoleculeNotSet => {
+                write!(f, "no alchemical molecule has been configured")
+            }
+            Self::UnsupportedDevice(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+impl Error for AlchemicalError {}
 
 /// Data collected from one MD run at a single fixed λ value.
 ///
@@ -61,26 +125,47 @@ pub struct LambdaWindow {
 
 /// Build a [`LambdaWindow`] from a slice of snapshots taken at one fixed λ value.
 ///
-/// All snapshots must come from the same λ window.  Uses the `dh_dl` field that
-/// is recorded every step by `MdState::take_snapshot`.
+/// All snapshots must come from the same λ window. Uses the `dh_dl` field that
+/// is recorded when snapshot energy data is written.
 ///
 /// # Panics
-/// Panics if `snapshots` is empty.
+/// Panics if the input is invalid. Use [`try_collect_window`] to handle errors.
 pub fn collect_window(lambda: f64, snapshots: &[Snapshot]) -> LambdaWindow {
-    assert!(
-        !snapshots.is_empty(),
-        "collect_window: empty snapshot slice"
-    );
+    try_collect_window(lambda, snapshots).unwrap_or_else(|e| panic!("collect_window: {e}"))
+}
+
+/// Fallible variant of [`collect_window`].
+///
+/// Snapshots without energy data are ignored, which is useful for trajectories
+/// that contain positions more frequently than energies. An error is returned
+/// when no usable `dh_dl` samples are present.
+pub fn try_collect_window(
+    lambda: f64,
+    snapshots: &[Snapshot],
+) -> Result<LambdaWindow, AlchemicalError> {
+    validate_lambda(lambda)?;
+
+    if snapshots.is_empty() {
+        return Err(AlchemicalError::EmptySnapshots);
+    }
 
     let dh_dl: Vec<f64> = snapshots
         .iter()
-        .filter_map(|s| s.energy_data.as_ref()?.dh_dl.map(|v| v as f64))
+        .filter_map(|s| s.energy_data.as_ref()?.dh_dl.map(f64::from))
         .collect();
 
-    assert!(
-        !dh_dl.is_empty(),
-        "collect_window: no dh/dlambda values were recorded in the snapshots"
-    );
+    if dh_dl.is_empty() {
+        return Err(AlchemicalError::MissingDhDl);
+    }
+
+    for &value in &dh_dl {
+        if !value.is_finite() {
+            return Err(AlchemicalError::NonFiniteMeanDhDl {
+                lambda,
+                mean_dh_dl: value,
+            });
+        }
+    }
 
     let n = dh_dl.len() as f64;
     let mean = dh_dl.iter().sum::<f64>() / n;
@@ -92,11 +177,11 @@ pub fn collect_window(lambda: f64, snapshots: &[Snapshot]) -> LambdaWindow {
         None
     };
 
-    LambdaWindow {
+    Ok(LambdaWindow {
         lambda,
         mean_dh_dl: mean,
         sem_dh_dl: sem,
-    }
+    })
 }
 
 /// Compute ΔG via **Thermodynamic Integration** (TI) using the trapezoidal rule.
@@ -108,11 +193,42 @@ pub fn collect_window(lambda: f64, snapshots: &[Snapshot]) -> LambdaWindow {
 ///
 /// Returns ΔG in **kcal/mol**.  A positive value means decoupling costs energy
 /// (solute prefers the solvent); a negative value means it is favourable to remove.
+///
+/// # Panics
+/// Panics if the windows are invalid. Use [`try_free_energy_ti`] to handle errors.
 pub fn free_energy_ti(windows: &[LambdaWindow]) -> f64 {
-    windows
+    try_free_energy_ti(windows).unwrap_or_else(|e| panic!("free_energy_ti: {e}"))
+}
+
+/// Fallible variant of [`free_energy_ti`].
+pub fn try_free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> {
+    if windows.len() < 2 {
+        return Err(AlchemicalError::NotEnoughWindows(windows.len()));
+    }
+
+    for window in windows {
+        validate_lambda(window.lambda)?;
+        if !window.mean_dh_dl.is_finite() {
+            return Err(AlchemicalError::NonFiniteMeanDhDl {
+                lambda: window.lambda,
+                mean_dh_dl: window.mean_dh_dl,
+            });
+        }
+    }
+
+    for pair in windows.windows(2) {
+        if pair[1].lambda <= pair[0].lambda {
+            return Err(AlchemicalError::UnsortedWindows {
+                previous: pair[0].lambda,
+                next: pair[1].lambda,
+            });
+        }
+    }
+
+    Ok(windows
         .windows(2)
         .map(|w| 0.5 * (w[0].mean_dh_dl + w[1].mean_dh_dl) * (w[1].lambda - w[0].lambda))
-        .sum()
+        .sum())
 }
 
 /// Compute **LogP** from free energies in solvent and octanol.
@@ -122,20 +238,137 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> f64 {
 /// [`free_energy_ti`] run in each solvent.
 ///
 /// ```text
-/// LogP = (ΔG_water − ΔG_octanol) / (2.303 · R · T)
+/// LogP = (ΔG_octanol − ΔG_water) / (2.303 · R · T)
 /// ```
 ///
 /// `temperature_k` is the simulation temperature in Kelvin (typically 298.15 K).
 ///
-/// A positive LogP means the solute prefers octanol (lipophilic).
+/// A positive LogP means the solute prefers octanol (lipophilic), i.e. the
+/// decoupling free energy is larger in octanol than in water.
+///
+/// # Panics
+/// Panics if any input is invalid. Use [`try_log_p`] to handle errors.
 pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> f64 {
+    try_log_p(dg_water, dg_octanol, temperature_k).unwrap_or_else(|e| panic!("log_p: {e}"))
+}
+
+/// Fallible variant of [`log_p`].
+pub fn try_log_p(
+    dg_water: f64,
+    dg_octanol: f64,
+    temperature_k: f64,
+) -> Result<f64, AlchemicalError> {
+    validate_free_energy(dg_water)?;
+    validate_free_energy(dg_octanol)?;
+    validate_temperature(temperature_k)?;
+
     let rt = GAS_CONST_R_KCAL * temperature_k;
-    (dg_water - dg_octanol) / (2.302_585_093 * rt)
+    Ok((dg_octanol - dg_water) / (2.302_585_093 * rt))
+}
+
+impl MdState {
+    /// Currently configured alchemical molecule index, if any.
+    pub fn alchemical_molecule_index(&self) -> Option<usize> {
+        self.alch_mol_idx
+    }
+
+    /// Current alchemical λ value.
+    pub fn alchemical_lambda(&self) -> f64 {
+        self.lambda_alch
+    }
+
+    /// Enable alchemical decoupling for one molecule at a fixed λ value.
+    ///
+    /// This is the preferred setup call for each TI window. It validates the
+    /// molecule index, stores the λ value, clears cached reciprocal data, and
+    /// rebuilds non-bonded pairs so cross interactions with the selected molecule
+    /// are marked for `(1 - λ)` scaling.
+    pub fn configure_alchemical_window(
+        &mut self,
+        dev: &ComputationDevice,
+        mol_idx: usize,
+        lambda: f64,
+    ) -> Result<(), AlchemicalError> {
+        #[cfg(feature = "cuda")]
+        if matches!(dev, ComputationDevice::Gpu(_)) {
+            return Err(AlchemicalError::UnsupportedDevice(
+                "alchemical scaling is currently implemented for the CPU force path only",
+            ));
+        }
+
+        validate_lambda(lambda)?;
+
+        let mol_count = self.mol_start_indices.len();
+        if mol_idx >= mol_count {
+            return Err(AlchemicalError::InvalidMoleculeIndex { mol_idx, mol_count });
+        }
+
+        self.alch_mol_idx = Some(mol_idx);
+        self.lambda_alch = lambda;
+        self.alch_interaction_energy = 0.0;
+        self.spme_force_prev = None;
+        self.build_all_neighbors(dev);
+
+        Ok(())
+    }
+
+    /// Update λ for the currently configured alchemical molecule.
+    ///
+    /// The pair list does not need to be rebuilt when only λ changes.
+    pub fn set_alchemical_lambda(&mut self, lambda: f64) -> Result<(), AlchemicalError> {
+        validate_lambda(lambda)?;
+
+        if self.alch_mol_idx.is_none() {
+            return Err(AlchemicalError::AlchemicalMoleculeNotSet);
+        }
+
+        self.lambda_alch = lambda;
+        self.alch_interaction_energy = 0.0;
+        self.spme_force_prev = None;
+
+        Ok(())
+    }
+
+    /// Disable alchemical scaling and rebuild non-bonded pairs.
+    pub fn clear_alchemical_window(&mut self, dev: &ComputationDevice) {
+        self.alch_mol_idx = None;
+        self.lambda_alch = 0.0;
+        self.alch_interaction_energy = 0.0;
+        self.spme_force_prev = None;
+        self.build_all_neighbors(dev);
+    }
+}
+
+fn validate_lambda(lambda: f64) -> Result<(), AlchemicalError> {
+    if lambda.is_finite() && (0.0..=1.0).contains(&lambda) {
+        Ok(())
+    } else {
+        Err(AlchemicalError::InvalidLambda(lambda))
+    }
+}
+
+fn validate_temperature(temperature_k: f64) -> Result<(), AlchemicalError> {
+    if temperature_k.is_finite() && temperature_k > 0.0 {
+        Ok(())
+    } else {
+        Err(AlchemicalError::InvalidTemperature(temperature_k))
+    }
+}
+
+fn validate_free_energy(dg: f64) -> Result<(), AlchemicalError> {
+    if dg.is_finite() {
+        Ok(())
+    } else {
+        Err(AlchemicalError::InvalidFreeEnergy(dg))
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_window, free_energy_ti, log_p};
+    use super::{
+        AlchemicalError, collect_window, free_energy_ti, log_p, try_collect_window,
+        try_free_energy_ti, try_log_p,
+    };
     use crate::snapshot::{Snapshot, SnapshotEnergyData};
 
     fn snapshot_with_dh_dl(value: f32) -> Snapshot {
@@ -197,7 +430,49 @@ mod tests {
 
     #[test]
     fn log_p_uses_expected_sign() {
-        let logp = log_p(5.0, 3.0, 298.15);
+        let logp = log_p(3.0, 5.0, 298.15);
         assert!(logp > 0.0);
+    }
+
+    #[test]
+    fn try_collect_window_rejects_missing_dh_dl() {
+        let snapshots = vec![Snapshot::default()];
+
+        let err = try_collect_window(0.5, &snapshots).unwrap_err();
+
+        assert_eq!(err, AlchemicalError::MissingDhDl);
+    }
+
+    #[test]
+    fn try_free_energy_ti_rejects_unsorted_windows() {
+        let windows = vec![
+            super::LambdaWindow {
+                lambda: 0.5,
+                mean_dh_dl: 1.0,
+                sem_dh_dl: None,
+            },
+            super::LambdaWindow {
+                lambda: 0.25,
+                mean_dh_dl: 1.0,
+                sem_dh_dl: None,
+            },
+        ];
+
+        let err = try_free_energy_ti(&windows).unwrap_err();
+
+        assert_eq!(
+            err,
+            AlchemicalError::UnsortedWindows {
+                previous: 0.5,
+                next: 0.25,
+            }
+        );
+    }
+
+    #[test]
+    fn try_log_p_rejects_nonphysical_temperature() {
+        let err = try_log_p(1.0, 0.0, 0.0).unwrap_err();
+
+        assert_eq!(err, AlchemicalError::InvalidTemperature(0.0));
     }
 }

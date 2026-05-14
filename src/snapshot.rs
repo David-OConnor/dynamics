@@ -83,12 +83,13 @@ pub struct SnapshotEnergyData {
     pub temperature: f32,
     /// Instantaneous pressure in Bar.
     pub pressure: f32,
-    /// Instantaneous ∂H/∂λ in kcal/mol, for alchemical free energy calculations.
+    /// Instantaneous ∂H/∂λ in kcal/mol, for alchemical free-energy calculations.
     ///
-    /// Non-zero only when `MdState::alch_mol_idx` is set.  For linear decoupling
-    /// this equals the negative of the solute–solvent interaction energy at the
-    /// current configuration.  Average this over a λ window's trajectory and pass
-    /// the result to `alchemical::collect_window` / `alchemical::free_energy_ti`.
+    /// Recorded only when `MdState::alch_mol_idx` is set. For linear decoupling
+    /// this equals the negative of the alchemical molecule's non-bonded
+    /// interaction energy with the rest of the system at the current
+    /// configuration. Average this over a λ window's trajectory and pass the
+    /// result to `alchemical::collect_window` / `alchemical::free_energy_ti`.
     pub dh_dl: Option<f32>,
     /// Simulation box volume in **Å³**.
     pub volume: f32,
@@ -214,7 +215,7 @@ impl Snapshot {
             hydrogen_bonds,
             temperature,
             pressure,
-            dh_dl: Some(state.compute_dh_dl() as f32),
+            dh_dl: state.alch_mol_idx.map(|_| state.compute_dh_dl() as f32),
             volume,
             density,
         });
@@ -624,14 +625,18 @@ fn compute_h_bonds(
             continue;
         }
         let posit = atom_posits[i];
-        grid.entry(cell_key(posit))
-            .or_default()
-            .push(((HBondAtomType::Standard, i), posit, atom.element));
+        grid.entry(cell_key(posit)).or_default().push((
+            (HBondAtomType::Standard, i),
+            posit,
+            atom.element,
+        ));
     }
     for (i, &posit) in water_o_posits.iter().enumerate() {
-        grid.entry(cell_key(posit))
-            .or_default()
-            .push(((HBondAtomType::WaterO, i), posit, Element::Oxygen));
+        grid.entry(cell_key(posit)).or_default().push((
+            (HBondAtomType::WaterO, i),
+            posit,
+            Element::Oxygen,
+        ));
     }
 
     // Build donor candidates: (donor heavy idx, H idx, donor posit, H posit, donor element).

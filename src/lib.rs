@@ -679,13 +679,13 @@ pub struct MdState {
     ///
     /// When `Some(m)`, `take_snapshot` computes ∂H/∂λ for molecule m and stores it
     /// in each `Snapshot::dh_dl`.  Set `None` (the default) for ordinary MD.
-    pub alch_mol_idx: Option<usize>,
+    pub(crate) alch_mol_idx: Option<usize>,
     /// Current lambda value for alchemical simulations, in [0, 1].
     ///
     /// λ = 0: solute fully coupled; λ = 1: solute fully decoupled.
     /// For thermodynamic integration, hold this fixed for the duration of one
     /// simulation window and sweep across multiple windows.
-    pub lambda_alch: f64,
+    pub(crate) lambda_alch: f64,
     /// Index assigned at the start of each MD run. Trajectory files are named
     /// `traj_N.dcd`, `traj_N.trr`, etc. so that successive runs never overwrite
     /// each other.  Chosen as the lowest N for which no such files exist yet.
@@ -1310,11 +1310,9 @@ impl MdState {
     ///
     /// Returns 0.0 when `alch_mol_idx` is `None`.
     ///
-    /// # Physical correctness
-    /// For true thermodynamic integration at intermediate λ values, the non-bonded
-    /// forces on the alchemical molecule must be scaled by `(1 − λ)` in
-    /// `apply_nonbonded_forces`.  Without that scaling every window samples the
-    /// fully-coupled ensemble and TI is equivalent to a single-point FEP estimate.
+    /// Use `MdState::configure_alchemical_window` when selecting the molecule so
+    /// the cached non-bonded pair list marks alchemical cross interactions for
+    /// `(1 − λ)` scaling.
     pub fn compute_dh_dl(&self) -> f64 {
         if self.alch_mol_idx.is_none() {
             return 0.0;
