@@ -180,13 +180,7 @@ pub fn collect_window(
 /// (solute prefers the solvent); a negative value means it is favourable to remove.
 ///
 /// # Panics
-/// Panics if the windows are invalid. Use [`try_free_energy_ti`] to handle errors.
-pub fn free_energy_ti(windows: &[LambdaWindow]) -> f64 {
-    try_free_energy_ti(windows).unwrap_or_else(|e| panic!("free_energy_ti: {e}"))
-}
-
-/// Fallible variant of [`free_energy_ti`].
-pub fn try_free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> {
+pub fn free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> {
     if windows.len() < 2 {
         return Err(AlchemicalError::NotEnoughWindows(windows.len()));
     }
