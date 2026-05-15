@@ -681,13 +681,13 @@ pub struct MdState {
     ///
     /// When `Some(m)`, `take_snapshot` computes ∂H/∂λ for molecule m and stores it
     /// in each `Snapshot::dh_dl`.  Set `None` (the default) for ordinary MD.
-    pub(crate) alch_mol_idx: Option<usize>,
+    pub alch_mol_idx: Option<usize>,
     /// Current lambda value for alchemical simulations, in [0, 1].
     ///
     /// λ = 0: solute fully coupled; λ = 1: solute fully decoupled.
     /// For thermodynamic integration, hold this fixed for the duration of one
     /// simulation window and sweep across multiple windows.
-    pub(crate) lambda_alch: f64,
+    pub lambda_alch: f64,
     /// Index assigned at the start of each MD run. Trajectory files are named
     /// `traj_N.dcd`, `traj_N.trr`, etc. so that successive runs never overwrite
     /// each other.  Chosen as the lowest N for which no such files exist yet.

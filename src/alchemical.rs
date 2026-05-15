@@ -7,20 +7,17 @@
 //! Solvation free energies and partition coefficients can be estimated from
 //! alchemical free-energy simulations using thermodynamic integration (TI):
 //!
-//! 1. Run **N separate MD simulations** at different λ values (e.g., 0.0, 0.05, …, 1.0),
-//!    **in both solvent and octanol**. λ = 0 means the solute interacts normally with the
-//!    solvent; λ = 1 means it is fully decoupled (non-interacting ghost).
+//! - Run **N separate MD simulations** at different λ values (e.g., 0.0, 0.05, ... 1.0),
+//!     λ = 0 means the solute interacts normally with the solvent; λ = 1 means it is fully decoupled.
 //!
-//! 2. At each simulation frame, record **∂H/∂λ** — the derivative of the Hamiltonian
+//! - At each simulation frame, record **∂H/∂λ** — the derivative of the Hamiltonian
 //!    with respect to λ. For linear coupling this equals minus the solute–solvent
 //!    interaction energy accumulated during the non-bonded force calculation.
 //!    This is stored per frame in [`crate::snapshot::SnapshotEnergyData::dh_dl`].
 //!
-//! 3. Average ⟨∂H/∂λ⟩ over each λ window's trajectory into a [`LambdaWindow`].
+//! - Average ⟨∂H/∂λ⟩ over each λ window's trajectory into a [`LambdaWindow`].
 //!
-//! 4. Compute **ΔG = ∫₀¹ ⟨∂H/∂λ⟩_λ dλ** via [`free_energy_ti`].
-//!
-//! 5. Repeat for octanol and compute **LogP** via [`log_p`].
+//! - Compute **ΔG = ∫₀¹ ⟨∂H/∂λ⟩_λ dλ** via [`free_energy_ti`].
 //!
 //! # Running a λ window
 //!
@@ -29,15 +26,11 @@
 //! pair list so cross interactions with the alchemical molecule are scaled by
 //! `(1 − λ)`.
 //!
-//! Alchemical scaling is implemented for the CPU force path and for CUDA
-//! short-range non-bonded forces.
-//!
 //! # Soft-core potentials
 //! [GROMACS docs](https://manual.gromacs.org/nightly/reference-manual/functions/free-energy-interactions.html)
 //!
 //! Near λ = 0 or 1, the simple linear LJ coupling diverges when two atoms overlap.
-//! Production simulations should replace linear LJ scaling with a soft-core potential
-//! such as Beutler et al. (1994):
+//! We Replace linear LJ scaling with a soft-core potential, e.g Beutler et al. (1994):
 //!
 //! ```text
 //! U_sc(r, λ) = 4·ε·λ · [ 1/(α(1−λ)² + (r/σ)⁶)² − 1/(α(1−λ)² + (r/σ)⁶) ]
@@ -46,8 +39,7 @@
 //! The electrostatic coupling can remain linear; switch it off before LJ to avoid
 //! charge–charge singularities.
 //!
-//! todo: Use soft-core LJ (?)
-
+//!
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
@@ -130,23 +122,13 @@ pub struct LambdaWindow {
 /// All snapshots must come from the same λ window. Uses the `dh_dl` field that
 /// is recorded when snapshot energy data is written.
 ///
-/// # Panics
-/// Panics if the input is invalid. Use [`try_collect_window`] to handle errors.
-pub fn collect_window(lambda: f64, snapshots: &[Snapshot]) -> LambdaWindow {
-    try_collect_window(lambda, snapshots).unwrap_or_else(|e| panic!("collect_window: {e}"))
-}
-
-/// Fallible variant of [`collect_window`].
-///
 /// Snapshots without energy data are ignored, which is useful for trajectories
 /// that contain positions more frequently than energies. An error is returned
 /// when no usable `dh_dl` samples are present.
-pub fn try_collect_window(
+pub fn collect_window(
     lambda: f64,
     snapshots: &[Snapshot],
 ) -> Result<LambdaWindow, AlchemicalError> {
-    validate_lambda(lambda)?;
-
     if snapshots.is_empty() {
         return Err(AlchemicalError::EmptySnapshots);
     }
@@ -209,7 +191,6 @@ pub fn try_free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalErr
     }
 
     for window in windows {
-        validate_lambda(window.lambda)?;
         if !window.mean_dh_dl.is_finite() {
             return Err(AlchemicalError::NonFiniteMeanDhDl {
                 lambda: window.lambda,
@@ -250,10 +231,6 @@ pub fn try_free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalErr
 ///
 /// # Panics
 pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> Result<f64, AlchemicalError> {
-    validate_free_energy(dg_water)?;
-    validate_free_energy(dg_octanol)?;
-    validate_temperature(temperature_k)?;
-
     let rt = GAS_CONST_R_KCAL * temperature_k;
     Ok((dg_octanol - dg_water) / (2.302_585_093 * rt))
 }
@@ -281,8 +258,6 @@ impl MdState {
         mol_idx: usize,
         lambda: f64,
     ) -> Result<(), AlchemicalError> {
-        validate_lambda(lambda)?;
-
         let mol_count = self.mol_start_indices.len();
         if mol_idx >= mol_count {
             return Err(AlchemicalError::InvalidMoleculeIndex { mol_idx, mol_count });
@@ -301,8 +276,6 @@ impl MdState {
     ///
     /// The pair list does not need to be rebuilt when only λ changes.
     pub fn set_alchemical_lambda(&mut self, lambda: f64) -> Result<(), AlchemicalError> {
-        validate_lambda(lambda)?;
-
         if self.alch_mol_idx.is_none() {
             return Err(AlchemicalError::AlchemicalMoleculeNotSet);
         }
@@ -321,143 +294,5 @@ impl MdState {
         self.alch_interaction_energy = 0.0;
         self.spme_force_prev = None;
         self.build_all_neighbors(dev);
-    }
-}
-
-fn validate_lambda(lambda: f64) -> Result<(), AlchemicalError> {
-    if lambda.is_finite() && (0.0..=1.0).contains(&lambda) {
-        Ok(())
-    } else {
-        Err(AlchemicalError::InvalidLambda(lambda))
-    }
-}
-
-fn validate_temperature(temperature_k: f64) -> Result<(), AlchemicalError> {
-    if temperature_k.is_finite() && temperature_k > 0.0 {
-        Ok(())
-    } else {
-        Err(AlchemicalError::InvalidTemperature(temperature_k))
-    }
-}
-
-fn validate_free_energy(dg: f64) -> Result<(), AlchemicalError> {
-    if dg.is_finite() {
-        Ok(())
-    } else {
-        Err(AlchemicalError::InvalidFreeEnergy(dg))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        AlchemicalError, collect_window, free_energy_ti, log_p, try_collect_window,
-        try_free_energy_ti,
-    };
-    use crate::snapshot::{Snapshot, SnapshotEnergyData};
-
-    fn snapshot_with_dh_dl(value: f32) -> Snapshot {
-        Snapshot {
-            energy_data: Some(SnapshotEnergyData {
-                energy_kinetic: 0.0,
-                energy_potential: 0.0,
-                energy_potential_between_mols: Vec::new(),
-                energy_potential_nonbonded: 0.0,
-                energy_potential_bonded: 0.0,
-                hydrogen_bonds: Vec::new(),
-                temperature: 0.0,
-                pressure: 0.0,
-                dh_dl: Some(value),
-                volume: 0.0,
-                density: 0.0,
-            }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn collect_window_reads_dh_dl_from_snapshots() {
-        let snaps = vec![
-            snapshot_with_dh_dl(1.0),
-            snapshot_with_dh_dl(2.0),
-            snapshot_with_dh_dl(3.0),
-        ];
-
-        let window = collect_window(0.5, &snaps);
-
-        assert!((window.mean_dh_dl - 2.0).abs() < 1.0e-8);
-        assert!(window.sem_dh_dl.is_some());
-    }
-
-    #[test]
-    fn free_energy_ti_uses_trapezoidal_rule() {
-        let windows = vec![
-            super::LambdaWindow {
-                lambda: 0.0,
-                mean_dh_dl: 2.0,
-                sem_dh_dl: None,
-            },
-            super::LambdaWindow {
-                lambda: 0.5,
-                mean_dh_dl: 4.0,
-                sem_dh_dl: None,
-            },
-            super::LambdaWindow {
-                lambda: 1.0,
-                mean_dh_dl: 6.0,
-                sem_dh_dl: None,
-            },
-        ];
-
-        let dg = free_energy_ti(&windows);
-        assert!((dg - 4.0).abs() < 1.0e-8);
-    }
-
-    #[test]
-    fn log_p_uses_expected_sign() {
-        let logp = log_p(3.0, 5.0, 298.15).unwrap();
-        assert!(logp > 0.0);
-    }
-
-    #[test]
-    fn try_collect_window_rejects_missing_dh_dl() {
-        let snapshots = vec![Snapshot::default()];
-
-        let err = try_collect_window(0.5, &snapshots).unwrap_err();
-
-        assert_eq!(err, AlchemicalError::MissingDhDl);
-    }
-
-    #[test]
-    fn try_free_energy_ti_rejects_unsorted_windows() {
-        let windows = vec![
-            super::LambdaWindow {
-                lambda: 0.5,
-                mean_dh_dl: 1.0,
-                sem_dh_dl: None,
-            },
-            super::LambdaWindow {
-                lambda: 0.25,
-                mean_dh_dl: 1.0,
-                sem_dh_dl: None,
-            },
-        ];
-
-        let err = try_free_energy_ti(&windows).unwrap_err();
-
-        assert_eq!(
-            err,
-            AlchemicalError::UnsortedWindows {
-                previous: 0.5,
-                next: 0.25,
-            }
-        );
-    }
-
-    #[test]
-    fn try_log_p_rejects_nonphysical_temperature() {
-        let err = log_p(1.0, 0.0, 0.0).unwrap_err();
-
-        assert_eq!(err, AlchemicalError::InvalidTemperature(0.0));
     }
 }

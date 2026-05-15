@@ -10,7 +10,6 @@ use std::{
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
-
 use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
     dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
@@ -18,7 +17,6 @@ use bio_files::{
     gromacs::{GromacsFrame, GromacsOutput, OutputControl, trr::write_trr},
     xtc::write_xtc,
 };
-
 use lin_alg::f32::Vec3;
 use na_seq::Element;
 
