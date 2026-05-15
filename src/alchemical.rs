@@ -27,10 +27,11 @@
 //! `(1 − λ)`.
 //!
 //! # Soft-core potentials
-//! [GROMACS docs](https://manual.gromacs.org/nightly/reference-manual/functions/free-energy-interactions.html)
+//! [GROMACS docs](https://manual.gromacs.org/nightly/reference-manual/functions/free-energy-interactions.html#soft-core-interactions-beutler-et-al)
 //!
 //! Near λ = 0 or 1, the simple linear LJ coupling diverges when two atoms overlap.
-//! We Replace linear LJ scaling with a soft-core potential, e.g Beutler et al. (1994):
+//! We Replace linear LJ scaling with a soft-core potential, from Beutler et al. (1994),
+//! similar to GROMACS' approach:
 //!
 //! ```text
 //! U_sc(r, λ) = 4·ε·λ · [ 1/(α(1−λ)² + (r/σ)⁶)² − 1/(α(1−λ)² + (r/σ)⁶) ]
