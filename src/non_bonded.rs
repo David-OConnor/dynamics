@@ -13,6 +13,7 @@ use rayon::prelude::*;
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
     AtomDynamics, ComputationDevice, MdOverrides, MdState,
+    alchemical::{SOFT_CORE_ALPHA, SOFT_CORE_POWER, SOFT_CORE_SIGMA_MIN},
     barostat::SimBox,
     forces::force_e_lj,
     solvent::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMolOpc, WaterSite},
@@ -221,7 +222,8 @@ pub struct NonBondedPair {
     pub calc_coulomb: bool,
     pub symmetric: bool,
     /// True when this pair is a cross interaction between the alchemical molecule
-    /// and the rest of the system, and therefore should be scaled by `(1 - lambda)`.
+    /// and the rest of the system, and therefore should use alchemical LJ/Coulomb
+    /// handling.
     /// False unless using an alchemical free-energy computation.
     pub alch_interaction: bool,
 }
@@ -288,7 +290,7 @@ fn calc_force_cpu(
                     0.0_f64,                                       // Virial sum
                     0.0_f64,                                       // Energy sum
                     vec![0.0_f64; mol_start_indices.len().pow(2)], // Per-pair
-                    0.0_f64, // Unscaled alchemical interaction energy
+                    0.0_f64,                                       // Alchemical dH/dlambda
                 )
             },
             |(
@@ -297,19 +299,17 @@ fn calc_force_cpu(
                 mut virial,
                 mut energy,
                 mut energy_between_mols,
-                mut alch_energy,
+                mut alch_dh_dl,
             ),
              p| {
                 let a_t = p.tgt.get(atoms_std, water);
                 let a_s = p.src.get(atoms_std, water);
 
-                let interaction_scale = if p.alch_interaction {
-                    (1.0 - lambda_alch).clamp(0.0, 1.0) as f32
-                } else {
-                    1.0
-                };
+                let alchemical_lambda = p
+                    .alch_interaction
+                    .then_some(lambda_alch.clamp(0.0, 1.0) as f32);
 
-                let (f, e_pair, raw_e_pair) = f_nonbonded_cpu(
+                let (f, e_pair, dh_dl_pair) = f_nonbonded_cpu(
                     &mut virial,
                     a_t,
                     a_s,
@@ -323,7 +323,7 @@ fn calc_force_cpu(
                     spme_alpha,
                     coulomb_cutoff,
                     lj_cutoff,
-                    interaction_scale,
+                    alchemical_lambda,
                 );
 
                 // Convert to f64 prior to summing.
@@ -343,7 +343,7 @@ fn calc_force_cpu(
                 }
 
                 if p.alch_interaction {
-                    alch_energy += raw_e_pair as f64;
+                    alch_dh_dl += dh_dl_pair as f64;
                 }
 
                 // todo: QC this!
@@ -367,7 +367,7 @@ fn calc_force_cpu(
                     virial,
                     energy,
                     energy_between_mols,
-                    alch_energy,
+                    alch_dh_dl,
                 )
             },
         )
@@ -382,8 +382,8 @@ fn calc_force_cpu(
                     0.0_f64,
                 )
             },
-            |(mut f_on_std, mut f_on_water, virial_a, e_a, mut em_a, alch_a),
-             (db, wb, virial_b, e_b, em_b, alch_b)| {
+            |(mut f_on_std, mut f_on_water, virial_a, e_a, mut em_a, dhdl_a),
+             (db, wb, virial_b, e_b, em_b, dhdl_b)| {
                 for i in 0..n_std {
                     f_on_std[i] += db[i];
                 }
@@ -406,7 +406,7 @@ fn calc_force_cpu(
                     virial_a + virial_b,
                     e_a + e_b,
                     em_a,
-                    alch_a + alch_b,
+                    dhdl_a + dhdl_b,
                 )
             },
         )
@@ -440,7 +440,7 @@ impl MdState {
     /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
     /// applies forces from non-solvent, and solvent sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
-        let (f_on_non_water, f_on_water, virial, energy, energy_between_mols, alch_energy) =
+        let (f_on_non_water, f_on_water, virial, energy, energy_between_mols, alch_dh_dl) =
             match dev {
                 ComputationDevice::Cpu => {
                     if is_x86_feature_detected!("avx512f") {
@@ -477,7 +477,7 @@ impl MdState {
                 }
                 #[cfg(feature = "cuda")]
                 ComputationDevice::Gpu(stream) => {
-                    let (f_std, f_wat, virial, energy, energy_between_mols, alch_energy) =
+                    let (f_std, f_wat, virial, energy, energy_between_mols, alch_dh_dl) =
                         force_nonbonded_gpu(
                             stream,
                             self.gpu_kernel.as_ref().unwrap(),
@@ -499,7 +499,7 @@ impl MdState {
                         virial,
                         energy,
                         energy_between_mols,
-                        alch_energy,
+                        alch_dh_dl,
                     )
                 }
             };
@@ -537,7 +537,7 @@ impl MdState {
             }
         }
 
-        self.alch_interaction_energy += alch_energy;
+        self.alch_dh_dl += alch_dh_dl;
     }
 
     /// [Re] initialize non-bonded interaction pairs between atoms. Do this whenever we rebuild neighbors.
@@ -686,7 +686,7 @@ impl MdState {
         let scale = (1.0 - self.lambda_alch).clamp(0.0, 1.0);
         let alch_atom_range = self.alchemical_atom_range();
 
-        let (f_recip, e_recip, virial_from_kspace, alch_cross_energy) = match &mut self.pme_recip {
+        let (f_recip, e_recip, virial_from_kspace, alch_cross_dh_dl) = match &mut self.pme_recip {
             Some(pme_recip) => {
                 let mut eval = |charges: &[f32]| -> (Vec<Vec3>, f64, f64) {
                     match dev {
@@ -736,7 +736,7 @@ impl MdState {
                     let e_scaled = e_env + e_alch + scale * cross_energy;
                     let virial_scaled = virial_env + virial_alch + scale * cross_virial;
 
-                    (f_scaled, e_scaled, virial_scaled, cross_energy)
+                    (f_scaled, e_scaled, virial_scaled, -cross_energy)
                 } else {
                     let (f, e, virial) = eval(&q_all);
                     (f, e, virial, 0.0)
@@ -751,7 +751,7 @@ impl MdState {
 
         self.potential_energy += e_recip as f64;
         self.potential_energy_nonbonded += e_recip as f64;
-        self.alch_interaction_energy += alch_cross_energy;
+        self.alch_dh_dl += alch_cross_dh_dl;
 
         // Apply forces; virial comes from the analytical k-space formula, not r·F.
         self.unpack_apply_pme_forces(&f_recip);
@@ -872,12 +872,78 @@ impl MdState {
     }
 }
 
+/// Beutler/GROMACS-style soft-core LJ decoupling for a pair with B-state LJ set
+/// to zero.
+///
+/// Returns `(force, energy, dH/dlambda)` for
+/// `V_sc(r, lambda) = (1 - lambda) * V_LJ(r_sc)`.
+pub(crate) fn alchemical_lj_soft_core_decouple(
+    dir: Vec3,
+    dist_sq: f32,
+    sigma: f32,
+    eps: f32,
+    lambda: f32,
+) -> (Vec3, f32, f32) {
+    if eps == 0.0 || !eps.is_finite() || !sigma.is_finite() || dist_sq < 0.0 {
+        return (Vec3::new_zero(), 0.0, 0.0);
+    }
+
+    let lambda = lambda.clamp(0.0, 1.0);
+    let scale = 1.0 - lambda;
+
+    if SOFT_CORE_ALPHA <= 0.0 {
+        let dist = dist_sq.sqrt();
+        if dist <= 0.0 {
+            return (Vec3::new_zero(), 0.0, 0.0);
+        }
+        let (force, energy) = force_e_lj(dir, 1.0 / dist, sigma, eps);
+        return (force * scale, energy * scale, -energy);
+    }
+
+    let soft_sigma = sigma.max(SOFT_CORE_SIGMA_MIN);
+    let soft_sigma6 = soft_sigma.powi(6);
+    let dist6 = dist_sq * dist_sq * dist_sq;
+    let lambda_power = lambda.powi(SOFT_CORE_POWER);
+    let r_sc6 = dist6 + SOFT_CORE_ALPHA * soft_sigma6 * lambda_power;
+
+    if r_sc6 <= 0.0 || !r_sc6.is_finite() {
+        return (Vec3::new_zero(), 0.0, 0.0);
+    }
+
+    let r_sc = r_sc6.powf(1.0 / 6.0);
+    let inv_r_sc = 1.0 / r_sc;
+    let sr = sigma * inv_r_sc;
+    let sr6 = sr.powi(6);
+    let sr12 = sr6 * sr6;
+    let hard_force_mag = 24.0 * eps * 2.0f32.mul_add(sr12, -sr6) * inv_r_sc;
+    let hard_energy = 4.0 * eps * (sr12 - sr6);
+    let hard_force = dir * hard_force_mag;
+
+    let dist = dist_sq.sqrt();
+    let force_softening = (dist * inv_r_sc).powi(5);
+    let force = hard_force * (scale * force_softening);
+    let energy = hard_energy * scale;
+
+    let lambda_power_deriv = if SOFT_CORE_POWER == 1 {
+        1.0
+    } else {
+        lambda.powi(SOFT_CORE_POWER - 1)
+    };
+    let dr_sc_dlambda =
+        (SOFT_CORE_POWER as f32) * SOFT_CORE_ALPHA * soft_sigma6 * lambda_power_deriv
+            / (6.0 * r_sc.powi(5));
+    let dh_dl = -hard_energy - scale * hard_force_mag * dr_sc_dlambda;
+
+    (force, energy, dh_dl)
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Lennard Jones and (short-range) Coulomb forces. Used by solvent and non-solvent.
 /// We run long-range SPME Coulomb force separately.
 ///
 /// We use a hard distance cutoff for Vdw, enabled by its ^-7 falloff.
-/// Returns energy as well.
+/// Returns force, potential energy, and this pair's alchemical dH/dlambda
+/// contribution. The derivative is zero for ordinary pairs.
 pub fn f_nonbonded_cpu(
     virial_w: &mut f64,
     tgt: &AtomDynamics,
@@ -893,15 +959,30 @@ pub fn f_nonbonded_cpu(
     spme_alpha: f32,
     coulomb_cutoff: f32,
     lj_cutoff: f32,
-    interaction_scale: f32,
+    alchemical_lambda: Option<f32>,
 ) -> (Vec3, f32, f32) {
     let diff = cell.min_image(tgt.posit - src.posit);
 
     // We compute these dist-related values once, and share them between
     // LJ and Coulomb.
     let dist_sq = diff.magnitude_squared();
+    let alchemical_lambda = alchemical_lambda.map(|lambda| lambda.clamp(0.0, 1.0));
 
     if dist_sq < 1e-12 {
+        if let Some(lambda) = alchemical_lambda
+            && calc_lj
+            && !overrides.lj_disabled
+        {
+            let (σ, ε) = lj_tables.lookup(lj_indices);
+            let (mut f, mut e, mut dh_dl) =
+                alchemical_lj_soft_core_decouple(Vec3::new_zero(), 0.0, σ, ε, lambda);
+            if scale14 {
+                f *= SCALE_LJ_14;
+                e *= SCALE_LJ_14;
+                dh_dl *= SCALE_LJ_14;
+            }
+            return (f, e, dh_dl);
+        }
         return (Vec3::new_zero(), 0., 0.);
     }
 
@@ -909,17 +990,23 @@ pub fn f_nonbonded_cpu(
     let inv_dist = 1.0 / dist;
     let dir = diff * inv_dist;
 
-    let (f_lj, energy_lj) = if !calc_lj || dist > lj_cutoff || overrides.lj_disabled {
-        (Vec3::new_zero(), 0.)
+    let (f_lj, energy_lj, dh_dl_lj) = if !calc_lj || dist > lj_cutoff || overrides.lj_disabled {
+        (Vec3::new_zero(), 0., 0.)
     } else {
         let (σ, ε) = lj_tables.lookup(lj_indices);
 
-        let (mut f, mut e) = force_e_lj(dir, inv_dist, σ, ε);
+        let (mut f, mut e, mut dh_dl) = if let Some(lambda) = alchemical_lambda {
+            alchemical_lj_soft_core_decouple(dir, dist_sq, σ, ε, lambda)
+        } else {
+            let (f, e) = force_e_lj(dir, inv_dist, σ, ε);
+            (f, e, 0.)
+        };
         if scale14 {
             f *= SCALE_LJ_14;
             e *= SCALE_LJ_14;
+            dh_dl *= SCALE_LJ_14;
         }
-        (f, e)
+        (f, e, dh_dl)
     };
 
     // We assume that in the AtomDynamics structs, charges are already scaled to Amber units.
@@ -949,14 +1036,20 @@ pub fn f_nonbonded_cpu(
 
     // println!("F coulomb (CPU): {f_coulomb} LJ: {f_lj}");
 
-    let raw_force = f_lj + f_coulomb;
-    let raw_energy = energy_lj + energy_coulomb;
-    let force = raw_force * interaction_scale;
-    let energy = raw_energy * interaction_scale;
+    let (force, energy, dh_dl) = if let Some(lambda) = alchemical_lambda {
+        let coulomb_scale = 1.0 - lambda;
+        (
+            f_lj + f_coulomb * coulomb_scale,
+            energy_lj + energy_coulomb * coulomb_scale,
+            dh_dl_lj - energy_coulomb,
+        )
+    } else {
+        (f_lj + f_coulomb, energy_lj + energy_coulomb, 0.)
+    };
 
     *virial_w += diff.dot(force) as f64;
 
-    (force, energy, raw_energy)
+    (force, energy, dh_dl)
 }
 
 fn atom_to_mol_indices(n_atoms: usize, mol_start_indices: &[usize]) -> Vec<usize> {

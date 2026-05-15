@@ -636,9 +636,11 @@ pub struct MdState {
     /// Used to track which molecule each atom is associated with in our flattened structures.
     /// This is the potential energy between every pair of molecules.
     pub potential_energy_between_mols: Vec<f64>,
-    /// Unscaled non-bonded interaction energy between the alchemical molecule and the
-    /// rest of the system for the current step, in kcal/mol.
-    alch_interaction_energy: f64,
+    /// Instantaneous alchemical non-bonded derivative for the current step, in kcal/mol.
+    ///
+    /// This includes soft-core short-range LJ contributions and linearly scaled
+    /// Coulomb/SPME cross contributions for the configured alchemical molecule.
+    alch_dh_dl: f64,
     snapshot_queue_for_dcd: Vec<Snapshot>,
     snapshot_queue_for_trr: Vec<Snapshot>,
     snapshot_queue_for_xtc: Vec<Snapshot>,
@@ -1200,7 +1202,7 @@ impl MdState {
         self.potential_energy_nonbonded = 0.;
         self.potential_energy_bonded = 0.;
         self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)];
-        self.alch_interaction_energy = 0.0;
+        self.alch_dh_dl = 0.0;
     }
 
     /// Entry point for force application. This includes bonded, non-bonded (LJ and Coulomb/SPME), and
@@ -1307,25 +1309,22 @@ impl MdState {
     }
     /// Compute the instantaneous ∂H/∂λ in kcal/mol for the current alchemical molecule.
     ///
-    /// For linear coupling/decoupling:
-    ///   H(λ) = H_solvent + (1−λ)·U_alch_interact + H_solute_bonded
-    ///   ∂H/∂λ = −U_alch_interact
-    ///
-    /// where U_alch_interact is the non-bonded interaction energy of molecule
-    /// `alch_mol_idx` with all other molecules, accumulated while computing the
-    /// short-range and reciprocal non-bonded interactions for the current step.
+    /// The value is accumulated while computing the short-range and reciprocal
+    /// non-bonded interactions for the current step. Short-range LJ uses the
+    /// Beutler/GROMACS-style soft-core derivative; Coulomb and reciprocal-space
+    /// cross interactions are differentiated from their linear `(1 - lambda)`
+    /// scaling.
     ///
     /// Returns 0.0 when `alch_mol_idx` is `None`.
     ///
     /// Use `MdState::configure_alchemical_window` when selecting the molecule so
-    /// the cached non-bonded pair list marks alchemical cross interactions for
-    /// `(1 − λ)` scaling.
+    /// the cached non-bonded pair list marks alchemical cross interactions.
     pub fn compute_dh_dl(&self) -> f64 {
         if self.alch_mol_idx.is_none() {
             return 0.0;
         }
 
-        -self.alch_interaction_energy
+        self.alch_dh_dl
     }
 
     pub(crate) fn alchemical_atom_range(&self) -> Option<(usize, usize)> {

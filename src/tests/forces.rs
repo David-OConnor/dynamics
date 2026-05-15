@@ -8,7 +8,7 @@ use na_seq::Element;
 use crate::{
     ComputationDevice, FfMolType, MdConfig, MdOverrides, MdState, MolDynamics, SimBoxInit,
     forces::force_e_lj,
-    non_bonded::{CHARGE_UNIT_SCALER, LONG_RANGE_CUTOFF},
+    non_bonded::{CHARGE_UNIT_SCALER, LONG_RANGE_CUTOFF, alchemical_lj_soft_core_decouple},
     params::FfParamSet,
 };
 
@@ -288,6 +288,79 @@ fn test_lennard_jones_newton3() {
             sum.magnitude()
         );
     }
+}
+
+#[test]
+fn test_alchemical_lj_soft_core_endpoints() {
+    let sigma = 3.4_f32;
+    let eps = 0.086_f32;
+    let r = 2.4_f32;
+    let dist_sq = r * r;
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+
+    let (hard_f, hard_e) = force_e_lj(dir, 1.0 / r, sigma, eps);
+    let (f0, e0, _) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 0.0);
+    let (f1, e1, dhdl1) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 1.0);
+
+    assert_close_f32(e0, hard_e, 1e-5, "soft-core lambda=0 energy");
+    assert_close_f32(f0.x, hard_f.x, 1e-5, "soft-core lambda=0 force");
+    assert!(
+        e1.abs() < 1e-6,
+        "soft-core lambda=1 energy should vanish, got {e1}"
+    );
+    assert!(
+        f1.magnitude() < 1e-6,
+        "soft-core lambda=1 force should vanish, got {f1:?}"
+    );
+    assert!(
+        dhdl1.is_finite(),
+        "soft-core endpoint dH/dlambda must be finite"
+    );
+}
+
+#[test]
+fn test_alchemical_lj_soft_core_dhdl_matches_finite_difference() {
+    let sigma = 3.4_f32;
+    let eps = 0.086_f32;
+    let r = 2.2_f32;
+    let dist_sq = r * r;
+    let lambda = 0.37_f32;
+    let delta = 1e-3_f32;
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+
+    let (_, _, dhdl) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda);
+    let (_, e_plus, _) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda + delta);
+    let (_, e_minus, _) =
+        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda - delta);
+    let numerical = (e_plus - e_minus) / (2.0 * delta);
+
+    assert_close_f32(
+        dhdl,
+        numerical,
+        0.02,
+        "soft-core LJ dH/dlambda finite difference",
+    );
+}
+
+#[test]
+fn test_alchemical_lj_soft_core_overlap_is_finite() {
+    let sigma = 3.4_f32;
+    let eps = 0.086_f32;
+    let r = 1e-4_f32;
+    let dist_sq = r * r;
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+
+    let (force, energy, dhdl) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 0.5);
+
+    assert!(force.x.is_finite() && force.y.is_finite() && force.z.is_finite());
+    assert!(
+        energy.is_finite(),
+        "soft-core overlap energy must be finite"
+    );
+    assert!(
+        dhdl.is_finite(),
+        "soft-core overlap dH/dlambda must be finite"
+    );
 }
 
 // ── Coulomb short-range ───────────────────────────────────────────────────────

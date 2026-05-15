@@ -4,6 +4,11 @@
 
 #include "util.cu"
 
+static constexpr float ALCH_SOFT_CORE_ALPHA = 0.5f;
+static constexpr int ALCH_SOFT_CORE_POWER = 1;
+// GROMACS' default sc-sigma is 0.3 nm; this code uses Angstrom.
+static constexpr float ALCH_SOFT_CORE_SIGMA_MIN = 3.0f;
+
 // This assumes diff (and dir) is in order tgt - src.
 // Different API.
 __device__
@@ -27,6 +32,85 @@ ForceEnergy lj_force(
     ForceEnergy result;
     result.force = dir * mag;
     result.energy = 4.f * eps * (sr12 - sr6);
+
+    return result;
+}
+
+struct ForceEnergyDhdl {
+    float3 force;
+    float energy;
+    float dh_dl;
+};
+
+// Beutler/GROMACS-style LJ decoupling for a B state with zero LJ interaction:
+// V_sc(r, lambda) = (1 - lambda) * V_LJ((r^6 + alpha*sigma_sc^6*lambda^p)^(1/6)).
+__device__
+ForceEnergyDhdl lj_force_soft_core_decouple(
+    float r_sq,
+    float3 dir,
+    float sigma,
+    float eps,
+    float lambda
+) {
+    ForceEnergyDhdl result;
+    result.force = make_float3(0.f, 0.f, 0.f);
+    result.energy = 0.f;
+    result.dh_dl = 0.f;
+
+    if (eps == 0.0f || !isfinite(eps) || !isfinite(sigma) || r_sq < 0.0f) {
+        return result;
+    }
+
+    lambda = fminf(1.0f, fmaxf(0.0f, lambda));
+    const float scale = 1.0f - lambda;
+
+    if (ALCH_SOFT_CORE_ALPHA <= 0.0f) {
+        if (r_sq <= 0.0f) {
+            return result;
+        }
+
+        const float inv_r = rsqrtf(r_sq);
+        ForceEnergy hard = lj_force(make_float3(0.f, 0.f, 0.f), r_sq * inv_r, inv_r, dir, sigma, eps);
+        result.force = hard.force * scale;
+        result.energy = hard.energy * scale;
+        result.dh_dl = -hard.energy;
+        return result;
+    }
+
+    const float soft_sigma = fmaxf(sigma, ALCH_SOFT_CORE_SIGMA_MIN);
+    const float soft_sigma2 = soft_sigma * soft_sigma;
+    const float soft_sigma6 = soft_sigma2 * soft_sigma2 * soft_sigma2;
+    const float r6 = r_sq * r_sq * r_sq;
+    const float lambda_power =
+        (ALCH_SOFT_CORE_POWER == 1) ? lambda : powf(lambda, (float)ALCH_SOFT_CORE_POWER);
+    const float r_sc6 = r6 + ALCH_SOFT_CORE_ALPHA * soft_sigma6 * lambda_power;
+
+    if (r_sc6 <= 0.0f || !isfinite(r_sc6)) {
+        return result;
+    }
+
+    const float r_sc = powf(r_sc6, 1.0f / 6.0f);
+    const float inv_r_sc = 1.0f / r_sc;
+    const float sr = sigma * inv_r_sc;
+    const float sr2 = sr * sr;
+    const float sr4 = sr2 * sr2;
+    const float sr6 = sr4 * sr2;
+    const float sr12 = sr6 * sr6;
+    const float hard_force_mag = 24.0f * eps * fmaf(2.0f, sr12, -sr6) * inv_r_sc;
+    const float hard_energy = 4.0f * eps * (sr12 - sr6);
+
+    const float r = sqrtf(r_sq);
+    const float force_softening = powf(r * inv_r_sc, 5.0f);
+    result.force = dir * (hard_force_mag * scale * force_softening);
+    result.energy = hard_energy * scale;
+
+    const float lambda_power_deriv =
+        (ALCH_SOFT_CORE_POWER == 1) ? 1.0f : powf(lambda, (float)(ALCH_SOFT_CORE_POWER - 1));
+    const float r_sc5 = r_sc * r_sc * r_sc * r_sc * r_sc;
+    const float dr_sc_dlambda =
+        (float)ALCH_SOFT_CORE_POWER * ALCH_SOFT_CORE_ALPHA * soft_sigma6 * lambda_power_deriv /
+        (6.0f * r_sc5);
+    result.dh_dl = -hard_energy - scale * hard_force_mag * dr_sc_dlambda;
 
     return result;
 }
@@ -249,9 +333,8 @@ void nonbonded_force_kernel(
 }
 
 // Alchemical variant of the short-range LJ/Coulomb kernel.
-// It accepts the same
-// inputs plus per-pair alchemical flags, lambda, and an accumulator for the raw
-// cross-interaction energy used for dH/dlambda.
+// It accepts the same inputs plus per-pair alchemical flags, lambda, and an
+// accumulator for dH/dlambda.
 extern "C" __global__
 void nonbonded_force_alchemical_kernel(
     // Out arrays and values
@@ -263,7 +346,7 @@ void nonbonded_force_alchemical_kernel(
     //
     double* out_virial,
     double* out_energy,
-    double* out_alch_energy,
+    double* out_alch_dh_dl,
     // Atom posits (not pair-wise)
     const float* pos_dyn,
     const float* pos_water_o,
@@ -306,8 +389,9 @@ void nonbonded_force_alchemical_kernel(
     // Per-thread energy accumulators.
     double e_acc = 0.0;
     double w_acc = 0.0;
-    double alch_e_acc = 0.0;
-    const float alch_scale = fminf(1.0f, fmaxf(0.0f, 1.0f - lambda_alch));
+    double alch_dh_dl_acc = 0.0;
+    const float lambda = fminf(1.0f, fmaxf(0.0f, lambda_alch));
+    const float alch_scale = 1.0f - lambda;
 
     for (size_t i = index; i < N; i += stride) {
         const uint32_t it = tgt_is[i];
@@ -325,6 +409,7 @@ void nonbonded_force_alchemical_kernel(
         const float sigma = sigmas[i];
         const float eps = epss[i];
         const uint8_t scale_14 = scale_14s[i];
+        const uint8_t is_alchemical = alch_interactions[i];
 
         float3 diff = posit_tgt - posit_src;
         diff = min_image(cell_extent, diff);
@@ -341,9 +426,18 @@ void nonbonded_force_alchemical_kernel(
         ForceEnergy f_lj;
         f_lj.force = make_float3(0.f, 0.f, 0.f);
         f_lj.energy = 0.f;
+        float dh_dl_pair = 0.f;
 
         if (calc_ljs[i] && !lj_disabled) {
-            f_lj = lj_force(diff, r, inv_r, dir, sigma, eps);
+            if (is_alchemical) {
+                const ForceEnergyDhdl f_lj_sc =
+                    lj_force_soft_core_decouple(r_sq, dir, sigma, eps, lambda);
+                f_lj.force = f_lj_sc.force;
+                f_lj.energy = f_lj_sc.energy;
+                dh_dl_pair += f_lj_sc.dh_dl;
+            } else {
+                f_lj = lj_force(diff, r, inv_r, dir, sigma, eps);
+            }
         }
 
         const float q_tgt = qs_tgt[i];
@@ -368,18 +462,22 @@ void nonbonded_force_alchemical_kernel(
         if (scale_14) {
             f_lj.force = f_lj.force * 0.5f;
             f_lj.energy = f_lj.energy * 0.5f;
+            dh_dl_pair *= 0.5f;
 
             f_coulomb.force = f_coulomb.force * 0.833333333f;
             f_coulomb.energy = f_coulomb.energy * 0.833333333f;
         }
 
-        const float3 f_raw = f_lj.force + f_coulomb.force;
-        const double e_pair_raw = (double)f_lj.energy + (double)f_coulomb.energy;
-        const uint8_t is_alchemical = alch_interactions[i];
-        const float interaction_scale = is_alchemical ? alch_scale : 1.0f;
-
-        const float3 f = f_raw * interaction_scale;
-        const double e_pair = e_pair_raw * (double)interaction_scale;
+        const float3 f = is_alchemical
+            ? f_lj.force + f_coulomb.force * alch_scale
+            : f_lj.force + f_coulomb.force;
+        const double e_pair = is_alchemical
+            ? (double)f_lj.energy + (double)f_coulomb.energy * (double)alch_scale
+            : (double)f_lj.energy + (double)f_coulomb.energy;
+        if (is_alchemical) {
+            dh_dl_pair -= f_coulomb.energy;
+            alch_dh_dl_acc += (double)dh_dl_pair;
+        }
 
         const double virial_pair =
             (double)diff.x * (double)f.x +
@@ -388,7 +486,6 @@ void nonbonded_force_alchemical_kernel(
 
         w_acc += virial_pair;
         if (atom_types_tgt[i] == 0) { e_acc += e_pair; }
-        if (is_alchemical) { alch_e_acc += e_pair_raw; }
 
 
         const uint32_t out_i = tgt_is[i];
@@ -429,11 +526,11 @@ void nonbonded_force_alchemical_kernel(
 
     double e_blk = block_sum(e_acc);
     double w_blk = block_sum(w_acc);
-    double alch_e_blk = block_sum(alch_e_acc);
+    double alch_dh_dl_blk = block_sum(alch_dh_dl_acc);
 
     if (threadIdx.x == 0) {
         atomicAdd(out_energy, e_blk);
         atomicAdd(out_virial, w_blk);
-        atomicAdd(out_alch_energy, alch_e_blk);
+        atomicAdd(out_alch_dh_dl, alch_dh_dl_blk);
     }
 }

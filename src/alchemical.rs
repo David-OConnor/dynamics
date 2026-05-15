@@ -11,8 +11,7 @@
 //!     λ = 0 means the solute interacts normally with the solvent; λ = 1 means it is fully decoupled.
 //!
 //! - At each simulation frame, record **∂H/∂λ** — the derivative of the Hamiltonian
-//!    with respect to λ. For linear coupling this equals minus the solute–solvent
-//!    interaction energy accumulated during the non-bonded force calculation.
+//!    with respect to λ, accumulated during the non-bonded force calculation.
 //!    This is stored per frame in [`crate::snapshot::SnapshotEnergyData::dh_dl`].
 //!
 //! - Average ⟨∂H/∂λ⟩ over each λ window's trajectory into a [`LambdaWindow`].
@@ -23,32 +22,48 @@
 //!
 //! Use [`MdState::configure_alchemical_window`] before running each λ window. It
 //! validates the molecule index and λ value and rebuilds the cached non-bonded
-//! pair list so cross interactions with the alchemical molecule are scaled by
-//! `(1 − λ)`.
+//! pair list so cross interactions with the alchemical molecule are marked for
+//! alchemical handling.
 //!
 //! # Soft-core potentials
 //! [GROMACS docs](https://manual.gromacs.org/nightly/reference-manual/functions/free-energy-interactions.html#soft-core-interactions-beutler-et-al)
 //!
-//! Near λ = 0 or 1, the simple linear LJ coupling diverges when two atoms overlap.
-//! We Replace linear LJ scaling with a soft-core potential, from Beutler et al. (1994),
-//! similar to GROMACS' approach:
+//! Near λ = 0 or 1, simple linear LJ coupling gives noisy endpoint derivatives
+//! when two atoms overlap. For alchemical cross interactions we replace linear
+//! LJ scaling with the Beutler et al. soft-core form used by GROMACS:
 //!
 //! ```text
-//! U_sc(r, λ) = 4·ε·λ · [ 1/(α(1−λ)² + (r/σ)⁶)² − 1/(α(1−λ)² + (r/σ)⁶) ]
+//! V_sc(r, λ) = (1 - λ) V_LJ(r_A)
+//! r_A = (r^6 + α σ_sc^6 λ^p)^(1/6)
 //! ```
 //!
 //! The electrostatic coupling can remain linear; switch it off before LJ to avoid
 //! charge–charge singularities.
 //!
 //!
+use crate::{ComputationDevice, MdState, snapshot::Snapshot};
+use std::f64::consts::LN_10;
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
 };
 
-use crate::{ComputationDevice, MdState, snapshot::Snapshot};
-
 const GAS_CONST_R_KCAL: f64 = 0.001_987_204_1; // kcal / (mol · K)
+
+/// Beutler/GROMACS-style LJ soft-core alpha used for alchemical decoupling.
+///
+/// GROMACS exposes this as `sc-alpha`; common LJ decoupling setups use `0.5`.
+pub const SOFT_CORE_ALPHA: f32 = 0.5;
+
+/// Lambda power `p` in `r_A = (r^6 + alpha * sigma^6 * lambda^p)^(1/6)`.
+///
+/// GROMACS supports 1 and 2; 1 is the modern smoother default.
+pub const SOFT_CORE_POWER: i32 = 1;
+
+/// Minimum soft-core sigma in Angstrom.
+///
+/// GROMACS' default `sc-sigma` is 0.3 nm, which is 3.0 Angstrom.
+pub const SOFT_CORE_SIGMA_MIN: f32 = 3.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AlchemicalError {
@@ -227,32 +242,26 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> 
 /// # Panics
 pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> Result<f64, AlchemicalError> {
     let rt = GAS_CONST_R_KCAL * temperature_k;
-    Ok((dg_octanol - dg_water) / (2.302_585_093 * rt))
+    Ok((dg_octanol - dg_water) / (LN_10 * rt))
 }
 
 impl MdState {
-    /// Currently configured alchemical molecule index, if any.
-    pub fn alchemical_molecule_index(&self) -> Option<usize> {
-        self.alch_mol_idx
-    }
-
-    /// Current alchemical λ value.
-    pub fn alchemical_lambda(&self) -> f64 {
-        self.lambda_alch
-    }
-
     /// Enable alchemical decoupling for one molecule at a fixed λ value.
     ///
     /// This is the preferred setup call for each TI window. It validates the
     /// molecule index, stores the λ value, clears cached reciprocal data, and
     /// rebuilds non-bonded pairs so cross interactions with the selected molecule
-    /// are marked for `(1 - λ)` scaling.
+    /// use alchemical LJ/Coulomb handling.
     pub fn configure_alchemical_window(
         &mut self,
         dev: &ComputationDevice,
         mol_idx: usize,
         lambda: f64,
     ) -> Result<(), AlchemicalError> {
+        if !lambda.is_finite() || !(0.0..=1.0).contains(&lambda) {
+            return Err(AlchemicalError::InvalidLambda(lambda));
+        }
+
         let mol_count = self.mol_start_indices.len();
         if mol_idx >= mol_count {
             return Err(AlchemicalError::InvalidMoleculeIndex { mol_idx, mol_count });
@@ -260,7 +269,7 @@ impl MdState {
 
         self.alch_mol_idx = Some(mol_idx);
         self.lambda_alch = lambda;
-        self.alch_interaction_energy = 0.0;
+        self.alch_dh_dl = 0.0;
         self.spme_force_prev = None;
         self.build_all_neighbors(dev);
 
@@ -274,9 +283,12 @@ impl MdState {
         if self.alch_mol_idx.is_none() {
             return Err(AlchemicalError::AlchemicalMoleculeNotSet);
         }
+        if !lambda.is_finite() || !(0.0..=1.0).contains(&lambda) {
+            return Err(AlchemicalError::InvalidLambda(lambda));
+        }
 
         self.lambda_alch = lambda;
-        self.alch_interaction_energy = 0.0;
+        self.alch_dh_dl = 0.0;
         self.spme_force_prev = None;
 
         Ok(())
@@ -286,7 +298,7 @@ impl MdState {
     pub fn clear_alchemical_window(&mut self, dev: &ComputationDevice) {
         self.alch_mol_idx = None;
         self.lambda_alch = 0.0;
-        self.alch_interaction_energy = 0.0;
+        self.alch_dh_dl = 0.0;
         self.spme_force_prev = None;
         self.build_all_neighbors(dev);
     }

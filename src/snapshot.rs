@@ -78,11 +78,11 @@ pub struct SnapshotEnergyData {
     pub pressure: f32,
     /// Instantaneous ∂H/∂λ in kcal/mol, for alchemical free-energy calculations.
     ///
-    /// Recorded only when `MdState::alch_mol_idx` is set. For linear decoupling
-    /// this equals the negative of the alchemical molecule's non-bonded
-    /// interaction energy with the rest of the system at the current
-    /// configuration. Average this over a λ window's trajectory and pass the
-    /// result to `alchemical::collect_window` / `alchemical::free_energy_ti`.
+    /// Recorded only when `MdState::alch_mol_idx` is set. This is the current
+    /// non-bonded alchemical derivative, including soft-core short-range LJ and
+    /// linearly scaled Coulomb/SPME cross terms. Average this over a λ window's
+    /// trajectory and pass the result to `alchemical::collect_window` /
+    /// `alchemical::free_energy_ti`.
     pub dh_dl: Option<f32>,
     /// Simulation box volume in **Å³**.
     pub volume: f32,

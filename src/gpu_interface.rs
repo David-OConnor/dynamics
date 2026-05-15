@@ -26,7 +26,7 @@ pub(crate) struct ForcesPositsGpu {
 
     pub virial_gpu: CudaSlice<f64>,
     pub energy_gpu: CudaSlice<f64>,
-    pub alch_energy_gpu: CudaSlice<f64>,
+    pub alch_dh_dl_gpu: CudaSlice<f64>,
 
     pub cutoff_ewald: f32,
     pub alpha_ewald: f32,
@@ -55,7 +55,7 @@ impl ForcesPositsGpu {
 
         let virial_gpu = stream.clone_htod(&[0.0f64]).unwrap();
         let energy_gpu = stream.clone_htod(&[0.0f64]).unwrap();
-        let alch_energy_gpu = stream.clone_htod(&[0.0f64]).unwrap();
+        let alch_dh_dl_gpu = stream.clone_htod(&[0.0f64]).unwrap();
 
         let pos_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
         let pos_w_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
@@ -71,7 +71,7 @@ impl ForcesPositsGpu {
             forces_on_water_h1,
             virial_gpu,
             energy_gpu,
-            alch_energy_gpu,
+            alch_dh_dl_gpu,
             cutoff_ewald,
             alpha_ewald,
 
@@ -321,7 +321,7 @@ fn upload_positions(
 /// a common index. Exclusions (e.g. Amber-style 1-2 adn 1-3) are handled upstream.
 ///
 /// Returns (force on non-solvent, force on solvent, virial sum, potential energy total,
-/// per-mol-pair potential energy, unscaled alchemical interaction energy)
+/// per-mol-pair potential energy, alchemical dH/dlambda)
 pub fn force_nonbonded_gpu(
     stream: &Arc<CudaStream>,
     kernel: &CudaFunction,
@@ -379,7 +379,7 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&mut forces.virial_gpu);
     launch_args.arg(&mut forces.energy_gpu);
     if alchemical_enabled {
-        launch_args.arg(&mut forces.alch_energy_gpu);
+        launch_args.arg(&mut forces.alch_dh_dl_gpu);
     }
     //
     launch_args.arg(&forces.pos_dyn);
@@ -451,8 +451,8 @@ pub fn force_nonbonded_gpu(
 
     let virial = stream.clone_dtoh(&forces.virial_gpu).unwrap()[0];
     let energy = stream.clone_dtoh(&forces.energy_gpu).unwrap()[0];
-    let alch_energy = if alchemical_enabled {
-        stream.clone_dtoh(&forces.alch_energy_gpu).unwrap()[0]
+    let alch_dh_dl = if alchemical_enabled {
+        stream.clone_dtoh(&forces.alch_dh_dl_gpu).unwrap()[0]
     } else {
         0.0
     };
@@ -465,7 +465,7 @@ pub fn force_nonbonded_gpu(
         virial,
         energy,
         Vec::new(),
-        alch_energy,
+        alch_dh_dl,
     )
 }
 
@@ -533,7 +533,7 @@ fn zero_forces_and_accums(
     unsafe { l6.launch(cfg1) }.unwrap();
 
     let mut l7 = stream.launch_builder(&zero_f64);
-    l7.arg(&mut forces.alch_energy_gpu);
+    l7.arg(&mut forces.alch_dh_dl_gpu);
     l7.arg(&one);
     unsafe { l7.launch(cfg1) }.unwrap();
 }
