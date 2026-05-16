@@ -64,8 +64,7 @@ pub const SOFT_CORE_POWER: i32 = 1;
 pub const SOFT_CORE_SIGMA_MIN: f32 = 3.0;
 
 #[derive(Default)]
-// todo: Determine if this should be pub (not just crate)
-pub(crate) struct StateAlchemical {
+pub struct StateAlchemical {
     /// Index into `mol_start_indices` of the molecule being alchemically decoupled.
     ///
     /// When `Some(m)`, `take_snapshot` computes ∂H/∂λ for molecule m and stores it
