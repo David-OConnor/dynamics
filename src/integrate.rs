@@ -137,7 +137,7 @@ impl MdState {
                     HydrogenConstraint::Shake { shake_tolerance: _ }
                         | HydrogenConstraint::Linear { .. }
                 ) {
-                    self.rattle_hydrogens(dt);
+                    self.rattle_hydrogens();
                 }
 
                 if log_time {
@@ -498,11 +498,11 @@ impl MdState {
         match self.cfg.hydrogen_constraint {
             HydrogenConstraint::Shake { shake_tolerance } => {
                 self.shake_hydrogens(dt_kick, shake_tolerance);
-                self.rattle_hydrogens(dt_kick);
+                self.rattle_hydrogens();
             }
             HydrogenConstraint::Linear { order, iter } => {
                 self.lincs_hydrogens(dt_kick, order as usize, iter as usize);
-                self.rattle_hydrogens(dt_kick);
+                self.rattle_hydrogens();
             }
             HydrogenConstraint::Flexible => {}
         }
@@ -555,7 +555,7 @@ impl MdState {
             self.cfg.hydrogen_constraint,
             HydrogenConstraint::Shake { shake_tolerance: _ } | HydrogenConstraint::Linear { .. }
         ) {
-            self.rattle_hydrogens(dt);
+            self.rattle_hydrogens();
         }
 
         self.kinetic_energy = self.measure_kinetic_energy();

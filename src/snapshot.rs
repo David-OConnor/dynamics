@@ -208,7 +208,10 @@ impl Snapshot {
             hydrogen_bonds,
             temperature,
             pressure,
-            dh_dl: state.alch_mol_idx.map(|_| state.compute_dh_dl() as f32),
+            dh_dl: state
+                .alchemical
+                .mol_idx
+                .map(|_| state.alchemical.dh_dl as f32),
             volume,
             density,
         });

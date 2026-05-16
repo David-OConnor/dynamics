@@ -469,7 +469,7 @@ impl MdState {
                         &self.lj_tables,
                         &self.cfg.overrides,
                         &self.mol_start_indices,
-                        self.lambda_alch,
+                        self.alchemical.lambda,
                         self.cfg.spme_alpha,
                         self.cfg.coulomb_cutoff,
                         self.cfg.lj_cutoff,
@@ -491,7 +491,7 @@ impl MdState {
                             self.forces_posits_gpu.as_mut().unwrap(),
                             self.per_neighbor_gpu.as_ref().unwrap(),
                             &self.cfg.overrides,
-                            self.lambda_alch,
+                            self.alchemical.lambda,
                         );
                     (
                         f_std,
@@ -537,7 +537,7 @@ impl MdState {
             }
         }
 
-        self.alch_dh_dl += alch_dh_dl;
+        self.alchemical.dh_dl += alch_dh_dl;
     }
 
     /// [Re] initialize non-bonded interaction pairs between atoms. Do this whenever we rebuild neighbors.
@@ -548,7 +548,8 @@ impl MdState {
         let n_water_mols = self.water.len();
         let atom_to_mol = atom_to_mol_indices(n_std, &self.mol_start_indices);
         let atom_to_mol = atom_to_mol.as_slice();
-        let alch_mol_idx = self.alch_mol_idx;
+
+        let alch_mol_idx = self.alchemical.mol_idx;
 
         let sites = [WaterSite::O, WaterSite::M, WaterSite::H0, WaterSite::H1];
 
@@ -683,7 +684,7 @@ impl MdState {
     /// in future steps.
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) -> (Vec<Vec3>, f64, f64) {
         let (pos_all, q_all) = self.pack_pme_pos_q();
-        let scale = (1.0 - self.lambda_alch).clamp(0.0, 1.0);
+        let scale = (1.0 - self.alchemical.lambda).clamp(0.0, 1.0);
         let alch_atom_range = self.alchemical_atom_range();
 
         let (f_recip, e_recip, virial_from_kspace, alch_cross_dh_dl) = match &mut self.pme_recip {
@@ -751,7 +752,7 @@ impl MdState {
 
         self.potential_energy += e_recip as f64;
         self.potential_energy_nonbonded += e_recip as f64;
-        self.alch_dh_dl += alch_cross_dh_dl;
+        self.alchemical.dh_dl += alch_cross_dh_dl;
 
         // Apply forces; virial comes from the analytical k-space formula, not r·F.
         self.unpack_apply_pme_forces(&f_recip);

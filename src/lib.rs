@@ -636,11 +636,6 @@ pub struct MdState {
     /// Used to track which molecule each atom is associated with in our flattened structures.
     /// This is the potential energy between every pair of molecules.
     pub potential_energy_between_mols: Vec<f64>,
-    /// Instantaneous alchemical non-bonded derivative for the current step, in kcal/mol.
-    ///
-    /// This includes soft-core short-range LJ contributions and linearly scaled
-    /// Coulomb/SPME cross contributions for the configured alchemical molecule.
-    alch_dh_dl: f64,
     snapshot_queue_for_dcd: Vec<Snapshot>,
     snapshot_queue_for_trr: Vec<Snapshot>,
     snapshot_queue_for_xtc: Vec<Snapshot>,
@@ -679,17 +674,7 @@ pub struct MdState {
     pub mol_start_indices: Vec<usize>,
     /// A flag we set to disable certain things like snapshots during this MD phase.
     solvent_only_sim_at_init: bool,
-    /// Index into `mol_start_indices` of the molecule being alchemically decoupled.
-    ///
-    /// When `Some(m)`, `take_snapshot` computes ∂H/∂λ for molecule m and stores it
-    /// in each `Snapshot::dh_dl`.  Set `None` (the default) for ordinary MD.
-    pub alch_mol_idx: Option<usize>,
-    /// Current lambda value for alchemical simulations, in [0, 1].
-    ///
-    /// λ = 0: solute fully coupled; λ = 1: solute fully decoupled.
-    /// For thermodynamic integration, hold this fixed for the duration of one
-    /// simulation window and sweep across multiple windows.
-    pub lambda_alch: f64,
+    pub alchemical: alchemical::StateAlchemical,
     /// Index assigned at the start of each MD run. Trajectory files are named
     /// `traj_N.dcd`, `traj_N.trr`, etc. so that successive runs never overwrite
     /// each other.  Chosen as the lowest N for which no such files exist yet.
@@ -1035,11 +1020,13 @@ impl MdState {
             let ctx = CudaContext::new(0).unwrap();
             let module = ctx.load_module(Ptx::from_src(PTX)).unwrap();
             result.gpu_kernel = Some(module.load_function("nonbonded_force_kernel").unwrap());
+
             result.gpu_kernel_alchemical = Some(
                 module
                     .load_function("nonbonded_force_alchemical_kernel")
                     .unwrap(),
             );
+
             result.gpu_kernel_zero_f32 = Some(module.load_function("zero_f32").unwrap());
             result.gpu_kernel_zero_f64 = Some(module.load_function("zero_f64").unwrap());
 
@@ -1202,7 +1189,8 @@ impl MdState {
         self.potential_energy_nonbonded = 0.;
         self.potential_energy_bonded = 0.;
         self.potential_energy_between_mols = vec![0.; self.mol_start_indices.len().pow(2)];
-        self.alch_dh_dl = 0.0;
+
+        self.alchemical.dh_dl = 0.0;
     }
 
     /// Entry point for force application. This includes bonded, non-bonded (LJ and Coulomb/SPME), and
@@ -1241,7 +1229,7 @@ impl MdState {
         // todo: When skipping long range forces, you may wish to use naive coulomb instead
         // todo of the short-range part of the recip. This depends on the application.
         if !self.cfg.overrides.long_range_recip_disabled {
-            let compute_spme_every_step = self.alch_mol_idx.is_some();
+            let compute_spme_every_step = self.alchemical.mol_idx.is_some();
 
             if compute_spme_every_step || self.step_count.is_multiple_of(SPME_RATIO) {
                 // Compute SPME recip forces as usual, and cache for use in steps where we don't.
@@ -1306,37 +1294,6 @@ impl MdState {
                 self.atoms[i].force += *f;
             }
         }
-    }
-    /// Compute the instantaneous ∂H/∂λ in kcal/mol for the current alchemical molecule.
-    ///
-    /// The value is accumulated while computing the short-range and reciprocal
-    /// non-bonded interactions for the current step. Short-range LJ uses the
-    /// Beutler/GROMACS-style soft-core derivative; Coulomb and reciprocal-space
-    /// cross interactions are differentiated from their linear `(1 - lambda)`
-    /// scaling.
-    ///
-    /// Returns 0.0 when `alch_mol_idx` is `None`.
-    ///
-    /// Use `MdState::configure_alchemical_window` when selecting the molecule so
-    /// the cached non-bonded pair list marks alchemical cross interactions.
-    pub fn compute_dh_dl(&self) -> f64 {
-        if self.alch_mol_idx.is_none() {
-            return 0.0;
-        }
-
-        self.alch_dh_dl
-    }
-
-    pub(crate) fn alchemical_atom_range(&self) -> Option<(usize, usize)> {
-        let mol_idx = self.alch_mol_idx?;
-        let start = *self.mol_start_indices.get(mol_idx)?;
-        let end = self
-            .mol_start_indices
-            .get(mol_idx + 1)
-            .copied()
-            .unwrap_or(self.atoms.len());
-
-        Some((start, end))
     }
 }
 

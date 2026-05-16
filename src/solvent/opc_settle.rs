@@ -11,7 +11,7 @@
 use lin_alg::f32::Vec3;
 
 use crate::{
-    barostat::{SimBox, Virial},
+    barostat::SimBox,
     solvent::{H_MASS, H_O_H_θ, MASS_WATER_MOL, O_EP_R, O_H_R, O_MASS, WaterMolOpc},
 };
 

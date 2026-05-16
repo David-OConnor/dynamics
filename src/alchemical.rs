@@ -41,14 +41,12 @@
 //! charge–charge singularities.
 //!
 //!
-use crate::{ComputationDevice, MdState, snapshot::Snapshot};
-use std::f64::consts::LN_10;
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
 };
 
-const GAS_CONST_R_KCAL: f64 = 0.001_987_204_1; // kcal / (mol · K)
+use crate::{ComputationDevice, MdState, snapshot::Snapshot};
 
 /// Beutler/GROMACS-style LJ soft-core alpha used for alchemical decoupling.
 ///
@@ -64,6 +62,27 @@ pub const SOFT_CORE_POWER: i32 = 1;
 ///
 /// GROMACS' default `sc-sigma` is 0.3 nm, which is 3.0 Angstrom.
 pub const SOFT_CORE_SIGMA_MIN: f32 = 3.0;
+
+#[derive(Default)]
+// todo: Determine if this should be pub (not just crate)
+pub(crate) struct StateAlchemical {
+    /// Index into `mol_start_indices` of the molecule being alchemically decoupled.
+    ///
+    /// When `Some(m)`, `take_snapshot` computes ∂H/∂λ for molecule m and stores it
+    /// in each `Snapshot::dh_dl`.  Set `None` (the default) for ordinary MD.
+    pub mol_idx: Option<usize>,
+    /// Current lambda value for alchemical simulations, in [0, 1].
+    ///
+    /// λ = 0: solute fully coupled; λ = 1: solute fully decoupled.
+    /// For thermodynamic integration, hold this fixed for the duration of one
+    /// simulation window and sweep across multiple windows.
+    pub lambda: f64,
+    /// Instantaneous alchemical non-bonded derivative for the current step, in kcal/mol.
+    ///
+    /// This includes soft-core short-range LJ contributions and linearly scaled
+    /// Coulomb/SPME cross contributions for the configured alchemical molecule.
+    pub dh_dl: f64,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AlchemicalError {
@@ -224,34 +243,17 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> 
         .sum())
 }
 
-/// Compute **LogP** from free energies in solvent and octanol.
-///
-/// Both `dg_water` and `dg_octanol` should be the decoupling free energies
-/// (ΔG for turning off solute–solvent interactions), in kcal/mol, obtained from
-/// [`free_energy_ti`] run in each solvent.
-///
-/// ```text
-/// LogP = (ΔG_octanol − ΔG_water) / (2.303 · R · T)
-/// ```
-///
-/// `temperature_k` is the simulation temperature in Kelvin (typically 298.15 K).
-///
-/// A positive LogP means the solute prefers octanol (lipophilic), i.e. the
-/// decoupling free energy is larger in octanol than in water.
-///
-/// # Panics
-pub fn log_p(dg_water: f64, dg_octanol: f64, temperature_k: f64) -> Result<f64, AlchemicalError> {
-    let rt = GAS_CONST_R_KCAL * temperature_k;
-    Ok((dg_octanol - dg_water) / (LN_10 * rt))
-}
-
+// todo: Other than the build_all_neighbors call, this would make more sense as a
+// todo: method on AlchemicalState
 impl MdState {
-    /// Enable alchemical decoupling for one molecule at a fixed λ value.
+    /// Enable alchemical decoupling for one molecule at a fixed λ value. This is the
+    /// entry point to enable an alchemical computation for an MD run. The application
+    /// sequences the λ values by setting up MD runs, and calling this with the appropraite
+    /// λ.
     ///
-    /// This is the preferred setup call for each TI window. It validates the
-    /// molecule index, stores the λ value, clears cached reciprocal data, and
+    /// It validates the molecule index, stores the λ value, clears cached reciprocal data, and
     /// rebuilds non-bonded pairs so cross interactions with the selected molecule
-    /// use alchemical LJ/Coulomb handling.
+    /// use alchemical LJ/Coulomb force handling.
     pub fn configure_alchemical_window(
         &mut self,
         dev: &ComputationDevice,
@@ -267,39 +269,38 @@ impl MdState {
             return Err(AlchemicalError::InvalidMoleculeIndex { mol_idx, mol_count });
         }
 
-        self.alch_mol_idx = Some(mol_idx);
-        self.lambda_alch = lambda;
-        self.alch_dh_dl = 0.0;
+        self.alchemical.mol_idx = Some(mol_idx);
+
+        self.alchemical.lambda = lambda;
+        self.alchemical.dh_dl = 0.0;
         self.spme_force_prev = None;
+
+        // todo: Why is this here?
         self.build_all_neighbors(dev);
-
-        Ok(())
-    }
-
-    /// Update λ for the currently configured alchemical molecule.
-    ///
-    /// The pair list does not need to be rebuilt when only λ changes.
-    pub fn set_alchemical_lambda(&mut self, lambda: f64) -> Result<(), AlchemicalError> {
-        if self.alch_mol_idx.is_none() {
-            return Err(AlchemicalError::AlchemicalMoleculeNotSet);
-        }
-        if !lambda.is_finite() || !(0.0..=1.0).contains(&lambda) {
-            return Err(AlchemicalError::InvalidLambda(lambda));
-        }
-
-        self.lambda_alch = lambda;
-        self.alch_dh_dl = 0.0;
-        self.spme_force_prev = None;
 
         Ok(())
     }
 
     /// Disable alchemical scaling and rebuild non-bonded pairs.
     pub fn clear_alchemical_window(&mut self, dev: &ComputationDevice) {
-        self.alch_mol_idx = None;
-        self.lambda_alch = 0.0;
-        self.alch_dh_dl = 0.0;
+        self.alchemical.mol_idx = None;
+        self.alchemical.lambda = 0.0;
+        self.alchemical.dh_dl = 0.0;
         self.spme_force_prev = None;
+
         self.build_all_neighbors(dev);
+    }
+
+    pub(crate) fn alchemical_atom_range(&self) -> Option<(usize, usize)> {
+        let mol_idx = self.alchemical.mol_idx?;
+        let start = *self.mol_start_indices.get(mol_idx)?;
+
+        let end = self
+            .mol_start_indices
+            .get(mol_idx + 1)
+            .copied()
+            .unwrap_or(self.atoms.len());
+
+        Some((start, end))
     }
 }

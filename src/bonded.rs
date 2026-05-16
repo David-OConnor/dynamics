@@ -285,7 +285,7 @@ impl MdState {
 
     /// This makes the velocity constraint difference 0; run after updating velocities.
     /// Part of our SHAKE + RATTLE algorithms for fixed hydrogens.
-    pub(crate) fn rattle_hydrogens(&mut self, dt: f32) {
+    pub(crate) fn rattle_hydrogens(&mut self) {
         // RATTLE on velocities so that d/dt(|r|²)=0  ⇒  v_ij · r_ij = 0
         for (indices, (_r0_sq, inv_mass)) in &self.force_field_params.bond_rigid_constraints {
             let (ai, aj) = split2_mut(&mut self.atoms, indices.0, indices.1);
