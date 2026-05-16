@@ -12,12 +12,11 @@ use crate::{
     solvent::{WaterMolOpc, WaterSite},
 };
 
-#[derive(Default)]
 pub(crate) struct GpuKernels {
-    pub primary: Option<CudaFunction>, // Option only due to not impling Default.
-    pub alchemical: Option<CudaFunction>,
-    pub zero_f32: Option<CudaFunction>,
-    pub zero_f64: Option<CudaFunction>,
+    pub primary: CudaFunction, // Option only due to not impling Default.
+    pub alchemical: CudaFunction,
+    pub zero_f32: CudaFunction,
+    pub zero_f64: CudaFunction,
 }
 
 /// Device buffers that persist across all steps. Mutated on the GPU.

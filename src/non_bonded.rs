@@ -974,6 +974,7 @@ pub fn f_nonbonded_cpu(
             let (σ, ε) = lj_tables.lookup(lj_indices);
             let (mut f, mut e, mut dh_dl) =
                 alchemical_lj_soft_core_decouple(Vec3::new_zero(), 0.0, σ, ε, lambda);
+
             if scale14 {
                 f *= SCALE_LJ_14;
                 e *= SCALE_LJ_14;
@@ -1023,16 +1024,11 @@ pub fn f_nonbonded_cpu(
         )
     };
 
-    // println!("F Short range: {}", f_coulomb);
-    // println!("\nQ: {:?}, dist: {:?}, f: {:?}", tgt.partial_charge, dist, f_coulomb.x);
-
     // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
     if scale14 {
         f_coulomb *= SCALE_COUL_14;
         energy_coulomb *= SCALE_COUL_14;
     }
-
-    // println!("F coulomb (CPU): {f_coulomb} LJ: {f_lj}");
 
     let (force, energy, dh_dl) = if let Some(lambda) = alchemical_lambda {
         let coulomb_scale = 1.0 - lambda;

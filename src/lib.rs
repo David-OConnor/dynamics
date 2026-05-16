@@ -227,6 +227,14 @@ impl ParamError {
     }
 }
 
+impl From<io::Error> for ParamError {
+    fn from(err: io::Error) -> Self {
+        Self {
+            descrip: format!("IO error: {err}"),
+        }
+    }
+}
+
 /// This is used to assign the correct force field parameters to a molecule.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum FfMolType {
@@ -1015,16 +1023,14 @@ impl MdState {
             let ctx = CudaContext::new(0).unwrap();
             let module = ctx.load_module(Ptx::from_src(PTX)).unwrap();
 
-            result.gpu_kernels = GpuKernels {
-                primary: Some(module.load_function("nonbonded_force_kernel").unwrap()),
-                alchemical: Some(
-                    module
-                        .load_function("nonbonded_force_alchemical_kernel")
-                        .unwrap(),
-                ),
-                zero_f32: Some(module.load_function("zero_f32").unwrap()),
-                zero_f64: Some(module.load_function("zero_f64").unwrap()),
-            };
+            result.gpu_kernels = Some(GpuKernels {
+                primary: module.load_function("nonbonded_force_kernel").unwrap(),
+                alchemical: module
+                    .load_function("nonbonded_force_alchemical_kernel")
+                    .unwrap(),
+                zero_f32: module.load_function("zero_f32").unwrap(),
+                zero_f64: module.load_function("zero_f64").unwrap(),
+            });
 
             result.forces_posits_gpu = Some(ForcesPositsGpu::new(
                 stream,

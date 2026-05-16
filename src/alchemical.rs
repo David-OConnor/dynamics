@@ -151,6 +151,14 @@ pub struct LambdaWindow {
     pub sem_dh_dl: Option<f64>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TiEstimate {
+    /// Thermodynamic-integration free energy in kcal/mol.
+    pub dg_kcal_mol: f64,
+    /// Propagated standard error in kcal/mol, if every λ window has a SEM.
+    pub dg_sem_kcal_mol: Option<f64>,
+}
+
 /// Build a [`LambdaWindow`] from a slice of snapshots taken at one fixed λ value.
 ///
 /// All snapshots must come from the same λ window. Uses the `dh_dl` field that
@@ -211,8 +219,6 @@ pub fn collect_window(
 ///
 /// Returns ΔG in **kcal/mol**.  A positive value means decoupling costs energy
 /// (solute prefers the solvent); a negative value means it is favourable to remove.
-///
-/// # Panics
 pub fn free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> {
     if windows.len() < 2 {
         return Err(AlchemicalError::NotEnoughWindows(windows.len()));
@@ -240,6 +246,107 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> 
         .windows(2)
         .map(|w| 0.5 * (w[0].mean_dh_dl + w[1].mean_dh_dl) * (w[1].lambda - w[0].lambda))
         .sum())
+}
+
+pub fn free_energy_ti_with_sem(windows: &[LambdaWindow]) -> Result<TiEstimate, AlchemicalError> {
+    Ok(TiEstimate {
+        dg_kcal_mol: free_energy_ti(windows)?,
+        dg_sem_kcal_mol: integrate_ti_sem(windows),
+    })
+}
+
+/// Mean fully-coupled alchemical interaction proxy from snapshots.
+///
+/// Use this for λ = 0 bookkeeping runs where the alchemical molecule remains physically
+/// coupled, but `dh/dlambda` is recorded to estimate its interaction with the environment.
+/// The sign is converted so more negative values indicate stronger attraction.
+pub fn mean_coupled_interaction_kcal(snapshots: &[Snapshot]) -> Option<f32> {
+    let mut sum = 0.0;
+    let mut count = 0;
+
+    for dh_dl in snapshots
+        .iter()
+        .filter_map(|snap| snap.energy_data.as_ref()?.dh_dl)
+        .filter(|dh_dl| dh_dl.is_finite() && *dh_dl != 0.0)
+    {
+        sum += -dh_dl;
+        count += 1;
+    }
+
+    (count > 0).then_some(sum / count as f32)
+}
+
+fn integrate_ti_sem(windows: &[LambdaWindow]) -> Option<f64> {
+    let mut variance = 0.0;
+
+    for pair in windows.windows(2) {
+        let delta_lambda = pair[1].lambda - pair[0].lambda;
+        let prefactor = 0.5 * delta_lambda;
+        let sem_0 = pair[0].sem_dh_dl?;
+        let sem_1 = pair[1].sem_dh_dl?;
+        variance += prefactor.powi(2) * (sem_0.powi(2) + sem_1.powi(2));
+    }
+
+    Some(variance.sqrt())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::snapshot::{Snapshot, SnapshotEnergyData};
+
+    fn snapshot_with_dh_dl(dh_dl: Option<f32>) -> Snapshot {
+        Snapshot {
+            energy_data: Some(SnapshotEnergyData {
+                energy_kinetic: 0.0,
+                energy_potential: 0.0,
+                energy_potential_between_mols: Vec::new(),
+                energy_potential_nonbonded: 0.0,
+                energy_potential_bonded: 0.0,
+                hydrogen_bonds: Vec::new(),
+                temperature: 0.0,
+                pressure: 0.0,
+                dh_dl,
+                volume: 0.0,
+                density: 0.0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn free_energy_ti_with_sem_propagates_window_sem() {
+        let windows = vec![
+            LambdaWindow {
+                lambda: 0.0,
+                mean_dh_dl: 1.0,
+                sem_dh_dl: Some(0.2),
+            },
+            LambdaWindow {
+                lambda: 1.0,
+                mean_dh_dl: 3.0,
+                sem_dh_dl: Some(0.4),
+            },
+        ];
+
+        let estimate = free_energy_ti_with_sem(&windows).unwrap();
+
+        assert!((estimate.dg_kcal_mol - 2.0).abs() < 1.0e-12);
+        let expected_sem = 0.5_f64 * (0.2_f64.powi(2) + 0.4_f64.powi(2)).sqrt();
+        assert!((estimate.dg_sem_kcal_mol.unwrap() - expected_sem).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn mean_coupled_interaction_uses_negative_dh_dl() {
+        let snapshots = vec![
+            snapshot_with_dh_dl(Some(2.0)),
+            snapshot_with_dh_dl(Some(4.0)),
+            snapshot_with_dh_dl(Some(0.0)),
+            snapshot_with_dh_dl(None),
+        ];
+
+        assert_eq!(mean_coupled_interaction_kcal(&snapshots), Some(-3.0));
+    }
 }
 
 // todo: Other than the build_all_neighbors call, this would make more sense as a
