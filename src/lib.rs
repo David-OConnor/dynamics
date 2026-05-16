@@ -158,8 +158,9 @@ pub use solvent::{
 };
 
 #[cfg(feature = "cuda")]
-use crate::gpu_interface::{ForcesPositsGpu, PerNeighborGpu};
+use crate::gpu_interface::{ForcesPositsGpu, GpuKernels, PerNeighborGpu};
 use crate::{
+    alchemical::StateAlchemical,
     barostat::Barostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     param_inference::update_small_mol_params,
@@ -640,16 +641,10 @@ pub struct MdState {
     snapshot_queue_for_trr: Vec<Snapshot>,
     snapshot_queue_for_xtc: Vec<Snapshot>,
     #[cfg(feature = "cuda")]
-    gpu_kernel: Option<CudaFunction>, // Option only due to not impling Default.
-    #[cfg(feature = "cuda")]
-    gpu_kernel_alchemical: Option<CudaFunction>,
-    #[cfg(feature = "cuda")]
-    gpu_kernel_zero_f32: Option<CudaFunction>,
-    #[cfg(feature = "cuda")]
-    gpu_kernel_zero_f64: Option<CudaFunction>,
-    #[cfg(feature = "cuda")]
+    gpu_kernels: Option<GpuKernels>,
     /// These store handles to data structures on the GPU. We pass them to the kernel each
     /// step, but don't transfer. Init to None. Populated during the run.
+    #[cfg(feature = "cuda")]
     forces_posits_gpu: Option<ForcesPositsGpu>,
     #[cfg(feature = "cuda")]
     per_neighbor_gpu: Option<PerNeighborGpu>,
@@ -674,7 +669,7 @@ pub struct MdState {
     pub mol_start_indices: Vec<usize>,
     /// A flag we set to disable certain things like snapshots during this MD phase.
     solvent_only_sim_at_init: bool,
-    pub alchemical: alchemical::StateAlchemical,
+    pub alchemical: StateAlchemical,
     /// Index assigned at the start of each MD run. Trajectory files are named
     /// `traj_N.dcd`, `traj_N.trr`, etc. so that successive runs never overwrite
     /// each other.  Chosen as the lowest N for which no such files exist yet.
@@ -1019,16 +1014,17 @@ impl MdState {
         if let ComputationDevice::Gpu(stream) = dev {
             let ctx = CudaContext::new(0).unwrap();
             let module = ctx.load_module(Ptx::from_src(PTX)).unwrap();
-            result.gpu_kernel = Some(module.load_function("nonbonded_force_kernel").unwrap());
 
-            result.gpu_kernel_alchemical = Some(
-                module
-                    .load_function("nonbonded_force_alchemical_kernel")
-                    .unwrap(),
-            );
-
-            result.gpu_kernel_zero_f32 = Some(module.load_function("zero_f32").unwrap());
-            result.gpu_kernel_zero_f64 = Some(module.load_function("zero_f64").unwrap());
+            result.gpu_kernels = GpuKernels {
+                primary: Some(module.load_function("nonbonded_force_kernel").unwrap()),
+                alchemical: Some(
+                    module
+                        .load_function("nonbonded_force_alchemical_kernel")
+                        .unwrap(),
+                ),
+                zero_f32: Some(module.load_function("zero_f32").unwrap()),
+                zero_f64: Some(module.load_function("zero_f64").unwrap()),
+            };
 
             result.forces_posits_gpu = Some(ForcesPositsGpu::new(
                 stream,

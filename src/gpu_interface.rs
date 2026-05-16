@@ -12,6 +12,14 @@ use crate::{
     solvent::{WaterMolOpc, WaterSite},
 };
 
+#[derive(Default)]
+pub(crate) struct GpuKernels {
+    pub primary: Option<CudaFunction>, // Option only due to not impling Default.
+    pub alchemical: Option<CudaFunction>,
+    pub zero_f32: Option<CudaFunction>,
+    pub zero_f64: Option<CudaFunction>,
+}
+
 /// Device buffers that persist across all steps. Mutated on the GPU.
 /// We initialize these once at the start. These are all flattened.
 /// We pass thisto the kernel each step, but don't transfer.
@@ -324,10 +332,7 @@ fn upload_positions(
 /// per-mol-pair potential energy, alchemical dH/dlambda)
 pub fn force_nonbonded_gpu(
     stream: &Arc<CudaStream>,
-    kernel: &CudaFunction,
-    kernel_alchemical: &CudaFunction,
-    kernel_zero_f32: &CudaFunction,
-    kernel_zero_f64: &CudaFunction,
+    kernels: &GpuKernels,
     pairs: &[NonBondedPair],
     atoms_dyn: &[AtomDynamics],
     water: &[WaterMolOpc],
@@ -344,8 +349,8 @@ pub fn force_nonbonded_gpu(
 
     zero_forces_and_accums(
         stream,
-        kernel_zero_f32,
-        kernel_zero_f64,
+        &kernels.zero_f32,
+        &kernels.zero_f64,
         forces,
         atoms_dyn.len(),
         water.len(),
@@ -362,13 +367,13 @@ pub fn force_nonbonded_gpu(
 
     let cfg = LaunchConfig::for_num_elems(n_u32);
     let kernel_to_launch = if alchemical_enabled {
-        kernel_alchemical
+        &kernels.alchemical
     } else {
-        kernel
+        &kernels.primary
     };
+
     let mut launch_args = stream.launch_builder(kernel_to_launch);
 
-    // todo: How do we store and pass references to thsee? A struct of CudaSlices?
     // These forces and positions are per-atom; much smaller than the per-pair arrays.
     launch_args.arg(&mut forces.forces_on_dyn);
     launch_args.arg(&mut forces.forces_on_water_o);
@@ -387,9 +392,10 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&forces.pos_w_m);
     launch_args.arg(&forces.pos_w_h0);
     launch_args.arg(&forces.pos_w_h1);
-    //
+
     launch_args.arg(&per_neighbor.tgt_is);
     launch_args.arg(&per_neighbor.src_is);
+
     // These params below are per-pair.
     launch_args.arg(&per_neighbor.sigmas);
     launch_args.arg(&per_neighbor.epss);
@@ -403,16 +409,18 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&per_neighbor.calc_ljs);
     launch_args.arg(&per_neighbor.calc_coulombs);
     launch_args.arg(&per_neighbor.symmetric);
+
     if alchemical_enabled {
         launch_args.arg(&per_neighbor.alch_interactions);
     }
-    //
+
     launch_args.arg(&cell_extent);
     launch_args.arg(&forces.cutoff_ewald);
     launch_args.arg(&forces.alpha_ewald);
     launch_args.arg(&n_u32);
     launch_args.arg(&coulomb_disabled);
     launch_args.arg(&lj_disabled);
+
     if alchemical_enabled {
         launch_args.arg(&lambda_alch);
     }

@@ -480,10 +480,7 @@ impl MdState {
                     let (f_std, f_wat, virial, energy, energy_between_mols, alch_dh_dl) =
                         force_nonbonded_gpu(
                             stream,
-                            self.gpu_kernel.as_ref().unwrap(),
-                            self.gpu_kernel_alchemical.as_ref().unwrap(),
-                            self.gpu_kernel_zero_f32.as_ref().unwrap(),
-                            self.gpu_kernel_zero_f64.as_ref().unwrap(),
+                            self.gpu_kernels.as_ref().unwrap(),
                             &self.nb_pairs,
                             &self.atoms,
                             &self.water,
