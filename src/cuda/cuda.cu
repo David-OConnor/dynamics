@@ -9,6 +9,32 @@ static constexpr int ALCH_SOFT_CORE_POWER = 1;
 // GROMACS' default sc-sigma is 0.3 nm; this code uses Angstrom.
 static constexpr float ALCH_SOFT_CORE_SIGMA_MIN = 3.0f;
 
+struct DecouplingScheduleCuda {
+    float coulomb_scale;
+    float coulomb_dscale_dlambda;
+    float lj_lambda;
+    float lj_dlambda_dlambda;
+};
+
+__device__
+DecouplingScheduleCuda staged_decoupling_schedule_cuda(float lambda) {
+    lambda = fminf(1.0f, fmaxf(0.0f, lambda));
+
+    DecouplingScheduleCuda result;
+    if (lambda < 0.5f) {
+        result.coulomb_scale = 1.0f - 2.0f * lambda;
+        result.coulomb_dscale_dlambda = -2.0f;
+        result.lj_lambda = 0.0f;
+        result.lj_dlambda_dlambda = 0.0f;
+    } else {
+        result.coulomb_scale = 0.0f;
+        result.coulomb_dscale_dlambda = 0.0f;
+        result.lj_lambda = 2.0f * lambda - 1.0f;
+        result.lj_dlambda_dlambda = 2.0f;
+    }
+    return result;
+}
+
 // This assumes diff (and dir) is in order tgt - src.
 // Different API.
 __device__
@@ -391,7 +417,7 @@ void nonbonded_force_alchemical_kernel(
     double w_acc = 0.0;
     double alch_dh_dl_acc = 0.0;
     const float lambda = fminf(1.0f, fmaxf(0.0f, lambda_alch));
-    const float alch_scale = 1.0f - lambda;
+    const DecouplingScheduleCuda schedule = staged_decoupling_schedule_cuda(lambda);
 
     for (size_t i = index; i < N; i += stride) {
         const uint32_t it = tgt_is[i];
@@ -431,10 +457,10 @@ void nonbonded_force_alchemical_kernel(
         if (calc_ljs[i] && !lj_disabled) {
             if (is_alchemical) {
                 const ForceEnergyDhdl f_lj_sc =
-                    lj_force_soft_core_decouple(r_sq, dir, sigma, eps, lambda);
+                    lj_force_soft_core_decouple(r_sq, dir, sigma, eps, schedule.lj_lambda);
                 f_lj.force = f_lj_sc.force;
                 f_lj.energy = f_lj_sc.energy;
-                dh_dl_pair += f_lj_sc.dh_dl;
+                dh_dl_pair += f_lj_sc.dh_dl * schedule.lj_dlambda_dlambda;
             } else {
                 f_lj = lj_force(diff, r, inv_r, dir, sigma, eps);
             }
@@ -469,13 +495,13 @@ void nonbonded_force_alchemical_kernel(
         }
 
         const float3 f = is_alchemical
-            ? f_lj.force + f_coulomb.force * alch_scale
+            ? f_lj.force + f_coulomb.force * schedule.coulomb_scale
             : f_lj.force + f_coulomb.force;
         const double e_pair = is_alchemical
-            ? (double)f_lj.energy + (double)f_coulomb.energy * (double)alch_scale
+            ? (double)f_lj.energy + (double)f_coulomb.energy * (double)schedule.coulomb_scale
             : (double)f_lj.energy + (double)f_coulomb.energy;
         if (is_alchemical) {
-            dh_dl_pair -= f_coulomb.energy;
+            dh_dl_pair += f_coulomb.energy * schedule.coulomb_dscale_dlambda;
             alch_dh_dl_acc += (double)dh_dl_pair;
         }
 

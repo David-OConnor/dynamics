@@ -37,8 +37,9 @@
 //! r_A = (r^6 + α σ_sc^6 λ^p)^(1/6)
 //! ```
 //!
-//! The electrostatic coupling can remain linear; switch it off before LJ to avoid
-//! charge–charge singularities.
+//! Electrostatics are switched off before LJ soft-core decoupling to avoid the
+//! unstable state where softened LJ permits charged-site overlap while Coulomb is
+//! still active.
 //!
 //!
 use std::{
@@ -62,6 +63,41 @@ pub const SOFT_CORE_POWER: i32 = 1;
 ///
 /// GROMACS' default `sc-sigma` is 0.3 nm, which is 3.0 Angstrom.
 pub const SOFT_CORE_SIGMA_MIN: f32 = 3.0;
+
+/// Map a single 0..1 decoupling coordinate onto a staged solvent-decoupling path.
+///
+/// Stage 1, lambda 0.0..0.5: keep LJ fully coupled and linearly turn off Coulomb.
+/// Stage 2, lambda 0.5..1.0: keep Coulomb off and soft-core decouple LJ.
+///
+/// This avoids the unstable state where softened LJ lets charged sites overlap
+/// while most Coulomb attraction/repulsion is still active.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DecouplingSchedule {
+    pub coulomb_scale: f32,
+    pub coulomb_dscale_dlambda: f32,
+    pub lj_lambda: f32,
+    pub lj_dlambda_dlambda: f32,
+}
+
+pub fn staged_decoupling_schedule(lambda: f64) -> DecouplingSchedule {
+    let lambda = (lambda as f32).clamp(0.0, 1.0);
+
+    if lambda < 0.5 {
+        DecouplingSchedule {
+            coulomb_scale: 1.0 - 2.0 * lambda,
+            coulomb_dscale_dlambda: -2.0,
+            lj_lambda: 0.0,
+            lj_dlambda_dlambda: 0.0,
+        }
+    } else {
+        DecouplingSchedule {
+            coulomb_scale: 0.0,
+            coulomb_dscale_dlambda: 0.0,
+            lj_lambda: 2.0 * lambda - 1.0,
+            lj_dlambda_dlambda: 2.0,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct StateAlchemical {
@@ -146,6 +182,7 @@ pub struct LambdaWindow {
     /// The fixed λ value for this simulation window, in [0, 1].
     pub lambda: f64,
     /// Mean ∂H/∂λ for this window in kcal/mol, averaged over all trajectory frames.
+    /// H here is the Hamiltonian: The total energy of the system.
     pub mean_dh_dl: f64,
     /// Standard error of the mean (None if fewer than 2 frames).
     pub sem_dh_dl: Option<f64>,
@@ -154,9 +191,9 @@ pub struct LambdaWindow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TiEstimate {
     /// Thermodynamic-integration free energy in kcal/mol.
-    pub dg_kcal_mol: f64,
+    pub ti_free_energy: f64,
     /// Propagated standard error in kcal/mol, if every λ window has a SEM.
-    pub dg_sem_kcal_mol: Option<f64>,
+    pub standard_error: Option<f64>,
 }
 
 /// Build a [`LambdaWindow`] from a slice of snapshots taken at one fixed λ value.
@@ -171,10 +208,6 @@ pub fn collect_window(
     lambda: f64,
     snapshots: &[Snapshot],
 ) -> Result<LambdaWindow, AlchemicalError> {
-    if snapshots.is_empty() {
-        return Err(AlchemicalError::EmptySnapshots);
-    }
-
     let dh_dl: Vec<f64> = snapshots
         .iter()
         .filter_map(|s| s.energy_data.as_ref()?.dh_dl.map(f64::from))
@@ -250,8 +283,8 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> 
 
 pub fn free_energy_ti_with_sem(windows: &[LambdaWindow]) -> Result<TiEstimate, AlchemicalError> {
     Ok(TiEstimate {
-        dg_kcal_mol: free_energy_ti(windows)?,
-        dg_sem_kcal_mol: integrate_ti_sem(windows),
+        ti_free_energy: free_energy_ti(windows)?,
+        standard_error: integrate_ti_sem(windows),
     })
 }
 
@@ -346,6 +379,21 @@ mod tests {
         ];
 
         assert_eq!(mean_coupled_interaction_kcal(&snapshots), Some(-3.0));
+    }
+
+    #[test]
+    fn staged_decoupling_turns_off_coulomb_before_lj() {
+        let early = staged_decoupling_schedule(0.25);
+        assert_eq!(early.coulomb_scale, 0.5);
+        assert_eq!(early.coulomb_dscale_dlambda, -2.0);
+        assert_eq!(early.lj_lambda, 0.0);
+        assert_eq!(early.lj_dlambda_dlambda, 0.0);
+
+        let late = staged_decoupling_schedule(0.75);
+        assert_eq!(late.coulomb_scale, 0.0);
+        assert_eq!(late.coulomb_dscale_dlambda, 0.0);
+        assert_eq!(late.lj_lambda, 0.5);
+        assert_eq!(late.lj_dlambda_dlambda, 2.0);
     }
 }
 

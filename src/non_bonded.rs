@@ -13,7 +13,9 @@ use rayon::prelude::*;
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
     AtomDynamics, ComputationDevice, MdOverrides, MdState,
-    alchemical::{SOFT_CORE_ALPHA, SOFT_CORE_POWER, SOFT_CORE_SIGMA_MIN},
+    alchemical::{
+        SOFT_CORE_ALPHA, SOFT_CORE_POWER, SOFT_CORE_SIGMA_MIN, staged_decoupling_schedule,
+    },
     barostat::SimBox,
     forces::force_e_lj,
     solvent::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMolOpc, WaterSite},
@@ -681,7 +683,8 @@ impl MdState {
     /// in future steps.
     pub(crate) fn handle_spme_recip(&mut self, dev: &ComputationDevice) -> (Vec<Vec3>, f64, f64) {
         let (pos_all, q_all) = self.pack_pme_pos_q();
-        let scale = (1.0 - self.alchemical.lambda).clamp(0.0, 1.0);
+        let schedule = staged_decoupling_schedule(self.alchemical.lambda);
+        let scale = schedule.coulomb_scale as f64;
         let alch_atom_range = self.alchemical_atom_range();
 
         let (f_recip, e_recip, virial_from_kspace, alch_cross_dh_dl) = match &mut self.pme_recip {
@@ -734,7 +737,12 @@ impl MdState {
                     let e_scaled = e_env + e_alch + scale * cross_energy;
                     let virial_scaled = virial_env + virial_alch + scale * cross_virial;
 
-                    (f_scaled, e_scaled, virial_scaled, -cross_energy)
+                    (
+                        f_scaled,
+                        e_scaled,
+                        virial_scaled,
+                        schedule.coulomb_dscale_dlambda as f64 * cross_energy,
+                    )
                 } else {
                     let (f, e, virial) = eval(&q_all);
                     (f, e, virial, 0.0)
@@ -971,9 +979,11 @@ pub fn f_nonbonded_cpu(
             && calc_lj
             && !overrides.lj_disabled
         {
+            let schedule = staged_decoupling_schedule(lambda as f64);
             let (σ, ε) = lj_tables.lookup(lj_indices);
             let (mut f, mut e, mut dh_dl) =
-                alchemical_lj_soft_core_decouple(Vec3::new_zero(), 0.0, σ, ε, lambda);
+                alchemical_lj_soft_core_decouple(Vec3::new_zero(), 0.0, σ, ε, schedule.lj_lambda);
+            dh_dl *= schedule.lj_dlambda_dlambda;
 
             if scale14 {
                 f *= SCALE_LJ_14;
@@ -989,13 +999,17 @@ pub fn f_nonbonded_cpu(
     let inv_dist = 1.0 / dist;
     let dir = diff * inv_dist;
 
+    let schedule = alchemical_lambda.map(|lambda| staged_decoupling_schedule(lambda as f64));
+
     let (f_lj, energy_lj, dh_dl_lj) = if !calc_lj || dist > lj_cutoff || overrides.lj_disabled {
         (Vec3::new_zero(), 0., 0.)
     } else {
         let (σ, ε) = lj_tables.lookup(lj_indices);
 
-        let (mut f, mut e, mut dh_dl) = if let Some(lambda) = alchemical_lambda {
-            alchemical_lj_soft_core_decouple(dir, dist_sq, σ, ε, lambda)
+        let (mut f, mut e, mut dh_dl) = if let Some(schedule) = schedule {
+            let (f, e, dh_dl) =
+                alchemical_lj_soft_core_decouple(dir, dist_sq, σ, ε, schedule.lj_lambda);
+            (f, e, dh_dl * schedule.lj_dlambda_dlambda)
         } else {
             let (f, e) = force_e_lj(dir, inv_dist, σ, ε);
             (f, e, 0.)
@@ -1030,12 +1044,11 @@ pub fn f_nonbonded_cpu(
         energy_coulomb *= SCALE_COUL_14;
     }
 
-    let (force, energy, dh_dl) = if let Some(lambda) = alchemical_lambda {
-        let coulomb_scale = 1.0 - lambda;
+    let (force, energy, dh_dl) = if let Some(schedule) = schedule {
         (
-            f_lj + f_coulomb * coulomb_scale,
-            energy_lj + energy_coulomb * coulomb_scale,
-            dh_dl_lj - energy_coulomb,
+            f_lj + f_coulomb * schedule.coulomb_scale,
+            energy_lj + energy_coulomb * schedule.coulomb_scale,
+            dh_dl_lj + energy_coulomb * schedule.coulomb_dscale_dlambda,
         )
     } else {
         (f_lj + f_coulomb, energy_lj + energy_coulomb, 0.)
