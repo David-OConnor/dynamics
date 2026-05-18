@@ -184,16 +184,16 @@ pub struct LambdaWindow {
     /// Mean ∂H/∂λ for this window in kcal/mol, averaged over all trajectory frames.
     /// H here is the Hamiltonian: The total energy of the system.
     pub mean_dh_dl: f64,
-    /// Standard error of the mean (None if fewer than 2 frames).
-    pub sem_dh_dl: Option<f64>,
+    /// Standard error of the mean
+    pub sem_dh_dl: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TiEstimate {
     /// Thermodynamic-integration free energy in kcal/mol.
-    pub ti_free_energy: f64,
+    pub free_energy: f64,
     /// Propagated standard error in kcal/mol, if every λ window has a SEM.
-    pub standard_error: Option<f64>,
+    pub standard_error: f64,
 }
 
 /// Build a [`LambdaWindow`] from a slice of snapshots taken at one fixed λ value.
@@ -229,11 +229,9 @@ pub fn collect_window(
     let n = dh_dl.len() as f64;
     let mean = dh_dl.iter().sum::<f64>() / n;
 
-    let sem = if dh_dl.len() > 1 {
+    let sem = {
         let variance = dh_dl.iter().map(|v| (*v - mean).powi(2)).sum::<f64>() / (n - 1.0);
-        Some((variance / n).sqrt())
-    } else {
-        None
+        (variance / n).sqrt()
     };
 
     Ok(LambdaWindow {
@@ -283,8 +281,8 @@ pub fn free_energy_ti(windows: &[LambdaWindow]) -> Result<f64, AlchemicalError> 
 
 pub fn free_energy_ti_with_sem(windows: &[LambdaWindow]) -> Result<TiEstimate, AlchemicalError> {
     Ok(TiEstimate {
-        ti_free_energy: free_energy_ti(windows)?,
-        standard_error: integrate_ti_sem(windows),
+        free_energy: free_energy_ti(windows)?,
+        standard_error: integrate_ti_sem(windows).unwrap(),
     })
 }
 
@@ -315,8 +313,9 @@ fn integrate_ti_sem(windows: &[LambdaWindow]) -> Option<f64> {
     for pair in windows.windows(2) {
         let delta_lambda = pair[1].lambda - pair[0].lambda;
         let prefactor = 0.5 * delta_lambda;
-        let sem_0 = pair[0].sem_dh_dl?;
-        let sem_1 = pair[1].sem_dh_dl?;
+        let sem_0 = pair[0].sem_dh_dl;
+        let sem_1 = pair[1].sem_dh_dl;
+
         variance += prefactor.powi(2) * (sem_0.powi(2) + sem_1.powi(2));
     }
 
