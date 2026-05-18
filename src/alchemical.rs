@@ -364,9 +364,9 @@ mod tests {
 
         let estimate = free_energy_ti_with_sem(&windows).unwrap();
 
-        assert!((estimate.dg_kcal_mol - 2.0).abs() < 1.0e-12);
+        assert!((estimate.ti_free_energy - 2.0).abs() < 1.0e-12);
         let expected_sem = 0.5_f64 * (0.2_f64.powi(2) + 0.4_f64.powi(2)).sqrt();
-        assert!((estimate.dg_sem_kcal_mol.unwrap() - expected_sem).abs() < 1.0e-12);
+        assert!((estimate.standard_error.unwrap() - expected_sem).abs() < 1.0e-12);
     }
 
     #[test]
