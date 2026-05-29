@@ -108,6 +108,17 @@ mod sa_surface;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashSet},
+    error::Error,
+    fmt,
+    fmt::{Display, Formatter},
+    io,
+    time::Instant,
+};
+
 pub use add_hydrogens::{
     add_hydrogens_2::Dihedral,
     bond_vecs::{find_planar_posit, find_tetra_posit_final, find_tetra_posits},
@@ -142,25 +153,16 @@ use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{
-    ForcesOnWaterMol, Solvent,
+    ForcesOnWaterMol, Solvent, WaterMolOpc,
     init::{
         OCTANOL_WATER_TEMPLATE, SolventTemplateType, WATER_TEMPLATE_60A, WaterInitTemplate,
         water_mols_from_prepositioned_template, water_mols_from_template,
+        water_mols_from_template_in_region,
     },
     template_creation::{
         ShrinkingBoxPackingCfg, make_water_mols_grid, pack_solvent_with_shrinking_box,
         pack_solvent_with_shrinking_box_cfg, random_quaternion,
     },
-};
-use std::error::Error;
-#[cfg(feature = "cuda")]
-use std::sync::Arc;
-use std::{
-    collections::{BTreeMap, HashSet},
-    fmt,
-    fmt::{Display, Formatter},
-    io,
-    time::Instant,
 };
 
 #[cfg(feature = "cuda")]
@@ -172,7 +174,7 @@ use crate::{
     param_inference::update_small_mol_params,
     params::FfParamSet,
     snapshot::Snapshot,
-    solvent::{WaterMolOpc, WaterMolx8, WaterMolx16, octanol::octanol_mols_from_gro},
+    solvent::{WaterMolx8, WaterMolx16, octanol::octanol_mols_from_gro},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
 };
 pub use crate::{

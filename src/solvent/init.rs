@@ -307,6 +307,38 @@ impl WaterInitTemplate {
         save(path, &result)
     }
 
+    pub fn from_water_mols(water: &[WaterMolOpc], cell: SimBox) -> io::Result<Self> {
+        let n = water.len();
+
+        let mut o_posits = Vec::with_capacity(n);
+        let mut h0_posits = Vec::with_capacity(n);
+        let mut h1_posits = Vec::with_capacity(n);
+
+        let mut o_velocities = Vec::with_capacity(n);
+        let mut h0_velocities = Vec::with_capacity(n);
+        let mut h1_velocities = Vec::with_capacity(n);
+
+        for mol in water {
+            o_posits.push(mol.o.posit);
+            h0_posits.push(mol.h0.posit);
+            h1_posits.push(mol.h1.posit);
+
+            o_velocities.push(mol.o.vel);
+            h0_velocities.push(mol.h0.vel);
+            h1_velocities.push(mol.h1.vel);
+        }
+
+        Self::from_parts(
+            o_posits,
+            h0_posits,
+            h1_posits,
+            o_velocities,
+            h0_velocities,
+            h1_velocities,
+            cell,
+        )
+    }
+
     // todo: Identical structs; we could consolidate.
     /// Note: `gmx solvate`` handles tiling, centering, and solute deconfliction; we can
     /// send it the raw template.
@@ -428,6 +460,7 @@ pub(in crate::solvent) fn n_water_mols(cell: &SimBox, solute_atoms: &[AtomDynami
 /// `template_override`: if provided, use this template instead of the built-in 60 Å water one.
 pub fn water_mols_from_template(
     cell: &SimBox,
+    // The solute is used for deconfliction and default molecule-count estimation.
     solute: &[AtomDynamics],
     specify_num_water: Option<usize>,
     template_type: &SolventTemplateType,
@@ -438,23 +471,95 @@ pub fn water_mols_from_template(
     // equilibration run will push them to their natural first-shell distances.
     skip_pbc_filter: bool,
 ) -> Vec<WaterMolOpc> {
+    match water_mols_from_template_in_region(
+        cell,
+        cell,
+        solute,
+        specify_num_water,
+        template_type,
+        skip_pbc_filter,
+    ) {
+        Ok(water) => water,
+        Err(e) => {
+            eprintln!("\nError initializing water: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn validate_positive_cell(label: &str, cell: &SimBox) -> io::Result<()> {
+    if cell.extent.x.is_finite()
+        && cell.extent.y.is_finite()
+        && cell.extent.z.is_finite()
+        && cell.extent.x > 0.0
+        && cell.extent.y > 0.0
+        && cell.extent.z > 0.0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "{label} must have positive finite dimensions; got low={:?}, high={:?}.",
+                cell.bounds_low, cell.bounds_high
+            ),
+        ))
+    }
+}
+
+/// Create water molecules from a template inside a rectangular sub-region of a
+/// larger simulation cell.
+///
+/// `region` and `cell` are in the same coordinate frame. Molecules are accepted
+/// only when their O/H sites are inside `region`, while solute and water-water
+/// conflict checks use `cell` for minimum-image distances. This is useful for
+/// slabs and other partial-cell solvent layouts where bulk solvation would fill
+/// the whole simulation box.
+pub fn water_mols_from_template_in_region(
+    cell: &SimBox,
+    region: &SimBox,
+    solute: &[AtomDynamics],
+    specify_num_water: Option<usize>,
+    template_type: &SolventTemplateType,
+    skip_pbc_filter: bool,
+) -> io::Result<Vec<WaterMolOpc>> {
+    validate_positive_cell("Simulation cell", cell)?;
+    validate_positive_cell("Water placement region", region)?;
+
+    if !cell.contains(region.bounds_low) || !cell.contains(region.bounds_high) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Water placement region must be fully inside the simulation cell.",
+        ));
+    }
+
     println!("Initializing solvent molecules...");
     let start = Instant::now();
 
-    let template = match template_type.get_template() {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("\nError initializing water; can't read the template: {e}");
-            return Vec::new();
-        }
-    };
+    let template = template_type.get_template()?;
+    validate_positive_cell("Water template cell", &template.cell)?;
 
-    let n_mols = specify_num_water.unwrap_or_else(|| n_water_mols(cell, solute));
+    let solute_for_count: Vec<_> = if cell == region {
+        Vec::new()
+    } else {
+        solute
+            .iter()
+            .filter(|atom| region.contains(atom.posit))
+            .cloned()
+            .collect()
+    };
+    let n_mols = specify_num_water.unwrap_or_else(|| {
+        if cell == region {
+            n_water_mols(region, solute)
+        } else {
+            n_water_mols(region, &solute_for_count)
+        }
+    });
     let mut result = Vec::with_capacity(n_mols);
 
     if n_mols == 0 {
         println!("Complete in {} ms.", start.elapsed().as_millis());
-        return result;
+        return Ok(result);
     }
 
     let solute_posits: Vec<_> = solute.iter().map(|a| a.posit).collect();
@@ -462,16 +567,16 @@ pub fn water_mols_from_template(
     let template_size = template.cell.extent;
     let template_ctr = template.cell.center();
 
-    let cell_ctr = (cell.bounds_low + cell.bounds_high) / 2.;
+    let region_ctr = region.center();
 
-    // Align tile (0,0,0) center to the cell center.
-    let base_offset = cell_ctr - template_ctr;
+    // Align tile (0,0,0) center to the placement region center.
+    let base_offset = region_ctr - template_ctr;
 
     // Number of half-tiles needed to cover the cell in each direction (+1 for safety).
-    let cell_size = cell.bounds_high - cell.bounds_low;
-    let half_x = (cell_size.x / (2.0 * template_size.x)).ceil() as i32 + 1;
-    let half_y = (cell_size.y / (2.0 * template_size.y)).ceil() as i32 + 1;
-    let half_z = (cell_size.z / (2.0 * template_size.z)).ceil() as i32 + 1;
+    let region_size = region.extent;
+    let half_x = (region_size.x / (2.0 * template_size.x)).ceil() as i32 + 1;
+    let half_y = (region_size.y / (2.0 * template_size.y)).ceil() as i32 + 1;
+    let half_z = (region_size.z / (2.0 * template_size.z)).ceil() as i32 + 1;
 
     let mut loops_used = 0;
 
@@ -496,13 +601,21 @@ pub fn water_mols_from_template(
 
                     loops_used += 1;
 
-                    if !cell.contains(o_posit) {
+                    if !region.contains(o_posit)
+                        || !region.contains(h0_posit)
+                        || !region.contains(h1_posit)
+                        || !cell.contains(o_posit)
+                        || !cell.contains(h0_posit)
+                        || !cell.contains(h1_posit)
+                    {
                         continue;
                     }
 
                     // Conflict with solute atoms.
                     for &atom_p in &solute_posits {
-                        if (atom_p - o_posit).magnitude_squared() < MIN_NONWATER_DIST_SQ {
+                        if cell.min_image(atom_p - o_posit).magnitude_squared()
+                            < MIN_NONWATER_DIST_SQ
+                        {
                             continue 'mol;
                         }
                     }
@@ -557,6 +670,7 @@ pub fn water_mols_from_template(
                     mol.o.vel = template.o_velocities[i];
                     mol.h0.vel = template.h0_velocities[i];
                     mol.h1.vel = template.h1_velocities[i];
+                    mol.update_virtual_site();
 
                     result.push(mol);
                     placed_tiles.push((ix, iy, iz));
@@ -575,7 +689,7 @@ pub fn water_mols_from_template(
         result.len()
     );
 
-    result
+    Ok(result)
 }
 
 /// Pack copies of each custom solvent molecule into the simulation box on a regular grid,
@@ -855,7 +969,12 @@ impl MdState {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AtomDynamics, MdState};
+    use lin_alg::f32::Vec3;
+
+    use crate::{
+        AtomDynamics, MdState, SimBox, SolventTemplateType, WaterInitTemplate,
+        water_mols_from_template_in_region,
+    };
 
     #[test]
     fn init_relaxation_freezes_only_solute_atoms() {
@@ -909,5 +1028,40 @@ mod tests {
         };
 
         assert_eq!(state.dof_for_thermo(), 3);
+    }
+
+    #[test]
+    fn template_region_places_water_only_in_requested_slab() -> std::io::Result<()> {
+        let cell = SimBox::new(Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.));
+        let region = SimBox::new(Vec3::new(-4., -4., 2.), Vec3::new(4., 4., 6.));
+        let template_cell = SimBox::new(Vec3::new(-5., -5., -5.), Vec3::new(5., 5., 5.));
+        let zero = Vec3::new_zero();
+        let template = WaterInitTemplate::from_parts(
+            vec![Vec3::new(0., 0., 0.)],
+            vec![Vec3::new(0.7, 0., 0.)],
+            vec![Vec3::new(-0.7, 0., 0.)],
+            vec![zero],
+            vec![zero],
+            vec![zero],
+            template_cell,
+        )?;
+
+        let waters = water_mols_from_template_in_region(
+            &cell,
+            &region,
+            &[],
+            Some(1),
+            &SolventTemplateType::Custom(template),
+            false,
+        )?;
+
+        assert_eq!(waters.len(), 1);
+        let water = &waters[0];
+        for posit in [water.o.posit, water.h0.posit, water.h1.posit] {
+            assert!(region.contains(posit));
+        }
+        assert!(cell.contains(water.m.posit));
+
+        Ok(())
     }
 }
