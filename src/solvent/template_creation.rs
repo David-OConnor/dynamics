@@ -112,7 +112,7 @@ pub fn make_water_mols_grid(
         result.push(WaterMolOpc::new(
             posit,
             Vec3::new_zero(),
-            random_quaternion(&mut rng, distro),
+            random_quaternion(&mut rng, Some(distro)),
         ));
         num_added += 1;
 
@@ -464,8 +464,11 @@ fn place_interleaved_opc_waters(
             }
 
             for _ in 0..MAX_WATER_ROT_ATTEMPTS {
-                let candidate =
-                    WaterMolOpc::new(o_posit, Vec3::new_zero(), random_quaternion(rng, distro));
+                let candidate = WaterMolOpc::new(
+                    o_posit,
+                    Vec3::new_zero(),
+                    random_quaternion(rng, Some(distro)),
+                );
 
                 if water_conflicts_with_solvent(&candidate, solvent_atom_posits, cell) {
                     continue;
@@ -553,7 +556,10 @@ fn remove_com_velocity(mols: &mut [WaterMolOpc]) {
 /// Used in template generation
 // todo: It might be nice to have this in lin_alg, although I don't want to add the rand
 // todo dependency to it.
-fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
+pub fn random_quaternion(rng: &mut impl Rng, distro: Option<Uniform<f32>>) -> Quaternion {
+    // This allows for cacheing distro.
+    let distro = distro.unwrap_or_else(|| Uniform::<f32>::new(0.0, 1.0).unwrap());
+
     let (u1, u2, u3) = (rng.sample(distro), rng.sample(distro), rng.sample(distro));
     let sqrt1_minus_u1 = (1.0 - u1).sqrt();
     let sqrt_u1 = u1.sqrt();
@@ -581,6 +587,36 @@ fn random_quaternion(rng: &mut ThreadRng, distro: Uniform<f32>) -> Quaternion {
 ///
 /// We save a trajectory to disk, and a .gro file of the molecule set used, for playing it back.
 /// The `.gro` file can be used as a template; it has the final atom positions.
+#[derive(Clone, Copy, Debug)]
+pub struct ShrinkingBoxPackingCfg {
+    pub initial_box_scale: f32,
+    pub dt: f32,
+    pub box_shrink_per_step: f32,
+    pub equilibration_steps: usize,
+    pub snapshot_interval: Option<usize>,
+    pub gromacs_output_interval: Option<u32>,
+    pub save_gro: bool,
+}
+
+impl Default for ShrinkingBoxPackingCfg {
+    fn default() -> Self {
+        Self {
+            // Side-length scale factor for the initial (large) box. Volume scales by the cube
+            // of this. 2.0 seems insufficient for a naive packing of octanol.
+            initial_box_scale: 3.0,
+            dt: 0.001,
+            // Å shrunk per axis per step (total, both sides combined).
+            box_shrink_per_step: 0.02,
+            // Steps of pure MD to run after the box has reached its target size. As this will
+            // be used for a template, err on the side of too many steps.
+            equilibration_steps: 20_000,
+            snapshot_interval: Some(1),
+            gromacs_output_interval: Some(1),
+            save_gro: true,
+        }
+    }
+}
+
 pub fn pack_solvent_with_shrinking_box(
     dev: &ComputationDevice,
     mol_solvent: &MolDynamics,
@@ -591,18 +627,36 @@ pub fn pack_solvent_with_shrinking_box(
     param_set: &FfParamSet,
     save_dir: &Path, // Path to write the equilibrated template as a GROMACS .gro file.
 ) -> Result<(Vec<MolDynamics>, Vec<Snapshot>), ParamError> {
+    pack_solvent_with_shrinking_box_cfg(
+        dev,
+        mol_solvent,
+        mol_name,
+        solvent_count,
+        water_count,
+        cell,
+        param_set,
+        save_dir,
+        ShrinkingBoxPackingCfg::default(),
+    )
+}
+
+pub fn pack_solvent_with_shrinking_box_cfg(
+    dev: &ComputationDevice,
+    mol_solvent: &MolDynamics,
+    mol_name: &str, // Residue name used in the saved .gro (e.g. "OCT", "MOL").
+    solvent_count: usize,
+    water_count: usize, // E.g. OPC water with the custom solvent.
+    cell: SimBox,       // Final, after shrinking
+    param_set: &FfParamSet,
+    save_dir: &Path, // Path to write the equilibrated template as a GROMACS .gro file.
+    packing_cfg: ShrinkingBoxPackingCfg,
+) -> Result<(Vec<MolDynamics>, Vec<Snapshot>), ParamError> {
     println!("Packing a custom solvent using a shrinking box...");
 
-    // Side-length scale factor for the initial (large) box. Volume scales by the cube of this.
-    // 2.0 seems insufficient for a naive packing of octanol.
-    let initial_box_scale = 3.0;
-    let dt = 0.001;
-    // Å shrunk per axis per step (total, both sides combined).
-    let box_shrink_per_step = 0.02;
-
-    // Steps of pure MD to run after the box has reached its target size.
-    // As this will be used for a template, err on the side of too many steps.
-    let equilibration_steps = 20_000;
+    let initial_box_scale = packing_cfg.initial_box_scale;
+    let dt = packing_cfg.dt;
+    let box_shrink_per_step = packing_cfg.box_shrink_per_step;
+    let equilibration_steps = packing_cfg.equilibration_steps;
 
     // ── 1. Build the large initial cell, centered on the same point as the target ────────────
     let target_center = cell.center();
@@ -654,7 +708,7 @@ pub fn pack_solvent_with_shrinking_box(
         );
 
         // Random uniform quaternion.
-        let rot: QuaternionF64 = random_quaternion(&mut rng, distro).into();
+        let rot: QuaternionF64 = random_quaternion(&mut rng, Some(distro)).into();
         let posits: Vec<Vec3F64> = local
             .iter()
             .map(|&l| rot.rotate_vec(l) + world_ctr)
@@ -681,23 +735,40 @@ pub fn pack_solvent_with_shrinking_box(
     let cfg = MdConfig {
         sim_box: SimBoxInit::Fixed((large_cell.bounds_low, large_cell.bounds_high)),
         // We place the solvent ourselves above; don't let MdState::new add any.
-        solvent: Solvent::WaterOpcSpecifyMolCount(water_count),
+        solvent: if water_count == 0 {
+            Solvent::None
+        } else {
+            Solvent::WaterOpcSpecifyMolCount(water_count)
+        },
         // No barostat: we drive the pressure manually by shrinking the box.
         barostat_cfg: None,
         snapshot_handlers: SnapshotHandlers {
-            memory: Some(1),
+            memory: packing_cfg.snapshot_interval,
             dcd: None,
-            gromacs: OutputControl {
-                // We only need posits and velocity at the end, but this may help us
-                // visualize and validate this process.
-                nstxout: Some(1),
-                nstvout: Some(1),
-                ..Default::default()
+            gromacs: if let Some(interval) = packing_cfg.gromacs_output_interval {
+                OutputControl {
+                    // We only need posits and velocity at the end, but this may help us
+                    // visualize and validate this process.
+                    nstxout: Some(interval),
+                    nstvout: Some(interval),
+                    ..Default::default()
+                }
+            } else {
+                OutputControl {
+                    nstxout: None,
+                    nstvout: None,
+                    nstfout: None,
+                    nstlog: None,
+                    nstcalcenergy: None,
+                    nstenergy: None,
+                    nstxout_compressed: None,
+                    ..Default::default()
+                }
             },
         },
         overrides: MdOverrides {
             skip_water_relaxation: true,
-            snapshots_during_equilibration: true,
+            snapshots_during_equilibration: packing_cfg.snapshot_interval.is_some(),
             ..Default::default()
         },
         ..Default::default()
@@ -813,7 +884,7 @@ pub fn pack_solvent_with_shrinking_box(
     }
 
     // ── 6. Save .gro file ────────────────────────────────────────────────────────────────────
-    {
+    if packing_cfg.save_gro {
         let a_to_nm = |v: Vec3| -> Vec3F64 {
             Vec3F64::new(v.x as f64 / 10.0, v.y as f64 / 10.0, v.z as f64 / 10.0)
         };

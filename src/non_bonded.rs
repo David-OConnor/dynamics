@@ -19,6 +19,7 @@ use crate::{
     barostat::SimBox,
     forces::force_e_lj,
     solvent::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMolOpc, WaterSite},
+    validate_mol_start_indices,
 };
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
@@ -1060,6 +1061,8 @@ pub fn f_nonbonded_cpu(
 }
 
 fn atom_to_mol_indices(n_atoms: usize, mol_start_indices: &[usize]) -> Vec<usize> {
+    validate_mol_start_indices(n_atoms, mol_start_indices).expect("invalid molecule start indices");
+
     let mut atom_to_mol = vec![0; n_atoms];
 
     for (mol_idx, &start) in mol_start_indices.iter().enumerate() {
@@ -1067,6 +1070,7 @@ fn atom_to_mol_indices(n_atoms: usize, mol_start_indices: &[usize]) -> Vec<usize
             .get(mol_idx + 1)
             .copied()
             .unwrap_or(n_atoms);
+
         for atom_idx in start..end {
             atom_to_mol[atom_idx] = mol_idx;
         }

@@ -47,6 +47,7 @@ pub(crate) mod octanol;
 pub(crate) mod opc_settle;
 pub(crate) mod template_creation;
 
+use init::WaterInitTemplate;
 use opc_settle::RA;
 
 // Constant parameters below are for the OPC solvent (JPCL, 2014, 5 (21), pp 3863-3871)
@@ -103,6 +104,10 @@ pub enum Solvent {
     #[default]
     WaterOpc,
     WaterOpcSpecifyMolCount(usize),
+    /// Use exactly these pre-positioned OPC water molecules. This is for non-bulk solvent
+    /// geometries such as slabs/layers, where the solvent region is intentionally not the
+    /// whole simulation box.
+    WaterOpcPrepositioned(WaterInitTemplate),
     OctanolWithWater,
     /// (Custom mols and their counts, OPC water count). Unlike for OPC water, we use standard
     /// MD force fields for these, as we do for other molecules. Their presense in solvents here
@@ -120,6 +125,7 @@ impl Display for Solvent {
             Self::None => "None",
             Self::WaterOpc => "OPC water",
             Self::WaterOpcSpecifyMolCount(c) => &format!("Water OPC. {c} mols"),
+            Self::WaterOpcPrepositioned(_) => "OPC water (pre-positioned)",
             Self::OctanolWithWater => "Octanol with Water",
             Self::Custom(_) => "Custom",
         };
@@ -135,6 +141,7 @@ impl PartialEq for Solvent {
                 true
             }
             (Self::WaterOpcSpecifyMolCount(a), Self::WaterOpcSpecifyMolCount(b)) => a == b,
+            (Self::WaterOpcPrepositioned(a), Self::WaterOpcPrepositioned(b)) => a == b,
             (Self::Custom((_, water_a)), Self::Custom((_, water_b))) => water_a == water_b,
             _ => false,
         }
@@ -156,6 +163,10 @@ impl bincode::Encode for Solvent {
             Self::WaterOpcSpecifyMolCount(count) => {
                 1u32.encode(encoder)?;
                 count.encode(encoder)?;
+            }
+            Self::WaterOpcPrepositioned(template) => {
+                2u32.encode(encoder)?;
+                template.encode(encoder)?;
             }
             Self::Custom(_) | Self::OctanolWithWater => {
                 0u32.encode(encoder)?;
@@ -179,9 +190,13 @@ impl<Context> bincode::Decode<Context> for Solvent {
                 let count = usize::decode(decoder)?;
                 Ok(Self::WaterOpcSpecifyMolCount(count))
             }
+            2 => {
+                let template = WaterInitTemplate::decode(decoder)?;
+                Ok(Self::WaterOpcPrepositioned(template))
+            }
             _ => Err(bincode::error::DecodeError::UnexpectedVariant {
                 type_name: "Solvent",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 1 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 2 },
                 found: variant,
             }),
         }
@@ -201,9 +216,13 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for Solvent {
                 let count = usize::borrow_decode(decoder)?;
                 Ok(Self::WaterOpcSpecifyMolCount(count))
             }
+            2 => {
+                let template = WaterInitTemplate::borrow_decode(decoder)?;
+                Ok(Self::WaterOpcPrepositioned(template))
+            }
             _ => Err(bincode::error::DecodeError::UnexpectedVariant {
                 type_name: "Solvent",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 1 },
+                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 2 },
                 found: variant,
             }),
         }

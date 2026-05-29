@@ -108,16 +108,6 @@ mod sa_surface;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "cuda")]
-use std::sync::Arc;
-use std::{
-    collections::{BTreeMap, HashSet},
-    fmt,
-    fmt::{Display, Formatter},
-    io,
-    time::Instant,
-};
-
 pub use add_hydrogens::{
     add_hydrogens_2::Dihedral,
     bond_vecs::{find_planar_posit, find_tetra_posit_final, find_tetra_posits},
@@ -153,8 +143,24 @@ use neighbors::NeighborsNb;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{
     ForcesOnWaterMol, Solvent,
-    init::{OCTANOL_WATER_TEMPLATE, WATER_TEMPLATE_60A, WaterInitTemplate},
-    template_creation::pack_solvent_with_shrinking_box,
+    init::{
+        OCTANOL_WATER_TEMPLATE, SolventTemplateType, WATER_TEMPLATE_60A, WaterInitTemplate,
+        water_mols_from_prepositioned_template, water_mols_from_template,
+    },
+    template_creation::{
+        ShrinkingBoxPackingCfg, make_water_mols_grid, pack_solvent_with_shrinking_box,
+        pack_solvent_with_shrinking_box_cfg, random_quaternion,
+    },
+};
+use std::error::Error;
+#[cfg(feature = "cuda")]
+use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    fmt::{Display, Formatter},
+    io,
+    time::Instant,
 };
 
 #[cfg(feature = "cuda")]
@@ -166,10 +172,7 @@ use crate::{
     param_inference::update_small_mol_params,
     params::FfParamSet,
     snapshot::Snapshot,
-    solvent::{
-        WaterMolOpc, WaterMolx8, WaterMolx16, init::water_mols_from_template,
-        octanol::octanol_mols_from_gro,
-    },
+    solvent::{WaterMolOpc, WaterMolx8, WaterMolx16, octanol::octanol_mols_from_gro},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
 };
 pub use crate::{
@@ -226,6 +229,14 @@ impl ParamError {
         }
     }
 }
+
+impl Display for ParamError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.descrip)
+    }
+}
+
+impl Error for ParamError {}
 
 impl From<io::Error> for ParamError {
     fn from(err: io::Error) -> Self {
@@ -967,7 +978,7 @@ impl MdState {
         // parameters are already included in `force_field_params`.  Water (below) will avoid
         // them automatically because `make_water_mols` checks against `result.atoms`.
 
-        result.water = match cfg.solvent {
+        result.water = match &cfg.solvent {
             Solvent::None => Vec::new(),
             Solvent::WaterOpc | Solvent::WaterOpcSpecifyMolCount(_) => {
                 let count = match &cfg.solvent {
@@ -984,6 +995,9 @@ impl MdState {
                     cfg.skip_water_pbc_filter,
                 )
             }
+            Solvent::WaterOpcPrepositioned(template) => {
+                water_mols_from_prepositioned_template(&result.cell, &result.atoms, template)?
+            }
             Solvent::OctanolWithWater => {
                 let Some(gro) = &octanol_water_template else {
                     return Err(ParamError::new(
@@ -997,9 +1011,11 @@ impl MdState {
         };
 
         add_ions(&mut result, net_q_e, n_ions);
+        validate_mol_start_indices(result.atoms.len(), &result.mol_start_indices)
+            .map_err(|e| ParamError::new(&e))?;
 
         // Rebuild the LJ table to include any ions that were appended after the initial build.
-        if n_ions > 0 && !result.water.is_empty() {
+        if n_ions > 0 {
             result.lj_tables = LjTables::new(&result.atoms);
         }
 
@@ -1470,6 +1486,52 @@ fn water_mols_from_gro(gro: &Gro) -> Result<Vec<WaterMolOpc>, ParamError> {
 }
 
 // todo: Move this A/R
+pub(crate) fn validate_mol_start_indices(
+    n_atoms: usize,
+    mol_start_indices: &[usize],
+) -> Result<(), String> {
+    if mol_start_indices.is_empty() {
+        if n_atoms == 0 {
+            return Ok(());
+        }
+
+        return Err(format!(
+            "missing molecule start indices for {n_atoms} non-solvent atom(s)"
+        ));
+    }
+
+    if mol_start_indices[0] != 0 {
+        return Err(format!(
+            "first molecule starts at atom {}, but it must start at 0",
+            mol_start_indices[0]
+        ));
+    }
+
+    let mut prev = mol_start_indices[0];
+    if prev >= n_atoms {
+        return Err(format!(
+            "molecule 0 starts at atom {prev}, but there are only {n_atoms} atom(s)"
+        ));
+    }
+
+    for (mol_idx, &start) in mol_start_indices.iter().enumerate().skip(1) {
+        if start >= n_atoms {
+            return Err(format!(
+                "molecule {mol_idx} starts at atom {start}, but valid atom indices are 0..{}",
+                n_atoms.saturating_sub(1)
+            ));
+        }
+        if start <= prev {
+            return Err(format!(
+                "molecule starts must be strictly increasing; molecule {mol_idx} starts at {start} after {prev}"
+            ));
+        }
+        prev = start;
+    }
+
+    Ok(())
+}
+
 fn add_ions(state: &mut MdState, net_q_e: f32, n_ions: usize) {
     // Add counter-ions to neutralize any net charge.
     // Joung–Cheatham parameters tuned for OPC water (Amber frcmod.ionsjc_opc).
@@ -1502,8 +1564,8 @@ fn add_ions(state: &mut MdState, net_q_e: f32, n_ions: usize) {
             .map(|i| (i * stride).min(state.water.len() - 1))
             .collect();
 
-        for (k, &w_idx) in water_to_remove.iter().enumerate() {
-            let atom_idx = state.atoms.len() + k;
+        for &w_idx in &water_to_remove {
+            let atom_idx = state.atoms.len();
             let posit = state.water[w_idx].o.posit;
 
             state.atoms.push(AtomDynamics {
