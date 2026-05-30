@@ -37,7 +37,7 @@ use lin_alg::{
 };
 use na_seq::Element;
 
-use crate::{AtomDynamics, KCAL_TO_NATIVE, MolDynamics, non_bonded::CHARGE_UNIT_SCALER};
+use crate::{AtomDynamics, KCAL_TO_NATIVE, MolDynamics, SimBox, non_bonded::CHARGE_UNIT_SCALER};
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
@@ -95,19 +95,22 @@ pub(crate) const ACCEL_CONV_WATER_H: f32 = KCAL_TO_NATIVE / H_MASS;
 
 /// Used when configuring a MD Sim. We use OPC (rigid) water as a default, but can
 /// use custom solvents as well, from arbitrary molecules using standard MD forcefields.
-///
-/// todo: We may switch out these absolute count `usize` values for something else, like
-/// todo a portion by mass, volume, or mol count.
 #[derive(Clone, Debug, Default)]
 pub enum Solvent {
     None,
+    /// Fill the entire sim box with rigid water molecules, at a realistic density.
     #[default]
     WaterOpc,
+    /// Fill the sim box uniformly with water, but with a non-standard density.
     WaterOpcSpecifyMolCount(usize),
-    /// Use exactly these pre-positioned OPC water molecules. This is for non-bulk solvent
-    /// geometries such as slabs/layers, where the solvent region is intentionally not the
-    /// whole simulation box.
-    WaterOpcPrepositioned(WaterInitTemplate),
+    /// Fill sub regions of the full sim box with rigid water molecules at a realistic density.
+    /// Note: These regions must all be sub-regions of the full sim box, or the engine will return an error at init.
+    WaterOpcCustomRegions(Vec<SimBox>),
+    // /// Use exactly these pre-positioned OPC water molecules. This is for non-bulk solvent
+    // /// geometries such as slabs/layers, where the solvent region is intentionally not the
+    // /// whole simulation box.
+    // WaterOpcPrepositioned(WaterInitTemplate),
+    /// Fill the whole sim box with octanol, and a realistic saturation of rigid water molecules.
     OctanolWithWater,
     /// (Custom mols and their counts, OPC water count). Unlike for OPC water, we use standard
     /// MD force fields for these, as we do for other molecules. Their presense in solvents here
@@ -125,7 +128,8 @@ impl Display for Solvent {
             Self::None => "None",
             Self::WaterOpc => "OPC water",
             Self::WaterOpcSpecifyMolCount(c) => &format!("Water OPC. {c} mols"),
-            Self::WaterOpcPrepositioned(_) => "OPC water (pre-positioned)",
+            // Self::WaterOpcPrepositioned(_) => "OPC water (pre-positioned)",
+            Self::WaterOpcCustomRegions(_) => "OPC water (Custom regions)",
             Self::OctanolWithWater => "Octanol with Water",
             Self::Custom(_) => "Custom",
         };
@@ -141,7 +145,8 @@ impl PartialEq for Solvent {
                 true
             }
             (Self::WaterOpcSpecifyMolCount(a), Self::WaterOpcSpecifyMolCount(b)) => a == b,
-            (Self::WaterOpcPrepositioned(a), Self::WaterOpcPrepositioned(b)) => a == b,
+            // (Self::WaterOpcPrepositioned(a), Self::WaterOpcPrepositioned(b)) => a == b,
+            (Self::WaterOpcCustomRegions(a), Self::WaterOpcCustomRegions(b)) => a == b,
             (Self::Custom((_, water_a)), Self::Custom((_, water_b))) => water_a == water_b,
             _ => false,
         }

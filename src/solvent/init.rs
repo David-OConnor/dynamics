@@ -355,74 +355,74 @@ impl WaterInitTemplate {
     }
 }
 
-/// Use the water coordinates exactly as provided, without tiling or filling the
-/// simulation box. This is intentionally separate from `water_mols_from_template`,
-/// which is a bulk-solvation helper that keeps searching through template tiles
-/// until the requested count is satisfied.
-pub fn water_mols_from_prepositioned_template(
-    cell: &SimBox,
-    solute: &[AtomDynamics],
-    template: &WaterInitTemplate,
-) -> io::Result<Vec<WaterMolOpc>> {
-    let n_mols = template.o_posits.len();
-    if [
-        template.h0_posits.len(),
-        template.h1_posits.len(),
-        template.o_velocities.len(),
-        template.h0_velocities.len(),
-        template.h1_velocities.len(),
-    ]
-    .iter()
-    .any(|len| *len != n_mols)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Pre-positioned water template component lengths must match.",
-        ));
-    }
-
-    let solute_posits: Vec<_> = solute.iter().map(|a| a.posit).collect();
-    let mut result = Vec::with_capacity(n_mols);
-
-    for i in 0..n_mols {
-        let o = template.o_posits[i];
-        let h0 = template.h0_posits[i];
-        let h1 = template.h1_posits[i];
-
-        if !cell.contains(o) || !cell.contains(h0) || !cell.contains(h1) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Pre-positioned water molecule {i} is outside the simulation box."),
-            ));
-        }
-
-        for &atom_p in &solute_posits {
-            let diff = cell.min_image(atom_p - o);
-            if diff.magnitude_squared() < MIN_NONWATER_DIST_SQ {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "Pre-positioned water molecule {i} is too close to a solute atom \
-                         ({:.2} A).",
-                        diff.magnitude()
-                    ),
-                ));
-            }
-        }
-
-        let mut mol = WaterMolOpc::new(o, template.o_velocities[i], Quaternion::new_identity());
-        mol.h0.posit = h0;
-        mol.h1.posit = h1;
-        mol.h0.vel = template.h0_velocities[i];
-        mol.h1.vel = template.h1_velocities[i];
-        mol.update_virtual_site();
-
-        result.push(mol);
-    }
-
-    println!("Added {} pre-positioned OPC water mols.", result.len());
-    Ok(result)
-}
+// /// Use the water coordinates exactly as provided, without tiling or filling the
+// /// simulation box. This is intentionally separate from `water_mols_from_template`,
+// /// which is a bulk-solvation helper that keeps searching through template tiles
+// /// until the requested count is satisfied.
+// pub fn water_mols_from_prepositioned_template(
+//     cell: &SimBox,
+//     solute: &[AtomDynamics],
+//     template: &WaterInitTemplate,
+// ) -> io::Result<Vec<WaterMolOpc>> {
+//     let n_mols = template.o_posits.len();
+//     if [
+//         template.h0_posits.len(),
+//         template.h1_posits.len(),
+//         template.o_velocities.len(),
+//         template.h0_velocities.len(),
+//         template.h1_velocities.len(),
+//     ]
+//     .iter()
+//     .any(|len| *len != n_mols)
+//     {
+//         return Err(io::Error::new(
+//             io::ErrorKind::InvalidInput,
+//             "Pre-positioned water template component lengths must match.",
+//         ));
+//     }
+//
+//     let solute_posits: Vec<_> = solute.iter().map(|a| a.posit).collect();
+//     let mut result = Vec::with_capacity(n_mols);
+//
+//     for i in 0..n_mols {
+//         let o = template.o_posits[i];
+//         let h0 = template.h0_posits[i];
+//         let h1 = template.h1_posits[i];
+//
+//         if !cell.contains(o) || !cell.contains(h0) || !cell.contains(h1) {
+//             return Err(io::Error::new(
+//                 io::ErrorKind::InvalidInput,
+//                 format!("Pre-positioned water molecule {i} is outside the simulation box."),
+//             ));
+//         }
+//
+//         for &atom_p in &solute_posits {
+//             let diff = cell.min_image(atom_p - o);
+//             if diff.magnitude_squared() < MIN_NONWATER_DIST_SQ {
+//                 return Err(io::Error::new(
+//                     io::ErrorKind::InvalidInput,
+//                     format!(
+//                         "Pre-positioned water molecule {i} is too close to a solute atom \
+//                          ({:.2} A).",
+//                         diff.magnitude()
+//                     ),
+//                 ));
+//             }
+//         }
+//
+//         let mut mol = WaterMolOpc::new(o, template.o_velocities[i], Quaternion::new_identity());
+//         mol.h0.posit = h0;
+//         mol.h1.posit = h1;
+//         mol.h0.vel = template.h0_velocities[i];
+//         mol.h1.vel = template.h1_velocities[i];
+//         mol.update_virtual_site();
+//
+//         result.push(mol);
+//     }
+//
+//     println!("Added {} pre-positioned OPC water mols.", result.len());
+//     Ok(result)
+// }
 
 /// Determine the number of solvent molecules to add, based on box size and solute.
 pub(in crate::solvent) fn n_water_mols(cell: &SimBox, solute_atoms: &[AtomDynamics]) -> usize {
@@ -949,7 +949,8 @@ impl MdState {
             Solvent::None => 0,
             Solvent::WaterOpc
             | Solvent::WaterOpcSpecifyMolCount(_)
-            | Solvent::WaterOpcPrepositioned(_) => NUM_EQUILIBRATION_STEPS_WATER,
+            // | Solvent::WaterOpcPrepositioned(_) => NUM_EQUILIBRATION_STEPS_WATER,
+            | Solvent::WaterOpcCustomRegions(_) => NUM_EQUILIBRATION_STEPS_WATER,
             Solvent::OctanolWithWater | Solvent::Custom(_) => NUM_EQUILIBRATION_STEPS_OTHER_SOLVENT,
         };
 

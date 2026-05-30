@@ -156,8 +156,7 @@ pub use solvent::{
     ForcesOnWaterMol, Solvent, WaterMolOpc,
     init::{
         OCTANOL_WATER_TEMPLATE, SolventTemplateType, WATER_TEMPLATE_60A, WaterInitTemplate,
-        water_mols_from_prepositioned_template, water_mols_from_template,
-        water_mols_from_template_in_region,
+        water_mols_from_template, water_mols_from_template_in_region,
     },
     template_creation::{
         ShrinkingBoxPackingCfg, make_water_mols_grid, pack_solvent_with_shrinking_box,
@@ -677,8 +676,8 @@ pub struct MdState {
     /// force values (Flattened; non-solvent, then solvent M, H0, H1), and apply them
     /// on the steps where we don't re-calculate. (Force, potential energy, virial energy)
     spme_force_prev: Option<(Vec<Vec3>, f64, f64)>,
-    /// Cached at init; used for kinetic energy calculations.
-    _num_static_atoms: usize,
+    // /// Cached at init; used for kinetic energy calculations.
+    // _num_static_atoms: usize,
     // todo: Sub-struct for ambient cache like num_static atoms and thermo_dof
     /// Degrees of freedom, used in temperature and kinetic energy calculations.
     thermo_dof: usize,
@@ -935,7 +934,7 @@ impl MdState {
             mass_accel_factor.push(KCAL_TO_NATIVE / atom.mass);
         }
 
-        let num_static_atoms = atoms_md.iter().filter(|a| !a.static_).count();
+        // let num_static_atoms = atoms_md.iter().filter(|a| !a.static_).count();
 
         let potential_energy_between_mols = vec![0.; mol_start_indices.len().pow(2)];
 
@@ -948,7 +947,7 @@ impl MdState {
             pairs_14_scaled: HashSet::new(),
             force_field_params,
             mass_accel_factor,
-            _num_static_atoms: num_static_atoms,
+            // _num_static_atoms: num_static_atoms,
             solute_atom_count,
             mol_start_indices,
             potential_energy_between_mols,
@@ -997,8 +996,30 @@ impl MdState {
                     cfg.skip_water_pbc_filter,
                 )
             }
-            Solvent::WaterOpcPrepositioned(template) => {
-                water_mols_from_prepositioned_template(&result.cell, &result.atoms, template)?
+            // Solvent::WaterOpcPrepositioned(template) => {
+            //     water_mols_from_prepositioned_template(&result.cell, &result.atoms, template)?
+            // }
+            Solvent::WaterOpcCustomRegions(regions) => {
+                let mut water_mols = Vec::new();
+
+                for region in regions {
+                    if !result.cell.contains_region(region) {
+                        return Err(ParamError::new(&format!(
+                            "Water region sim box {region:?} is out of cell bounds {:?}",
+                            cfg.sim_box
+                        )));
+                    }
+
+                    water_mols.extend(water_mols_from_template(
+                        &region,
+                        &result.atoms,
+                        None,
+                        &cfg.solvent_template_type,
+                        cfg.skip_water_pbc_filter,
+                    ))
+                }
+
+                water_mols
             }
             Solvent::OctanolWithWater => {
                 let Some(gro) = &octanol_water_template else {

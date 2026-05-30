@@ -58,6 +58,8 @@ pub struct MdConfig {
     /// algorithms. This allows for higher time steps.
     pub hydrogen_constraint: HydrogenConstraint,
     pub snapshot_handlers: SnapshotHandlers,
+    /// Sets the bounds for the entire simulation. This is used both to populate the solvent, and
+    /// to set periodic boundary conditions for SPME computatations and general wrapping/min-image.
     pub sim_box: SimBoxInit,
     pub solvent: Solvent,
     /// Prior to the first integrator step, we attempt to relax energy in the system.

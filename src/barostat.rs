@@ -27,17 +27,6 @@ const KB_BAR_A3_PER_K: f64 = 138.064_9;
 pub const PRESSURE_DEFAULT: f32 = 1.; // Bar
 pub const TAU_PRESSURE_DEFAULT: f32 = 5.; // ps
 
-/// This bounds the area where atoms are wrapped. For now at least, it is only
-/// used for solvent atoms. Its size and position should be such as to keep the system
-/// solvated. We may move it around during the sim.
-#[derive(Clone, Copy, Default, PartialEq, Debug, Encode, Decode)]
-pub struct SimBox {
-    pub bounds_low: Vec3,
-    pub bounds_high: Vec3,
-    /// Cached; bounds_high - bounds_low
-    pub extent: Vec3,
-}
-
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct BarostatCfg {
@@ -58,6 +47,17 @@ impl Default for BarostatCfg {
             solvent_compressibility: 4.5e-5,
         }
     }
+}
+
+/// This bounds the area where atoms are wrapped. For now at least, it is only
+/// used for solvent atoms. Its size and position should be such as to keep the system
+/// solvated. We may move it around during the sim.
+#[derive(Clone, Copy, Default, PartialEq, Debug, Encode, Decode)]
+pub struct SimBox {
+    pub bounds_low: Vec3,
+    pub bounds_high: Vec3,
+    /// Cached; bounds_high - bounds_low
+    pub extent: Vec3,
 }
 
 impl SimBox {
@@ -213,6 +213,15 @@ impl SimBox {
             || posit.x > self.bounds_high.x
             || posit.y > self.bounds_high.y
             || posit.z > self.bounds_high.z)
+    }
+
+    pub fn contains_region(&self, other: &Self) -> bool {
+        !(other.bounds_low.x < self.bounds_low.x
+            || other.bounds_low.y < self.bounds_low.y
+            || other.bounds_low.z < self.bounds_low.z
+            || other.bounds_high.x > self.bounds_high.x
+            || other.bounds_high.y > self.bounds_high.y
+            || other.bounds_high.z > self.bounds_high.z)
     }
 }
 
