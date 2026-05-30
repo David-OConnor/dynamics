@@ -179,6 +179,10 @@ impl SimBox {
         (self.bounds_low + self.bounds_high) * 0.5
     }
 
+    pub fn translated(&self, offset: Vec3) -> Self {
+        Self::new(self.bounds_low + offset, self.bounds_high + offset)
+    }
+
     /// For use with the barostat. It will expand or shrink the box if it determines the pressure
     /// is too high or low based on the virial pair sum.
     pub fn scale_isotropic(&mut self, lambda: f32) {
@@ -254,6 +258,16 @@ mod tests {
         cell.recenter(&atoms);
 
         assert_eq!(cell.center(), Vec3::new(3., 0., 0.));
+    }
+
+    #[test]
+    fn translated_preserves_extent() {
+        let cell = SimBox::new(Vec3::new(-5., -4., -3.), Vec3::new(5., 4., 3.));
+        let translated = cell.translated(Vec3::new(3., -2., 7.));
+
+        assert_eq!(translated.bounds_low, Vec3::new(-2., -6., 4.));
+        assert_eq!(translated.bounds_high, Vec3::new(8., 2., 10.));
+        assert_eq!(translated.extent, cell.extent);
     }
 }
 

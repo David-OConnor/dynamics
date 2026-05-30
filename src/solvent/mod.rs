@@ -47,7 +47,6 @@ pub(crate) mod octanol;
 pub(crate) mod opc_settle;
 pub(crate) mod template_creation;
 
-use init::WaterInitTemplate;
 use opc_settle::RA;
 
 // Constant parameters below are for the OPC solvent (JPCL, 2014, 5 (21), pp 3863-3871)
@@ -103,13 +102,9 @@ pub enum Solvent {
     WaterOpc,
     /// Fill the sim box uniformly with water, but with a non-standard density.
     WaterOpcSpecifyMolCount(usize),
-    /// Fill sub regions of the full sim box with rigid water molecules at a realistic density.
-    /// Note: These regions must all be sub-regions of the full sim box, or the engine will return an error at init.
+    /// Fill sub-regions of the initial sim box with rigid water molecules at a realistic density.
+    /// Regions move with the cell when init recenters it and must remain inside the full sim box.
     WaterOpcCustomRegions(Vec<SimBox>),
-    // /// Use exactly these pre-positioned OPC water molecules. This is for non-bulk solvent
-    // /// geometries such as slabs/layers, where the solvent region is intentionally not the
-    // /// whole simulation box.
-    // WaterOpcPrepositioned(WaterInitTemplate),
     /// Fill the whole sim box with octanol, and a realistic saturation of rigid water molecules.
     OctanolWithWater,
     /// (Custom mols and their counts, OPC water count). Unlike for OPC water, we use standard
@@ -128,7 +123,6 @@ impl Display for Solvent {
             Self::None => "None",
             Self::WaterOpc => "OPC water",
             Self::WaterOpcSpecifyMolCount(c) => &format!("Water OPC. {c} mols"),
-            // Self::WaterOpcPrepositioned(_) => "OPC water (pre-positioned)",
             Self::WaterOpcCustomRegions(_) => "OPC water (Custom regions)",
             Self::OctanolWithWater => "Octanol with Water",
             Self::Custom(_) => "Custom",
@@ -145,7 +139,6 @@ impl PartialEq for Solvent {
                 true
             }
             (Self::WaterOpcSpecifyMolCount(a), Self::WaterOpcSpecifyMolCount(b)) => a == b,
-            // (Self::WaterOpcPrepositioned(a), Self::WaterOpcPrepositioned(b)) => a == b,
             (Self::WaterOpcCustomRegions(a), Self::WaterOpcCustomRegions(b)) => a == b,
             (Self::Custom((_, water_a)), Self::Custom((_, water_b))) => water_a == water_b,
             _ => false,
@@ -169,9 +162,9 @@ impl bincode::Encode for Solvent {
                 1u32.encode(encoder)?;
                 count.encode(encoder)?;
             }
-            Self::WaterOpcPrepositioned(template) => {
-                2u32.encode(encoder)?;
-                template.encode(encoder)?;
+            Self::WaterOpcCustomRegions(regions) => {
+                3u32.encode(encoder)?;
+                regions.encode(encoder)?;
             }
             Self::Custom(_) | Self::OctanolWithWater => {
                 0u32.encode(encoder)?;
@@ -195,13 +188,13 @@ impl<Context> bincode::Decode<Context> for Solvent {
                 let count = usize::decode(decoder)?;
                 Ok(Self::WaterOpcSpecifyMolCount(count))
             }
-            2 => {
-                let template = WaterInitTemplate::decode(decoder)?;
-                Ok(Self::WaterOpcPrepositioned(template))
-            }
+            2 => Err(bincode::error::DecodeError::OtherString(
+                "Solvent variant 2 (pre-positioned OPC water) is no longer supported.".to_owned(),
+            )),
+            3 => Ok(Self::WaterOpcCustomRegions(Vec::<SimBox>::decode(decoder)?)),
             _ => Err(bincode::error::DecodeError::UnexpectedVariant {
                 type_name: "Solvent",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 2 },
+                allowed: &bincode::error::AllowedEnumVariants::Allowed(&[0, 1, 3]),
                 found: variant,
             }),
         }
@@ -221,16 +214,38 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for Solvent {
                 let count = usize::borrow_decode(decoder)?;
                 Ok(Self::WaterOpcSpecifyMolCount(count))
             }
-            2 => {
-                let template = WaterInitTemplate::borrow_decode(decoder)?;
-                Ok(Self::WaterOpcPrepositioned(template))
-            }
+            2 => Err(bincode::error::DecodeError::OtherString(
+                "Solvent variant 2 (pre-positioned OPC water) is no longer supported.".to_owned(),
+            )),
+            3 => Ok(Self::WaterOpcCustomRegions(Vec::<SimBox>::borrow_decode(
+                decoder,
+            )?)),
             _ => Err(bincode::error::DecodeError::UnexpectedVariant {
                 type_name: "Solvent",
-                allowed: &bincode::error::AllowedEnumVariants::Range { min: 0, max: 2 },
+                allowed: &bincode::error::AllowedEnumVariants::Allowed(&[0, 1, 3]),
                 found: variant,
             }),
         }
+    }
+}
+
+#[cfg(all(test, feature = "encode"))]
+mod codec_tests {
+    use bincode::{config, decode_from_slice, encode_to_vec};
+    use lin_alg::f32::Vec3;
+
+    use super::{SimBox, Solvent};
+
+    #[test]
+    fn custom_regions_round_trip() {
+        let solvent = Solvent::WaterOpcCustomRegions(vec![SimBox::new(
+            Vec3::new(-3., -2., -1.),
+            Vec3::new(3., 2., 1.),
+        )]);
+        let bytes = encode_to_vec(&solvent, config::standard()).unwrap();
+        let (decoded, _): (Solvent, usize) = decode_from_slice(&bytes, config::standard()).unwrap();
+
+        assert_eq!(decoded, solvent);
     }
 }
 

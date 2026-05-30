@@ -173,7 +173,10 @@ use crate::{
     param_inference::update_small_mol_params,
     params::FfParamSet,
     snapshot::Snapshot,
-    solvent::{WaterMolx8, WaterMolx16, octanol::octanol_mols_from_gro},
+    solvent::{
+        WaterMolx8, WaterMolx16, init::water_mols_from_template_in_region_avoiding,
+        octanol::octanol_mols_from_gro,
+    },
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
 };
 pub use crate::{
@@ -996,27 +999,30 @@ impl MdState {
                     cfg.skip_water_pbc_filter,
                 )
             }
-            // Solvent::WaterOpcPrepositioned(template) => {
-            //     water_mols_from_prepositioned_template(&result.cell, &result.atoms, template)?
-            // }
             Solvent::WaterOpcCustomRegions(regions) => {
                 let mut water_mols = Vec::new();
+                let region_offset = result.cell.center() - cell.center();
 
                 for region in regions {
-                    if !result.cell.contains_region(region) {
+                    let region = region.translated(region_offset);
+
+                    if !result.cell.contains_region(&region) {
                         return Err(ParamError::new(&format!(
                             "Water region sim box {region:?} is out of cell bounds {:?}",
                             cfg.sim_box
                         )));
                     }
 
-                    water_mols.extend(water_mols_from_template(
+                    let region_water = water_mols_from_template_in_region_avoiding(
+                        &result.cell,
                         &region,
                         &result.atoms,
+                        &water_mols,
                         None,
                         &cfg.solvent_template_type,
                         cfg.skip_water_pbc_filter,
-                    ))
+                    )?;
+                    water_mols.extend(region_water);
                 }
 
                 water_mols
