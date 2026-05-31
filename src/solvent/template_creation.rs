@@ -596,6 +596,11 @@ pub struct ShrinkingBoxPackingCfg {
     pub snapshot_interval: Option<usize>,
     pub gromacs_output_interval: Option<u32>,
     pub save_gro: bool,
+    /// Only used when packing with an automatic (`None`) solvent count. The apparent packing
+    /// fraction φ = (Σ atomic van der Waals sphere volumes) / (bulk-liquid molar volume). See
+    /// `estimate_solvent_count` for how this maps a molecule to a realistic count. ~0.95 reproduces
+    /// common organic-solvent densities to within ~10-15%; lower it to pack less dense.
+    pub liquid_packing_fraction: f64,
 }
 
 impl Default for ShrinkingBoxPackingCfg {
@@ -613,16 +618,82 @@ impl Default for ShrinkingBoxPackingCfg {
             snapshot_interval: Some(1),
             gromacs_output_interval: Some(1),
             save_gro: true,
+            liquid_packing_fraction: DEFAULT_LIQUID_PACKING_FRACTION,
         }
     }
 }
 
+// 0.997 g/cm³ water → ~0.03337 molecules/Å³ → ~29.97 Å³ per OPC water molecule. Used only to
+// reserve volume for co-packed water when auto-selecting the solvent count (mixed solvents).
+const OPC_WATER_VOLUME_A3: f64 = 29.97;
+
+/// Apparent packing fraction φ = (Σ atomic van der Waals sphere volumes) / (bulk-liquid molar
+/// volume), computed with *naive* (overlapping) spheres. Bond overlap shrinks the true molecular
+/// volume by roughly as much as the liquid's void space inflates the molar volume, so across common
+/// solvents (water, alcohols, alkanes, aromatics) φ clusters near ~0.95. This lets us estimate a
+/// realistic molecule count for an arbitrary solvent without knowing its experimental density.
+const DEFAULT_LIQUID_PACKING_FRACTION: f64 = 0.95;
+
+/// Estimate how many copies of `mol_solvent` reproduce a realistic bulk-liquid density inside
+/// `cell` — i.e. the count we pack when the caller passes `solvent_count = None`. We approximate
+/// each molecule's occupied volume as the sum of its atoms' van der Waals sphere volumes, divide
+/// the available box volume (minus volume reserved for `water_count` co-packed waters) by the
+/// per-molecule molar volume implied by `packing_fraction`, and round.
+///
+/// This is a heuristic: it targets densities within ~10-15% for typical organic solvents, which is
+/// a good starting configuration for the shrink + equilibration run that follows. (Once pressure
+/// measurement / the barostat are re-enabled, this could be refined by instead shrinking the box
+/// until the target pressure is reached, then reading off the resulting density.)
+fn estimate_solvent_count(
+    mol_solvent: &MolDynamics,
+    cell: &SimBox,
+    water_count: usize,
+    packing_fraction: f64,
+) -> usize {
+    // Sum of atomic van der Waals sphere volumes for one solvent molecule (Å³).
+    let mut vdw_volume = 0.0_f64;
+    for atom in &mol_solvent.atoms {
+        // `vdw_radius` returns 0 for elements without a tabulated radius; fall back to a
+        // carbon-like radius so exotic atoms still contribute a sane volume.
+        let r = match atom.element.vdw_radius() as f64 {
+            r if r > 0.0 => r,
+            _ => 1.7,
+        };
+        vdw_volume += (4.0 / 3.0) * std::f64::consts::PI * r * r * r;
+    }
+
+    if vdw_volume <= 0.0 || packing_fraction <= 0.0 {
+        eprintln!(
+            "estimate_solvent_count: cannot size solvent (vdW vol {vdw_volume:.2}, φ \
+             {packing_fraction:.2}); defaulting to 1 molecule."
+        );
+        return 1;
+    }
+
+    // Molar volume of the bulk liquid implied by the apparent packing fraction.
+    let molar_volume = vdw_volume / packing_fraction;
+
+    let available_vol = (cell.volume() as f64 - water_count as f64 * OPC_WATER_VOLUME_A3).max(0.0);
+
+    let n = ((available_vol / molar_volume).round() as usize).max(1);
+
+    println!(
+        "Auto solvent count: {n} mols of {} atoms (vdW vol {vdw_volume:.1} Å³, molar vol \
+         {molar_volume:.1} Å³) to fill {:.0} Å³ (less {water_count} waters) at φ={packing_fraction:.2}.",
+        mol_solvent.atoms.len(),
+        cell.volume(),
+    );
+
+    n
+}
+
+/// A think wrapper over `pack_solvent_with_shrinking_box_cfg`, but with the default config.
 pub fn pack_solvent_with_shrinking_box(
     dev: &ComputationDevice,
     mol_solvent: &MolDynamics,
     mol_name: &str, // Residue name used in the saved .gro (e.g. "OCT", "MOL").
-    solvent_count: usize,
-    water_count: usize, // E.g. OPC water with the custom solvent.
+    solvent_count: Option<usize>,
+    water_count: usize, // E.g. OPC water with the custom solvent; specifies the OPC (etc) count.
     cell: SimBox,       // Final, after shrinking
     param_set: &FfParamSet,
     save_dir: &Path, // Path to write the equilibrated template as a GROMACS .gro file.
@@ -643,8 +714,8 @@ pub fn pack_solvent_with_shrinking_box(
 pub fn pack_solvent_with_shrinking_box_cfg(
     dev: &ComputationDevice,
     mol_solvent: &MolDynamics,
-    mol_name: &str, // Residue name used in the saved .gro (e.g. "OCT", "MOL").
-    solvent_count: usize,
+    mol_name: &str,
+    solvent_count: Option<usize>,
     water_count: usize, // E.g. OPC water with the custom solvent.
     cell: SimBox,       // Final, after shrinking
     param_set: &FfParamSet,
@@ -653,17 +724,27 @@ pub fn pack_solvent_with_shrinking_box_cfg(
 ) -> Result<(Vec<MolDynamics>, Vec<Snapshot>), ParamError> {
     println!("Packing a custom solvent using a shrinking box...");
 
+    // `None` means "pick a count that yields a realistic liquid density in the (fixed) target box".
+    let solvent_count = solvent_count.unwrap_or_else(|| {
+        estimate_solvent_count(
+            mol_solvent,
+            &cell,
+            water_count,
+            packing_cfg.liquid_packing_fraction,
+        )
+    });
+
     let initial_box_scale = packing_cfg.initial_box_scale;
     let dt = packing_cfg.dt;
     let box_shrink_per_step = packing_cfg.box_shrink_per_step;
     let equilibration_steps = packing_cfg.equilibration_steps;
 
-    // ── 1. Build the large initial cell, centered on the same point as the target ────────────
+    // Build the large initial cell, centered on the same point as the target
     let target_center = cell.center();
     let large_half = cell.extent * (initial_box_scale / 2.);
     let large_cell = SimBox::new(target_center - large_half, target_center + large_half);
 
-    // ── 2. Grid-place `solvent_count` copies of `mol_solvent` with random orientations ───────
+    // Grid-place `solvent_count` copies of `mol_solvent` with random orientations
     // Template: prefer atom_posits override, fall back to atom positions.
     let template_world: Vec<Vec3F64> = mol_solvent
         .atom_posits
@@ -731,7 +812,7 @@ pub fn pack_solvent_with_shrinking_box_cfg(
         .map(Into::into)
         .collect();
 
-    // ── 3. Create MdState with the large cell ────────────────────────────────────────────────
+    // Create MdState with the large cell
     let cfg = MdConfig {
         sim_box: SimBoxInit::Fixed((large_cell.bounds_low, large_cell.bounds_high)),
         // We place the solvent ourselves above; don't let MdState::new add any.
@@ -803,7 +884,7 @@ pub fn pack_solvent_with_shrinking_box_cfg(
         }
     }
 
-    // ── 4. Shrink loop ───────────────────────────────────────────────────────────────────────
+    // Shrink loop
     // Compute the number of steps required to reach the target cell size on the slowest axis.
     let shrink_needed_x = large_cell.extent.x - cell.extent.x;
     let shrink_needed_y = large_cell.extent.y - cell.extent.y;
@@ -871,7 +952,7 @@ pub fn pack_solvent_with_shrinking_box_cfg(
         }
     }
 
-    // ── 5. Recenter the sim box on the origin ────────────────────────────────────────────────
+    // Recenter the sim box on the origin
     let final_center = md_state.cell.center();
     for a in &mut md_state.atoms {
         a.posit -= final_center;
@@ -883,7 +964,6 @@ pub fn pack_solvent_with_shrinking_box_cfg(
         w.m.posit -= final_center;
     }
 
-    // ── 6. Save .gro file ────────────────────────────────────────────────────────────────────
     if packing_cfg.save_gro {
         let a_to_nm = |v: Vec3| -> Vec3F64 {
             Vec3F64::new(v.x as f64 / 10.0, v.y as f64 / 10.0, v.z as f64 / 10.0)
@@ -950,7 +1030,7 @@ pub fn pack_solvent_with_shrinking_box_cfg(
         }
     }
 
-    // ── 7. Reconstruct Vec<MolDynamics> from the flat atom list ─────────────────────────────
+    // Reconstruct Vec<MolDynamics> from the flat atom list
     let result_mols: Vec<MolDynamics> = md_state
         .atoms
         .chunks(n_atoms)
