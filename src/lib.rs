@@ -159,8 +159,8 @@ pub use solvent::{
         water_mols_from_template, water_mols_from_template_in_region,
     },
     template_creation::{
-        ShrinkingBoxPackingCfg, make_water_mols_grid, pack_solvent_with_shrinking_box,
-        pack_solvent_with_shrinking_box_cfg, random_quaternion,
+        CustomSolventCount, ShrinkingBoxPackingCfg, make_water_mols_grid,
+        pack_solvent_with_shrinking_box, pack_solvent_with_shrinking_box_cfg, random_quaternion,
     },
 };
 

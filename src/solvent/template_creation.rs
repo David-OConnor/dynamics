@@ -574,6 +574,18 @@ pub fn random_quaternion(rng: &mut impl Rng, distro: Option<Uniform<f32>>) -> Qu
     .to_normalized()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CustomSolventCount {
+    /// Inner: Molecule count
+    Specified(usize),
+    /// Inner: Packing fraction.
+    /// The apparent packing
+    /// fraction φ = (Σ atomic van der Waals sphere volumes) / (bulk-liquid molar volume). See
+    /// `estimate_solvent_count` for how this maps a molecule to a realistic count. ~0.95 reproduces
+    /// common organic-solvent densities to within ~10-15%; lower it to pack less dense.
+    Auto(f64),
+}
+
 /// Perhaps formally called *gradual isotropic compression*.
 ///
 /// Create a solvent template by packing with a box which starts out too large, and gradually shrinks
@@ -596,11 +608,7 @@ pub struct ShrinkingBoxPackingCfg {
     pub snapshot_interval: Option<usize>,
     pub gromacs_output_interval: Option<u32>,
     pub save_gro: bool,
-    /// Only used when packing with an automatic (`None`) solvent count. The apparent packing
-    /// fraction φ = (Σ atomic van der Waals sphere volumes) / (bulk-liquid molar volume). See
-    /// `estimate_solvent_count` for how this maps a molecule to a realistic count. ~0.95 reproduces
-    /// common organic-solvent densities to within ~10-15%; lower it to pack less dense.
-    pub liquid_packing_fraction: f64,
+    pub count: CustomSolventCount,
 }
 
 impl Default for ShrinkingBoxPackingCfg {
@@ -618,7 +626,7 @@ impl Default for ShrinkingBoxPackingCfg {
             snapshot_interval: Some(1),
             gromacs_output_interval: Some(1),
             save_gro: true,
-            liquid_packing_fraction: DEFAULT_LIQUID_PACKING_FRACTION,
+            count: CustomSolventCount::Auto(DEFAULT_LIQUID_PACKING_FRACTION),
         }
     }
 }
@@ -635,7 +643,7 @@ const OPC_WATER_VOLUME_A3: f64 = 29.97;
 const DEFAULT_LIQUID_PACKING_FRACTION: f64 = 0.95;
 
 /// Estimate how many copies of `mol_solvent` reproduce a realistic bulk-liquid density inside
-/// `cell` — i.e. the count we pack when the caller passes `solvent_count = None`. We approximate
+/// `cell` — i.e. the count we pack when the caller uses `CustomSolventCount::Auto`. We approximate
 /// each molecule's occupied volume as the sum of its atoms' van der Waals sphere volumes, divide
 /// the available box volume (minus volume reserved for `water_count` co-packed waters) by the
 /// per-molecule molar volume implied by `packing_fraction`, and round.
@@ -691,8 +699,7 @@ fn estimate_solvent_count(
 pub fn pack_solvent_with_shrinking_box(
     dev: &ComputationDevice,
     mol_solvent: &MolDynamics,
-    mol_name: &str, // Residue name used in the saved .gro (e.g. "OCT", "MOL").
-    solvent_count: Option<usize>,
+    mol_name: &str,     // Residue name used in the saved .gro (e.g. "OCT", "MOL").
     water_count: usize, // E.g. OPC water with the custom solvent; specifies the OPC (etc) count.
     cell: SimBox,       // Final, after shrinking
     param_set: &FfParamSet,
@@ -702,7 +709,6 @@ pub fn pack_solvent_with_shrinking_box(
         dev,
         mol_solvent,
         mol_name,
-        solvent_count,
         water_count,
         cell,
         param_set,
@@ -715,7 +721,6 @@ pub fn pack_solvent_with_shrinking_box_cfg(
     dev: &ComputationDevice,
     mol_solvent: &MolDynamics,
     mol_name: &str,
-    solvent_count: Option<usize>,
     water_count: usize, // E.g. OPC water with the custom solvent.
     cell: SimBox,       // Final, after shrinking
     param_set: &FfParamSet,
@@ -724,15 +729,12 @@ pub fn pack_solvent_with_shrinking_box_cfg(
 ) -> Result<(Vec<MolDynamics>, Vec<Snapshot>), ParamError> {
     println!("Packing a custom solvent using a shrinking box...");
 
-    // `None` means "pick a count that yields a realistic liquid density in the (fixed) target box".
-    let solvent_count = solvent_count.unwrap_or_else(|| {
-        estimate_solvent_count(
-            mol_solvent,
-            &cell,
-            water_count,
-            packing_cfg.liquid_packing_fraction,
-        )
-    });
+    let solvent_count = match packing_cfg.count {
+        CustomSolventCount::Specified(count) => count,
+        CustomSolventCount::Auto(packing_fraction) => {
+            estimate_solvent_count(mol_solvent, &cell, water_count, packing_fraction)
+        }
+    };
 
     let initial_box_scale = packing_cfg.initial_box_scale;
     let dt = packing_cfg.dt;
