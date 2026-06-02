@@ -159,7 +159,7 @@ pub use solvent::{
         water_mols_from_template, water_mols_from_template_in_region,
     },
     template_creation::{
-        CustomSolventCount, ShrinkingBoxPackingCfg, make_water_mols_grid,
+        CustomSolventCount, ShrinkingBoxCfg, ShrinkingBoxPackingCfg, make_water_mols_grid,
         pack_solvent_with_shrinking_box, pack_solvent_with_shrinking_box_cfg, random_quaternion,
     },
 };
@@ -590,6 +590,9 @@ pub struct MdOverrides {
     /// Skips the initial solvent relaxation, where a simulation is run until
     /// hydrogen bonds are established, and temperature is initialized.
     pub skip_water_relaxation: bool,
+    /// Leave counterion insertion to an external backend that will consume this
+    /// state as an initial coordinate template.
+    pub skip_counterion_insertion: bool,
     pub bonded_disabled: bool,
     pub coulomb_disabled: bool,
     pub lj_disabled: bool,
@@ -1039,7 +1042,9 @@ impl MdState {
             Solvent::Custom(_) => Vec::new(), // todo: ?
         };
 
-        add_ions(&mut result, net_q_e, n_ions);
+        if !cfg.overrides.skip_counterion_insertion {
+            add_ions(&mut result, net_q_e, n_ions);
+        }
         validate_mol_start_indices(result.atoms.len(), &result.mol_start_indices)
             .map_err(|e| ParamError::new(&e))?;
 

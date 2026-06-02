@@ -221,6 +221,8 @@ impl MdConfig {
             ref_t: vec![self.temp_target],
             pcoupl,
             pbc: Pbc::Xyz,
+            deform: None,
+            deform_init_flow: false,
             gen_vel: true,
             gen_temp: self.temp_target,
             gen_seed: None,

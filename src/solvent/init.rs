@@ -465,6 +465,62 @@ pub fn water_mols_from_template_in_region(
     )
 }
 
+#[derive(Clone, Copy)]
+struct WaterTemplateCandidate {
+    tile: (i32, i32, i32),
+    o_posit: Vec3,
+    h0_posit: Vec3,
+    h1_posit: Vec3,
+    o_velocity: Vec3,
+    h0_velocity: Vec3,
+    h1_velocity: Vec3,
+}
+
+fn candidate_fits_region(
+    candidate: &WaterTemplateCandidate,
+    cell: &SimBox,
+    region: &SimBox,
+) -> bool {
+    [candidate.o_posit, candidate.h0_posit, candidate.h1_posit]
+        .into_iter()
+        .all(|posit| region.contains(posit) && cell.contains(posit))
+}
+
+fn spatially_interleave_candidates(
+    candidates: Vec<WaterTemplateCandidate>,
+    region: &SimBox,
+    desired_count: usize,
+) -> Vec<WaterTemplateCandidate> {
+    let bins_per_axis = (desired_count as f32).cbrt().ceil() as usize;
+    let mut bins = vec![Vec::new(); bins_per_axis.pow(3)];
+    let bin_coord = |value: f32, low: f32, extent: f32| {
+        (((value - low) / extent * bins_per_axis as f32).floor() as usize).min(bins_per_axis - 1)
+    };
+
+    for candidate in candidates {
+        let x = bin_coord(candidate.o_posit.x, region.bounds_low.x, region.extent.x);
+        let y = bin_coord(candidate.o_posit.y, region.bounds_low.y, region.extent.y);
+        let z = bin_coord(candidate.o_posit.z, region.bounds_low.z, region.extent.z);
+        bins[x + bins_per_axis * (y + bins_per_axis * z)].push(candidate);
+    }
+
+    let max_bin_len = bins.iter().map(Vec::len).max().unwrap_or(0);
+    let mut bin_order: Vec<_> = (0..bins.len()).collect();
+    bin_order.sort_unstable_by_key(|index| (*index as u32).wrapping_mul(0x9E37_79B9));
+    let mut result = Vec::new();
+
+    for round in 0..max_bin_len {
+        for &bin_i in &bin_order {
+            let bin = &bins[bin_i];
+            if let Some(candidate) = bin.get(round) {
+                result.push(*candidate);
+            }
+        }
+    }
+
+    result
+}
+
 pub(crate) fn water_mols_from_template_in_region_avoiding(
     cell: &SimBox,
     region: &SimBox,
@@ -535,109 +591,145 @@ pub(crate) fn water_mols_from_template_in_region_avoiding(
     // Used to restrict the PBC soft filter to same-tile pairs (see comment below).
     let mut placed_tiles: Vec<(i32, i32, i32)> = Vec::with_capacity(n_mols);
 
-    'tiles: for ix in -half_x..=half_x {
-        for iy in -half_y..=half_y {
-            for iz in -half_z..=half_z {
-                let tile_offset = base_offset
-                    + Vec3::new(
-                        ix as f32 * template_size.x,
-                        iy as f32 * template_size.y,
-                        iz as f32 * template_size.z,
-                    );
+    let make_candidate =
+        |tile: (i32, i32, i32), tile_offset: Vec3, i: usize| WaterTemplateCandidate {
+            tile,
+            o_posit: template.o_posits[i] + tile_offset,
+            h0_posit: template.h0_posits[i] + tile_offset,
+            h1_posit: template.h1_posits[i] + tile_offset,
+            o_velocity: template.o_velocities[i],
+            h0_velocity: template.h0_velocities[i],
+            h1_velocity: template.h1_velocities[i],
+        };
 
-                'mol: for i in 0..template.o_posits.len() {
-                    let o_posit = template.o_posits[i] + tile_offset;
-                    let h0_posit = template.h0_posits[i] + tile_offset;
-                    let h1_posit = template.h1_posits[i] + tile_offset;
+    let mut place_candidate = |candidate: WaterTemplateCandidate| {
+        if !candidate_fits_region(&candidate, cell, region) {
+            return false;
+        }
 
-                    loops_used += 1;
+        // Conflict with solute atoms.
+        for &atom_p in &solute_posits {
+            if cell
+                .min_image(atom_p - candidate.o_posit)
+                .magnitude_squared()
+                < MIN_NONWATER_DIST_SQ
+            {
+                return false;
+            }
+        }
 
-                    if !region.contains(o_posit)
-                        || !region.contains(h0_posit)
-                        || !region.contains(h1_posit)
-                        || !cell.contains(o_posit)
-                        || !cell.contains(h0_posit)
-                        || !cell.contains(h1_posit)
-                    {
-                        continue;
-                    }
+        // Regions are populated independently, so their template phases may not line
+        // up. Keep new molecules outside the first-shell distance of waters accepted
+        // for earlier regions to avoid artificial high-energy contacts at boundaries.
+        for w in prior_water {
+            let diff = cell.min_image(w.o.posit - candidate.o_posit);
+            if diff.magnitude_squared() < PBC_MIN_WATER_O_O_DIST_SQ {
+                return false;
+            }
+        }
 
-                    // Conflict with solute atoms.
-                    for &atom_p in &solute_posits {
-                        if cell.min_image(atom_p - o_posit).magnitude_squared()
-                            < MIN_NONWATER_DIST_SQ
-                        {
-                            continue 'mol;
+        // Conflict with already-placed solvent.
+        //
+        // Hard overlap (1.7 Å): always reject, regardless of PBC or tile.
+        //
+        // PBC soft filter (2.8 Å): only applies to SAME-TILE pairs.
+        //   - Large-template (e.g. Water60A, 60 Å) in a small cell: only one tile
+        //     contributes, so same-tile molecules from opposite ends of the template
+        //     can land at unequilibrated PBC distances of 2-3 Å. The filter rejects
+        //     them.
+        //   - Small-template (e.g. tip4p, 18.68 Å) in a large cell: adjacent tiles
+        //     tile the cell; cross-tile molecules near the cell boundary are legitimate
+        //     PBC neighbours equilibrated in the template. Applying the filter to
+        //     cross-tile pairs incorrectly rejects about 10 percent of molecules.
+        for (j, w) in result.iter().enumerate() {
+            let diff = w.o.posit - candidate.o_posit;
+            let direct_sq = diff.magnitude_squared();
+            if direct_sq < MIN_WATER_O_O_DIST_SQ {
+                return false;
+            }
+            let min_image_sq = cell.min_image(diff).magnitude_squared();
+            // Always reject PBC hard overlaps (PBC distance < 1.7 Å) even when
+            // skip_pbc_filter is true, to prevent catastrophic initial forces.
+            if min_image_sq < MIN_WATER_O_O_DIST_SQ {
+                return false;
+            }
+            if !skip_pbc_filter && placed_tiles[j] == candidate.tile {
+                if min_image_sq < PBC_MIN_WATER_O_O_DIST_SQ && min_image_sq < direct_sq {
+                    return false;
+                }
+            }
+        }
+
+        let mut mol = WaterMolOpc::new(
+            Vec3::new_zero(),
+            Vec3::new_zero(),
+            Quaternion::new_identity(),
+        );
+
+        // todo: I'm not sure how we're handling the M/EP point. I guess it's placed
+        // todo: automatically during integration.
+
+        mol.o.posit = candidate.o_posit;
+        mol.h0.posit = candidate.h0_posit;
+        mol.h1.posit = candidate.h1_posit;
+
+        mol.o.vel = candidate.o_velocity;
+        mol.h0.vel = candidate.h0_velocity;
+        mol.h1.vel = candidate.h1_velocity;
+        mol.update_virtual_site();
+
+        result.push(mol);
+        placed_tiles.push(candidate.tile);
+        result.len() == n_mols
+    };
+
+    if specify_num_water.is_some() {
+        let mut candidates = Vec::new();
+
+        for ix in -half_x..=half_x {
+            for iy in -half_y..=half_y {
+                for iz in -half_z..=half_z {
+                    let tile = (ix, iy, iz);
+                    let tile_offset = base_offset
+                        + Vec3::new(
+                            ix as f32 * template_size.x,
+                            iy as f32 * template_size.y,
+                            iz as f32 * template_size.z,
+                        );
+
+                    for i in 0..template.o_posits.len() {
+                        loops_used += 1;
+                        let candidate = make_candidate(tile, tile_offset, i);
+                        if candidate_fits_region(&candidate, cell, region) {
+                            candidates.push(candidate);
                         }
                     }
+                }
+            }
+        }
 
-                    // Regions are populated independently, so their template phases may not line
-                    // up. Keep new molecules outside the first-shell distance of waters accepted
-                    // for earlier regions to avoid artificial high-energy contacts at boundaries.
-                    for w in prior_water {
-                        let diff = cell.min_image(w.o.posit - o_posit);
-                        if diff.magnitude_squared() < PBC_MIN_WATER_O_O_DIST_SQ {
-                            continue 'mol;
+        for candidate in spatially_interleave_candidates(candidates, region, n_mols) {
+            if place_candidate(candidate) {
+                break;
+            }
+        }
+    } else {
+        'tiles: for ix in -half_x..=half_x {
+            for iy in -half_y..=half_y {
+                for iz in -half_z..=half_z {
+                    let tile = (ix, iy, iz);
+                    let tile_offset = base_offset
+                        + Vec3::new(
+                            ix as f32 * template_size.x,
+                            iy as f32 * template_size.y,
+                            iz as f32 * template_size.z,
+                        );
+
+                    for i in 0..template.o_posits.len() {
+                        loops_used += 1;
+                        if place_candidate(make_candidate(tile, tile_offset, i)) {
+                            break 'tiles;
                         }
-                    }
-
-                    // Conflict with already-placed solvent.
-                    //
-                    // Hard overlap (1.7 Å): always reject, regardless of PBC or tile.
-                    //
-                    // PBC soft filter (2.8 Å): only applies to SAME-TILE pairs.
-                    //   - Large-template (e.g. Water60A, 60 Å) in a small cell: only one tile
-                    //     contributes, so same-tile molecules from opposite ends of the template
-                    //     can land at unequilibrated PBC distances of 2–3 Å.  The filter rejects
-                    //     them. ✓
-                    //   - Small-template (e.g. tip4p, 18.68 Å) in a large cell: adjacent tiles
-                    //     tile the cell; cross-tile molecules near the cell boundary ARE legitimate
-                    //     PBC neighbours (equilibrated as such in the template).  Applying the
-                    //     filter to cross-tile pairs incorrectly rejects ~10 % of molecules.
-                    //     Restricting it to same-tile pairs prevents this over-rejection. ✓
-                    for (j, w) in result.iter().enumerate() {
-                        let diff = w.o.posit - o_posit;
-                        let direct_sq = diff.magnitude_squared();
-                        if direct_sq < MIN_WATER_O_O_DIST_SQ {
-                            continue 'mol;
-                        }
-                        let min_image_sq = cell.min_image(diff).magnitude_squared();
-                        // Always reject PBC hard overlaps (PBC distance < 1.7 Å) even when
-                        // skip_pbc_filter is true, to prevent catastrophic initial forces.
-                        if min_image_sq < MIN_WATER_O_O_DIST_SQ {
-                            continue 'mol;
-                        }
-                        if !skip_pbc_filter && placed_tiles[j] == (ix, iy, iz) {
-                            if min_image_sq < PBC_MIN_WATER_O_O_DIST_SQ && min_image_sq < direct_sq
-                            {
-                                continue 'mol;
-                            }
-                        }
-                    }
-
-                    let mut mol = WaterMolOpc::new(
-                        Vec3::new_zero(),
-                        Vec3::new_zero(),
-                        Quaternion::new_identity(),
-                    );
-
-                    // todo: I'm not sure how we're handling the M/EP point. I guess it's placed
-                    // todo: automatically during integration.
-
-                    mol.o.posit = o_posit;
-                    mol.h0.posit = h0_posit;
-                    mol.h1.posit = h1_posit;
-
-                    mol.o.vel = template.o_velocities[i];
-                    mol.h0.vel = template.h0_velocities[i];
-                    mol.h1.vel = template.h1_velocities[i];
-                    mol.update_virtual_site();
-
-                    result.push(mol);
-                    placed_tiles.push((ix, iy, iz));
-
-                    if result.len() == n_mols {
-                        break 'tiles;
                     }
                 }
             }
@@ -932,12 +1024,11 @@ impl MdState {
 mod tests {
     use lin_alg::f32::{Quaternion, Vec3};
 
+    use super::water_mols_from_template_in_region_avoiding;
     use crate::{
         AtomDynamics, MdState, SimBox, SolventTemplateType, WaterInitTemplate, WaterMolOpc,
         water_mols_from_template_in_region,
     };
-
-    use super::water_mols_from_template_in_region_avoiding;
 
     fn single_water_template() -> std::io::Result<WaterInitTemplate> {
         let zero = Vec3::new_zero();
@@ -950,6 +1041,38 @@ mod tests {
             vec![zero],
             vec![zero],
             SimBox::new(Vec3::new(-5., -5., -5.), Vec3::new(5., 5., 5.)),
+        )
+    }
+
+    fn ordered_two_slab_template() -> std::io::Result<WaterInitTemplate> {
+        let mut o_posits = Vec::new();
+
+        for z in [-6., 6.] {
+            for y in [-4., 4.] {
+                for x in [-6., -2., 2., 6.] {
+                    o_posits.push(Vec3::new(x, y, z));
+                }
+            }
+        }
+
+        let h0_posits = o_posits
+            .iter()
+            .map(|posit| *posit + Vec3::new(0.4, 0., 0.))
+            .collect();
+        let h1_posits = o_posits
+            .iter()
+            .map(|posit| *posit + Vec3::new(-0.4, 0., 0.))
+            .collect();
+        let velocities = vec![Vec3::new_zero(); o_posits.len()];
+
+        WaterInitTemplate::from_parts(
+            o_posits,
+            h0_posits,
+            h1_posits,
+            velocities.clone(),
+            velocities.clone(),
+            velocities,
+            SimBox::new(Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.)),
         )
     }
 
@@ -1028,6 +1151,25 @@ mod tests {
             assert!(region.contains(posit));
         }
         assert!(cell.contains(water.m.posit));
+
+        Ok(())
+    }
+
+    #[test]
+    fn specified_template_count_spans_the_region() -> std::io::Result<()> {
+        let cell = SimBox::new(Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.));
+        let waters = water_mols_from_template_in_region(
+            &cell,
+            &cell,
+            &[],
+            Some(8),
+            &SolventTemplateType::Custom(ordered_two_slab_template()?),
+            false,
+        )?;
+
+        assert_eq!(waters.len(), 8);
+        assert!(waters.iter().any(|water| water.o.posit.z < 0.));
+        assert!(waters.iter().any(|water| water.o.posit.z > 0.));
 
         Ok(())
     }

@@ -310,20 +310,22 @@ fn water_centroid(water: &WaterMolOpc) -> Vec3F64 {
 
 fn scale_centroid_position(
     centroid: Vec3F64,
-    target_center: Vec3,
+    current_center: Vec3,
+    new_center: Vec3,
     scale_x: f64,
     scale_y: f64,
     scale_z: f64,
 ) -> Vec3F64 {
-    let center_f64: Vec3F64 = target_center.into();
-    let relative_pos = centroid - center_f64;
+    let current_center_f64: Vec3F64 = current_center.into();
+    let new_center_f64: Vec3F64 = new_center.into();
+    let relative_pos = centroid - current_center_f64;
     let scaled_relative_pos = Vec3F64::new(
         relative_pos.x * scale_x,
         relative_pos.y * scale_y,
         relative_pos.z * scale_z,
     );
 
-    center_f64 + scaled_relative_pos
+    new_center_f64 + scaled_relative_pos
 }
 
 fn shift_rigid_body(atoms: &mut [AtomDynamics], displacement: Vec3) {
@@ -337,6 +339,184 @@ fn shift_water_molecule(water: &mut WaterMolOpc, displacement: Vec3) {
     water.h0.posit += displacement;
     water.h1.posit += displacement;
     water.m.posit += displacement;
+}
+
+/// Settings shared by template preparation and driven shrinking-box simulations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShrinkingBoxCfg {
+    /// Side-length scale factor applied to the target box at the beginning of the run.
+    pub initial_box_scale: f32,
+    /// Angstroms removed from each box axis per simulation step.
+    pub box_shrink_per_step: f32,
+}
+
+impl ShrinkingBoxCfg {
+    pub fn initial_cell(self, target_cell: SimBox) -> SimBox {
+        let scale = self.initial_box_scale.max(1.0);
+        let center = target_cell.center();
+        let half = target_cell.extent * (scale / 2.0);
+        SimBox::new(center - half, center + half)
+    }
+
+    pub fn shrink_step_count(self, target_cell: SimBox) -> usize {
+        let initial_cell = self.initial_cell(target_cell);
+        let shrink_needed = initial_cell.extent - target_cell.extent;
+        let max_shrink = shrink_needed.x.max(shrink_needed.y).max(shrink_needed.z);
+        let shrink_per_step = self.box_shrink_per_step.max(f32::EPSILON);
+
+        (max_shrink / shrink_per_step).ceil() as usize
+    }
+
+    /// Constant GROMACS `deform` rates in nm/ps for a run that reaches the target box
+    /// at its final step. The remaining three triclinic shear rates are zero.
+    pub fn gromacs_deform_nm_ps(self, target_cell: SimBox, dt: f32) -> [f32; 6] {
+        let initial_cell = self.initial_cell(target_cell);
+        let duration_ps = self.shrink_step_count(target_cell).max(1) as f32 * dt.max(f32::EPSILON);
+        let to_nm_ps = |initial: f32, target: f32| (target - initial) * 0.1 / duration_ps;
+
+        [
+            to_nm_ps(initial_cell.extent.x, target_cell.extent.x),
+            to_nm_ps(initial_cell.extent.y, target_cell.extent.y),
+            to_nm_ps(initial_cell.extent.z, target_cell.extent.z),
+            0.0,
+            0.0,
+            0.0,
+        ]
+    }
+
+    fn next_cell(self, current_cell: SimBox, target_cell: SimBox) -> Option<SimBox> {
+        if current_cell.extent.x <= target_cell.extent.x
+            && current_cell.extent.y <= target_cell.extent.y
+            && current_cell.extent.z <= target_cell.extent.z
+        {
+            return None;
+        }
+
+        let half = self.box_shrink_per_step.max(0.0) / 2.0;
+        if half <= f32::EPSILON {
+            return None;
+        }
+
+        Some(SimBox::new(
+            Vec3::new(
+                (current_cell.bounds_low.x + half).min(target_cell.bounds_low.x),
+                (current_cell.bounds_low.y + half).min(target_cell.bounds_low.y),
+                (current_cell.bounds_low.z + half).min(target_cell.bounds_low.z),
+            ),
+            Vec3::new(
+                (current_cell.bounds_high.x - half).max(target_cell.bounds_high.x),
+                (current_cell.bounds_high.y - half).max(target_cell.bounds_high.y),
+                (current_cell.bounds_high.z - half).max(target_cell.bounds_high.z),
+            ),
+        ))
+    }
+}
+
+impl MdState {
+    /// Scale each molecule's centroid into the next smaller box while preserving its
+    /// internal geometry. Water is treated as a rigid molecule as well.
+    pub fn shrink_cell_towards(
+        &mut self,
+        dev: &ComputationDevice,
+        target_cell: SimBox,
+        cfg: ShrinkingBoxCfg,
+    ) -> bool {
+        let current_cell = self.cell;
+        let Some(new_cell) = cfg.next_cell(current_cell, target_cell) else {
+            return false;
+        };
+
+        let scale_x = (new_cell.extent.x / current_cell.extent.x) as f64;
+        let scale_y = (new_cell.extent.y / current_cell.extent.y) as f64;
+        let scale_z = (new_cell.extent.z / current_cell.extent.z) as f64;
+        let current_center = current_cell.center();
+        let new_center = new_cell.center();
+
+        for (mol_i, &start) in self.mol_start_indices.iter().enumerate() {
+            let end = self
+                .mol_start_indices
+                .get(mol_i + 1)
+                .copied()
+                .unwrap_or(self.atoms.len());
+            let mol_atoms = &mut self.atoms[start..end];
+            let centroid = rigid_body_centroid(mol_atoms);
+            let new_centroid = scale_centroid_position(
+                centroid,
+                current_center,
+                new_center,
+                scale_x,
+                scale_y,
+                scale_z,
+            );
+            shift_rigid_body(mol_atoms, (new_centroid - centroid).into());
+        }
+
+        for water in &mut self.water {
+            let centroid = water_centroid(water);
+            let new_centroid = scale_centroid_position(
+                centroid,
+                current_center,
+                new_center,
+                scale_x,
+                scale_y,
+                scale_z,
+            );
+            shift_water_molecule(water, (new_centroid - centroid).into());
+        }
+
+        self.cell = new_cell;
+        self.rebuild_spatial_caches(dev);
+        true
+    }
+
+    /// Rebuild cell-dependent caches after a caller deliberately moves molecules.
+    pub fn rebuild_spatial_caches(&mut self, dev: &ComputationDevice) {
+        self.spme_force_prev = None;
+        self.build_all_neighbors(dev);
+        self.regen_pme(dev);
+    }
+
+    /// Redistribute the state's existing OPC waters throughout a grid of co-packed
+    /// solvent molecules. This avoids sparse explicit water counts occupying only
+    /// the first region traversed by the template initializer.
+    pub fn redistribute_interleaved_opc_waters(
+        &mut self,
+        dev: &ComputationDevice,
+        solvent_centers: &[Vec3F64],
+        solvent_spacing: Vec3F64,
+    ) -> bool {
+        let water_count = self.water.len();
+        if water_count == 0 {
+            return true;
+        }
+
+        let solvent_atom_posits: Vec<_> = self.atoms.iter().map(|atom| atom.posit).collect();
+        let water_temperature_tgt =
+            temperature_from_water_velocities(&self.water, false).unwrap_or(300.0);
+        let placed_water = place_interleaved_opc_waters(
+            solvent_centers,
+            solvent_spacing,
+            &solvent_atom_posits,
+            water_count,
+            &self.cell,
+            water_temperature_tgt,
+            &mut rand::rng(),
+        );
+
+        if placed_water.len() != water_count {
+            eprintln!(
+                "redistribute_interleaved_opc_waters: placed {} / {water_count} waters; \
+                 retaining template-seeded waters.",
+                placed_water.len()
+            );
+            return false;
+        }
+
+        self.water = placed_water;
+        self.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; self.water.len()];
+        self.rebuild_spatial_caches(dev);
+        true
+    }
 }
 
 fn water_conflicts_with_solvent(
@@ -741,10 +921,13 @@ pub fn pack_solvent_with_shrinking_box_cfg(
     let box_shrink_per_step = packing_cfg.box_shrink_per_step;
     let equilibration_steps = packing_cfg.equilibration_steps;
 
-    // Build the large initial cell, centered on the same point as the target
-    let target_center = cell.center();
-    let large_half = cell.extent * (initial_box_scale / 2.);
-    let large_cell = SimBox::new(target_center - large_half, target_center + large_half);
+    let shrink_cfg = ShrinkingBoxCfg {
+        initial_box_scale,
+        box_shrink_per_step,
+    };
+
+    // Build the large initial cell, centered on the same point as the target.
+    let large_cell = shrink_cfg.initial_cell(cell);
 
     // Grid-place `solvent_count` copies of `mol_solvent` with random orientations
     // Template: prefer atom_posits override, fall back to atom positions.
@@ -803,17 +986,6 @@ pub fn pack_solvent_with_shrinking_box_cfg(
         solvent_centers.push(world_ctr);
     }
 
-    let solvent_atom_posits: Vec<Vec3> = mols
-        .iter()
-        .flat_map(|mol| {
-            mol.atom_posits
-                .as_ref()
-                .into_iter()
-                .flat_map(|posits| posits.iter().copied())
-        })
-        .map(Into::into)
-        .collect();
-
     // Create MdState with the large cell
     let cfg = MdConfig {
         sim_box: SimBoxInit::Fixed((large_cell.bounds_low, large_cell.bounds_high)),
@@ -860,39 +1032,12 @@ pub fn pack_solvent_with_shrinking_box_cfg(
     let (mut md_state, _) = MdState::new(dev, &cfg, &mols, param_set)?;
 
     if water_count > 0 {
-        let water_temperature_tgt =
-            temperature_from_water_velocities(&md_state.water, false).unwrap_or(300.0);
-        let placed_water = place_interleaved_opc_waters(
-            &solvent_centers,
-            solvent_spacing,
-            &solvent_atom_posits,
-            water_count,
-            &large_cell,
-            water_temperature_tgt,
-            &mut rng,
-        );
-
-        if placed_water.len() == water_count {
-            md_state.water = placed_water;
-            md_state.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; md_state.water.len()];
-            md_state.build_all_neighbors(dev);
-            md_state.regen_pme(dev);
-        } else {
-            eprintln!(
-                "pack_solvent_with_shrinking_box: placed {} / {water_count} interleaved waters; \
-                 retaining template-seeded waters.",
-                placed_water.len()
-            );
-        }
+        md_state.redistribute_interleaved_opc_waters(dev, &solvent_centers, solvent_spacing);
     }
 
     // Shrink loop
     // Compute the number of steps required to reach the target cell size on the slowest axis.
-    let shrink_needed_x = large_cell.extent.x - cell.extent.x;
-    let shrink_needed_y = large_cell.extent.y - cell.extent.y;
-    let shrink_needed_z = large_cell.extent.z - cell.extent.z;
-    let max_shrink = shrink_needed_x.max(shrink_needed_y).max(shrink_needed_z);
-    let n_shrink_steps = (max_shrink / box_shrink_per_step).ceil() as usize;
+    let n_shrink_steps = shrink_cfg.shrink_step_count(cell);
     let total_steps = n_shrink_steps + equilibration_steps;
 
     println!(
@@ -911,46 +1056,7 @@ pub fn pack_solvent_with_shrinking_box_cfg(
         md_state.step(dev, dt, None);
 
         if step < n_shrink_steps {
-            let cur = &md_state.cell;
-            let half = box_shrink_per_step / 2.;
-
-            let new_low = Vec3::new(
-                (cur.bounds_low.x + half).min(cell.bounds_low.x),
-                (cur.bounds_low.y + half).min(cell.bounds_low.y),
-                (cur.bounds_low.z + half).min(cell.bounds_low.z),
-            );
-            let new_high = Vec3::new(
-                (cur.bounds_high.x - half).max(cell.bounds_high.x),
-                (cur.bounds_high.y - half).max(cell.bounds_high.y),
-                (cur.bounds_high.z - half).max(cell.bounds_high.z),
-            );
-            let new_cell = SimBox::new(new_low, new_high);
-
-            // Calculate scale factors relative to the current cell
-            let scale_x = (new_cell.extent.x / cur.extent.x) as f64;
-            let scale_y = (new_cell.extent.y / cur.extent.y) as f64;
-            let scale_z = (new_cell.extent.z / cur.extent.z) as f64;
-
-            // --- Replace the atom wrapping loop with molecule scaling ---
-            for mol_atoms in md_state.atoms.chunks_mut(n_atoms) {
-                let centroid = rigid_body_centroid(mol_atoms);
-                let new_centroid =
-                    scale_centroid_position(centroid, target_center, scale_x, scale_y, scale_z);
-                let displacement: Vec3 = (new_centroid - centroid).into();
-
-                shift_rigid_body(mol_atoms, displacement);
-            }
-
-            for water in &mut md_state.water {
-                let centroid = water_centroid(water);
-                let new_centroid =
-                    scale_centroid_position(centroid, target_center, scale_x, scale_y, scale_z);
-                let displacement: Vec3 = (new_centroid - centroid).into();
-
-                shift_water_molecule(water, displacement);
-            }
-
-            md_state.cell = new_cell;
+            md_state.shrink_cell_towards(dev, cell, shrink_cfg);
         }
     }
 
@@ -1048,4 +1154,46 @@ pub fn pack_solvent_with_shrinking_box_cfg(
 
     // Ok((result_mols, md_state.snapshots))
     Ok((result_mols, md_state.snapshots))
+}
+
+#[cfg(test)]
+mod tests {
+    use lin_alg::f32::Vec3;
+
+    use super::{ShrinkingBoxCfg, SimBox};
+
+    #[test]
+    fn shrinking_box_schedule_reaches_target_without_overshoot() {
+        let target = SimBox::new(Vec3::splat(-5.0), Vec3::splat(5.0));
+        let cfg = ShrinkingBoxCfg {
+            initial_box_scale: 2.0,
+            box_shrink_per_step: 2.0,
+        };
+        let mut cell = cfg.initial_cell(target);
+
+        assert_eq!(cell.extent, Vec3::splat(20.0));
+        assert_eq!(cfg.shrink_step_count(target), 5);
+
+        for _ in 0..cfg.shrink_step_count(target) {
+            cell = cfg.next_cell(cell, target).unwrap();
+        }
+
+        assert_eq!(cell, target);
+        assert!(cfg.next_cell(cell, target).is_none());
+    }
+
+    #[test]
+    fn gromacs_deform_rate_reaches_target_on_last_step() {
+        let target = SimBox::new(Vec3::splat(-5.0), Vec3::splat(5.0));
+        let cfg = ShrinkingBoxCfg {
+            initial_box_scale: 2.0,
+            box_shrink_per_step: 2.0,
+        };
+        let rates = cfg.gromacs_deform_nm_ps(target, 0.002);
+
+        for rate in &rates[..3] {
+            assert!((*rate + 100.0).abs() < 1.0e-3);
+        }
+        assert_eq!(&rates[3..], &[0.0, 0.0, 0.0]);
+    }
 }
