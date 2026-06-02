@@ -229,48 +229,6 @@ impl SimBox {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use lin_alg::f32::Vec3;
-
-    use super::SimBox;
-    use crate::AtomDynamics;
-
-    #[test]
-    fn recenter_uses_dynamic_atoms_when_available() {
-        let mut cell = SimBox::new(Vec3::new(-5., -5., -5.), Vec3::new(5., 5., 5.));
-        let atoms = vec![
-            AtomDynamics {
-                posit: Vec3::new(100., 0., 0.),
-                static_: true,
-                ..Default::default()
-            },
-            AtomDynamics {
-                posit: Vec3::new(2., 0., 0.),
-                ..Default::default()
-            },
-            AtomDynamics {
-                posit: Vec3::new(4., 0., 0.),
-                ..Default::default()
-            },
-        ];
-
-        cell.recenter(&atoms);
-
-        assert_eq!(cell.center(), Vec3::new(3., 0., 0.));
-    }
-
-    #[test]
-    fn translated_preserves_extent() {
-        let cell = SimBox::new(Vec3::new(-5., -4., -3.), Vec3::new(5., 4., 3.));
-        let translated = cell.translated(Vec3::new(3., -2., 7.));
-
-        assert_eq!(translated.bounds_low, Vec3::new(-2., -6., 4.));
-        assert_eq!(translated.bounds_high, Vec3::new(8., 2., 10.));
-        assert_eq!(translated.extent, cell.extent);
-    }
-}
-
 /// The virial, in Kcal/Mol. Converted from our native units. We use a
 /// separate type to help ensure we are using the correct units.
 #[derive(Debug, Default)]

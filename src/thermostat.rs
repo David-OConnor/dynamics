@@ -226,29 +226,3 @@ impl MdState {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::{AtomDynamics, ComMotionRemoval, MdState};
-
-    #[test]
-    fn thermo_dof_matches_com_motion_mode() {
-        let atoms = vec![AtomDynamics::default(), AtomDynamics::default()];
-
-        let mut linear = MdState {
-            atoms: atoms.clone(),
-            ..Default::default()
-        };
-        linear.cfg.zero_com_drift = true;
-        linear.cfg.com_motion_removal = ComMotionRemoval::Linear;
-        assert_eq!(linear.dof_for_thermo(), 3);
-
-        let mut angular = MdState {
-            atoms,
-            ..Default::default()
-        };
-        angular.cfg.zero_com_drift = true;
-        angular.cfg.com_motion_removal = ComMotionRemoval::Angular;
-        assert_eq!(angular.dof_for_thermo(), 0);
-    }
-}

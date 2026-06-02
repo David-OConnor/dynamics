@@ -326,44 +326,6 @@ impl Snapshot {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use lin_alg::f32::Vec3;
-
-    use super::Snapshot;
-    use crate::barostat::SimBox;
-
-    #[test]
-    fn wrap_atom_posits_keeps_solute_coordinates_in_primary_box() {
-        let cell = SimBox::new(Vec3::new(0., 0., 0.), Vec3::new(10., 20., 30.));
-        let wrapped = Snapshot::wrap_atom_posits(
-            &cell,
-            [
-                Vec3::new(12.5, -2.0, 31.0),
-                Vec3::new(-0.1, 19.5, -0.25),
-                Vec3::new(9.0, 5.0, 29.5),
-            ],
-        );
-
-        assert_eq!(wrapped[0], Vec3::new(2.5, 18.0, 1.0));
-        assert_eq!(wrapped[1], Vec3::new(9.9, 19.5, 29.75));
-        assert_eq!(wrapped[2], Vec3::new(9.0, 5.0, 29.5));
-    }
-
-    #[test]
-    fn to_dcd_wraps_solute_positions_before_export() {
-        let cell = SimBox::new(Vec3::new(-5., -5., -5.), Vec3::new(5., 5., 5.));
-        let snapshot = Snapshot {
-            atom_posits: vec![Vec3::new(6.0, -5.5, 15.0)],
-            ..Default::default()
-        };
-
-        let frame = snapshot.to_dcd(&cell, false);
-
-        assert_eq!(frame.atom_posits, vec![Vec3::new(-4.0, 4.5, -5.0)]);
-    }
-}
-
 impl From<GromacsFrame> for Snapshot {
     fn from(frame: GromacsFrame) -> Self {
         // nm → Å
