@@ -45,6 +45,7 @@ use crate::{AtomDynamicsx8, AtomDynamicsx16};
 pub(crate) mod init;
 pub(crate) mod octanol;
 pub(crate) mod opc_settle;
+pub(crate) mod shrinking_box;
 pub(crate) mod template_creation;
 
 use opc_settle::RA;

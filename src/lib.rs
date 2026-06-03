@@ -137,7 +137,7 @@ pub use bonded::{LINCS_ITER_DEFAULT, LINCS_ORDER_DEFAULT, SHAKE_TOL_DEFAULT};
 pub use config::{ComMotionRemoval, MdConfig};
 #[cfg(feature = "cuda")]
 use cudarc::{
-    driver::{CudaContext, CudaFunction, CudaStream},
+    driver::{CudaContext, CudaStream},
     nvrtc::Ptx,
 };
 use ewald::PmeRecip;
@@ -158,10 +158,11 @@ pub use solvent::{
         OCTANOL_WATER_TEMPLATE, SolventTemplateType, WATER_TEMPLATE_60A, WaterInitTemplate,
         water_mols_from_template, water_mols_from_template_in_region,
     },
-    template_creation::{
-        CustomSolventCount, ShrinkingBoxCfg, ShrinkingBoxPackingCfg, make_water_mols_grid,
-        pack_solvent_with_shrinking_box, pack_solvent_with_shrinking_box_cfg, random_quaternion,
+    shrinking_box::{
+        ShrinkingBoxCfg, ShrinkingBoxPackingCfg, pack_solvent_with_shrinking_box,
+        pack_solvent_with_shrinking_box_cfg,
     },
+    template_creation::{CustomSolventCount, make_water_mols_grid},
 };
 
 #[cfg(feature = "cuda")]

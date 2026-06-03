@@ -1,7 +1,7 @@
 //! Note: We keep most thermostat and barostat code as f64, although we use f32 in most sections.
 
 use na_seq::Element;
-use rand::{Rng, distr::Distribution};
+use rand::{RngExt, distr::Distribution};
 use rand_distr::{ChiSquared, StandardNormal};
 
 use crate::{

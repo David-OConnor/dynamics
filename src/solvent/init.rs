@@ -11,14 +11,10 @@ use std::{fs, io, path::Path, time::Instant};
 
 use bincode::{Decode, Encode};
 use bio_files::{gromacs, gromacs::gro::Gro};
-use lin_alg::{
-    f32::{Quaternion, Vec3},
-    f64::{Quaternion as QuaternionF64, Vec3 as Vec3F64},
-};
-use rand::Rng;
+use lin_alg::f32::{Quaternion, Vec3};
 
 use crate::{
-    AtomDynamics, ComputationDevice, MdState, MolDynamics, Solvent,
+    AtomDynamics, ComputationDevice, MdState, Solvent,
     barostat::SimBox,
     partial_charge_inference::{files::load_from_bytes_bincode, save},
     sa_surface,
@@ -42,8 +38,6 @@ const WATER_MOLS_PER_VOL: f32 = WATER_DENSITY * N_A / (MASS_WATER * 1.0e24);
 
 // Don't generate solvent molecules that are too close to other atoms.
 // Vdw contact distance between solvent molecules and organic molecules is roughly 3.5 Å.
-// todo: Hmm. We could get lower, but there's some risk of an H atom being too close,
-// todo and we're currently only measuring solvent o dist to atoms.
 const MIN_NONWATER_DIST: f32 = 1.7;
 const MIN_NONWATER_DIST_SQ: f32 = MIN_NONWATER_DIST * MIN_NONWATER_DIST;
 
@@ -84,6 +78,8 @@ pub const WATER_TEMPLATE_TIP4: &str = include_str!("../../param_data/tip4p.gro")
 pub const OCTANOL_WATER_TEMPLATE: &str =
     include_str!("../../param_data/octanol_water_saturated.gro");
 
+/// Contains variants of templates we have built into this library. These are
+/// included in the binary of applications which use this.
 #[derive(Clone, Debug, PartialEq, Default, Decode, Encode)]
 pub enum SolventTemplateType {
     Water60A,
@@ -743,217 +739,6 @@ pub(crate) fn water_mols_from_template_in_region_avoiding(
     );
 
     Ok(result)
-}
-
-/// Pack copies of each custom solvent molecule into the simulation box on a regular grid,
-/// deconflicting with already-placed atoms (e.g. the solute). Returns one `MolDynamics` per
-/// copy placed, each with `atom_posits` set to its chosen world-space positions.
-///
-/// Strategy (mirrors `make_water_mols_grid`):
-/// - Divide the box into an n_x × n_y × n_z lattice with one slot per molecule.
-/// - At each grid cell, try `MAX_ROT_ATTEMPTS` random orientations and keep the one whose
-///   true minimum atom–atom distance to all already-placed atoms is largest.
-/// - If the best orientation achieves ≥ `SOFT_MIN` (1.4 Å) we place immediately.
-/// - If it achieves ≥ `HARD_MIN` (0.5 Å, the `check_for_overlaps_oob` cutoff) we place
-///   with a warning; the energy minimiser resolves the soft overlap.
-/// - If every orientation produces a < 0.5 Å overlap the grid cell is skipped; the
-///   barostat will compensate for the slightly lower count.
-///
-/// **Critical**: the minimum-distance scan inside each rotation attempt does NOT break
-/// early at the soft threshold.  The previous greedy implementation broke out of the scan
-/// loop as soon as any atom pair was found at < 1.4 Å, which meant a hidden pair at
-/// 0.289 Å could go undetected and corrupt the "best" candidate.  Here we scan all
-/// nearby atom pairs to find the *true* minimum, breaking only on a catastrophically
-/// small distance (< 0.01 Å) where further scanning is pointless.
-///
-/// Only supports `SimBoxInit::Fixed` boxes — the caller is responsible for ensuring this.
-pub(crate) fn pack_custom_solvent(
-    cell: SimBox,
-    existing_posits: &[Vec3F64], // declared positions of already-placed atoms (e.g. solute)
-    mols_solvent: &[(MolDynamics, usize)],
-    // template: Option<Vec<AtomDynamics>>,
-) -> Vec<MolDynamics> {
-    // Minimum inter-atom distance that `check_for_overlaps_oob` enforces. Grid cells whose
-    // best rotation falls below this are skipped rather than placed.
-    const HARD_MIN_SQ: f64 = 0.5 * 0.5; // Å²
-    // "Good enough" threshold: once the best rotation achieves this we stop trying more.
-    const SOFT_MIN_SQ: f64 = 1.4 * 1.4; // Å²
-    // Threshold below which further scanning of a rotation is pointless.
-    const CATASTROPHIC_SQ: f64 = 0.01 * 0.01; // Å²
-    // Keep every atom at least this far from each box face.
-    const WALL_MARGIN: f64 = 0.6; // Å  (slightly > check_for_overlaps_oob's 0.5 Å limit)
-    const MAX_ROT_ATTEMPTS: usize = 200;
-
-    let mut rng = rand::rng();
-
-    let box_ctr: Vec3F64 = cell.center().into();
-
-    // Grows as copies are committed; starts with the solute atom positions.
-    let mut placed_posits: Vec<Vec3F64> = existing_posits.to_vec();
-
-    let mut result: Vec<MolDynamics> = Vec::new();
-
-    for (mol, count) in mols_solvent {
-        let count = *count;
-        if count == 0 {
-            continue;
-        }
-
-        // Template positions in world space; prefer atom_posits override.
-        let template_world: Vec<Vec3F64> = if let Some(ap) = &mol.atom_posits {
-            ap.clone()
-        } else {
-            mol.atoms.iter().map(|a| a.posit).collect()
-        };
-
-        let n_atoms = template_world.len();
-        if n_atoms == 0 {
-            continue;
-        }
-
-        // Centroid and centroid-relative locals.
-        let centroid = template_world
-            .iter()
-            .fold(Vec3F64::new(0., 0., 0.), |s, &p| s + p)
-            * (1.0 / n_atoms as f64);
-        let local: Vec<Vec3F64> = template_world.iter().map(|&p| p - centroid).collect();
-        let bounding_r: f64 = local.iter().map(|p| p.magnitude()).fold(0.0_f64, f64::max);
-
-        // Spatial early-reject: only compare placed atoms within this squared distance of
-        // the candidate centroid. The factor of 2 accounts for both molecules' extents.
-        let search_sq = (bounding_r * 2.0 + 2.0).powi(2);
-
-        // Box dimensions and per-atom wall half-extents.
-        let lx = (cell.bounds_high.x - cell.bounds_low.x) as f64;
-        let ly = (cell.bounds_high.y - cell.bounds_low.y) as f64;
-        let lz = (cell.bounds_high.z - cell.bounds_low.z) as f64;
-        let (hx, hy, hz) = (
-            lx * 0.5 - WALL_MARGIN,
-            ly * 0.5 - WALL_MARGIN,
-            lz * 0.5 - WALL_MARGIN,
-        );
-
-        // Regular grid layout — same strategy as `make_water_mols_grid`.
-        let base = (count as f64).cbrt().round().max(1.0) as usize;
-        let n_x = base;
-        let n_y = base;
-        let n_z = count.div_ceil(n_x * n_y);
-        let (sx, sy, sz) = (lx / n_x as f64, ly / n_y as f64, lz / n_z as f64);
-
-        let total_cells = n_x * n_y * n_z;
-        let mut num_placed = 0;
-        let mut num_skipped = 0;
-
-        'grid: for idx in 0..total_cells {
-            if num_placed >= count {
-                break;
-            }
-
-            let a = idx % n_x;
-            let b = (idx / n_x) % n_y;
-            let c = idx / (n_x * n_y);
-
-            let world_ctr = Vec3F64::new(
-                cell.bounds_low.x as f64 + (a as f64 + 0.5) * sx,
-                cell.bounds_low.y as f64 + (b as f64 + 0.5) * sy,
-                cell.bounds_low.z as f64 + (c as f64 + 0.5) * sz,
-            );
-
-            let mut best_min_sq = f64::NEG_INFINITY;
-            let mut best_posits: Vec<Vec3F64> = Vec::new();
-
-            'rot: for _ in 0..MAX_ROT_ATTEMPTS {
-                let (w, x, y, z): (f64, f64, f64, f64) =
-                    (rng.random(), rng.random(), rng.random(), rng.random());
-                let rot = QuaternionF64::new(w, x, y, z).to_normalized();
-
-                let new_posits: Vec<Vec3F64> = local
-                    .iter()
-                    .map(|&l| rot.rotate_vec(l) + world_ctr)
-                    .collect();
-
-                // Wall check in box-centred coordinates.
-                if !new_posits.iter().all(|p| {
-                    let dp = *p - box_ctr;
-                    dp.x.abs() <= hx && dp.y.abs() <= hy && dp.z.abs() <= hz
-                }) {
-                    continue 'rot;
-                }
-
-                // Find the TRUE minimum atom–atom distance to all placed atoms.
-                // We do NOT break early at the soft threshold — that was the source of the
-                // bug where a hidden 0.289 Å pair went undetected. We only break on a
-                // catastrophically small distance where no further scanning can help.
-                let mut min_sq = f64::MAX;
-                'pairs: for &np in &new_posits {
-                    for &pp in &placed_posits {
-                        // Spatial early-reject: skip atoms far from the candidate centroid.
-                        let diff_ctr = pp - world_ctr;
-                        let diff_ctr_f32: Vec3 = diff_ctr.into();
-                        let pbc_ctr_f64: Vec3F64 = cell.min_image(diff_ctr_f32).into();
-                        let dctr_sq = diff_ctr
-                            .magnitude_squared()
-                            .min(pbc_ctr_f64.magnitude_squared());
-                        if dctr_sq > search_sq {
-                            continue;
-                        }
-
-                        // PBC-aware inter-atom distance.
-                        let diff = np - pp;
-                        let diff_f32: Vec3 = diff.into();
-                        let pbc_diff_f64: Vec3F64 = cell.min_image(diff_f32).into();
-                        let dsq = diff
-                            .magnitude_squared()
-                            .min(pbc_diff_f64.magnitude_squared());
-
-                        if dsq < min_sq {
-                            min_sq = dsq;
-                            if min_sq < CATASTROPHIC_SQ {
-                                // Catastrophic overlap — no point scanning further.
-                                break 'pairs;
-                            }
-                        }
-                    }
-                }
-
-                if min_sq > best_min_sq {
-                    best_min_sq = min_sq;
-                    best_posits = new_posits;
-                }
-                if best_min_sq >= SOFT_MIN_SQ {
-                    break 'rot; // Clean placement found; no need for more attempts.
-                }
-            }
-
-            // Skip this cell if no rotation achieved a safe inter-atom distance.
-            if best_posits.is_empty() || best_min_sq < HARD_MIN_SQ {
-                num_skipped += 1;
-                continue 'grid;
-            }
-
-            if best_min_sq < SOFT_MIN_SQ {
-                eprintln!(
-                    "pack_custom_solvent: mol {num_placed}: best min atom dist {:.2} Å — \
-                     placing with soft overlap (energy minimiser will resolve).",
-                    best_min_sq.sqrt()
-                );
-            }
-
-            placed_posits.extend_from_slice(&best_posits);
-
-            let mut mol_copy = mol.clone();
-            mol_copy.atom_posits = Some(best_posits);
-            result.push(mol_copy);
-            num_placed += 1;
-        }
-
-        println!(
-            "pack_custom_solvent: placed {num_placed} / {count} molecules \
-             ({num_skipped} grid cells skipped — no clean orientation found).",
-        );
-    }
-
-    result
 }
 
 impl MdState {
