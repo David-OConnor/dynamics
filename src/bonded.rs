@@ -189,7 +189,7 @@ impl MdState {
             let rj_new = self.atoms[j].posit;
 
             let dri = ri_new - unconstrained_pos[i];
-            let drj = rj_new - unconstrained_pos[j];
+            // let drj = rj_new - unconstrained_pos[j];
 
             // Approx constraint forces
             let fi_c = dri * (self.atoms[i].mass * inv_dt2);

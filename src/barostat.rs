@@ -353,6 +353,7 @@ impl Barostat {
         (dlnv / 3.0).exp()
     }
 
+    #[allow(unused)]
     pub(crate) fn apply_isotropic(
         &mut self,
         dt_ps: f64,

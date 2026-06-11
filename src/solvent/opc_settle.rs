@@ -39,8 +39,8 @@ pub(crate) const RESET_ANGLE_RATIO: usize = 1_000;
 // Pre-calcualted for OPC, as consts don't support cost and sin. Could also do this with
 // lazy_static
 pub(crate) const RA: f32 = 0.5395199719801114; // O_H_R * (H_O_H_θ / 2.).cos()
-const RB: f32 = 0.6856075890450577; // O_H_R * (H_O_H_θ / 2.).sin()
-const RC: f32 = RA * (2.0 * H_MASS) / (O_MASS + 2.0 * H_MASS);
+// const RB: f32 = 0.6856075890450577; // O_H_R * (H_O_H_θ / 2.).sin()
+// const RC: f32 = RA * (2.0 * H_MASS) / (O_MASS + 2.0 * H_MASS);
 
 // /// https://github.com/gromacs/gromacs/blob/main/src/gromacs/mdlib/settle.cpp
 // pub(crate) fn settle_gromacs(mol: &mut WaterMol, dt: f32, cell: &SimBox, virial_constr: &mut f64) {}

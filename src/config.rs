@@ -283,10 +283,7 @@ impl From<MdpParams> for MdConfig {
             }
         };
 
-        let mut overrides = MdOverrides::default();
-
-        // Use nstlog as the snapshot cadence — it's the natural output ratio.
-        let nstlog = p.output_control.nstlog.unwrap_or(0);
+        let overrides = MdOverrides::default();
 
         let snapshot_handlers = SnapshotHandlers {
             memory: None,
