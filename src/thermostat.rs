@@ -1,7 +1,8 @@
 //! Note: We keep most thermostat and barostat code as f64, although we use f32 in most sections.
 
+use lin_alg::f32::{Mat3 as Mat3F32, Vec3};
 use na_seq::Element;
-use rand::{RngExt, distr::Distribution};
+use rand::{RngExt, distr::Distribution, prelude::ThreadRng};
 use rand_distr::{ChiSquared, StandardNormal};
 
 use crate::{
@@ -30,6 +31,14 @@ pub const TAU_TEMP_WATER_INIT: f64 = 0.01; // for CSVR
 // Lower is closer to Newtonian dynamics. 2ps (0.5ps^-1) is Gromac's default.
 pub const LANGEVIN_GAMMA_DEFAULT: f32 = 0.5;
 pub const LANGEVIN_GAMMA_WATER_INIT: f32 = 15.;
+
+fn sample_normal_vec(rng: &mut ThreadRng, sigma: f32) -> Vec3 {
+    let x: f32 = rng.sample(StandardNormal);
+    let y: f32 = rng.sample(StandardNormal);
+    let z: f32 = rng.sample(StandardNormal);
+
+    Vec3::new(x * sigma, y * sigma, z * sigma)
+}
 
 impl MdState {
     /// Computes total kinetic energy, in native units.
@@ -77,6 +86,132 @@ impl MdState {
     /// Instantaneous temperature [K]
     pub(crate) fn measure_temperature(&self) -> f64 {
         (2.0 * self.kinetic_energy) / (self.thermo_dof as f64 * GAS_CONST_R)
+    }
+
+    /// Assign Maxwell-Boltzmann velocities at the requested temperature.
+    ///
+    /// Solute atoms are sampled independently. OPC water is sampled as a rigid body, with a
+    /// translational COM velocity and angular momentum, so the initial velocities respect the
+    /// same rigid-water model used by integration.
+    pub fn initialize_velocities(&mut self, target_k: f32, zero_com_drift: bool) {
+        if !target_k.is_finite() || target_k <= 0.0 || self.thermo_dof == 0 {
+            return;
+        }
+
+        let k_t = KB_A2_PS2_PER_K_PER_AMU * target_k;
+
+        for atom in &mut self.atoms {
+            if atom.static_ || !atom.mass.is_finite() || atom.mass <= f32::EPSILON {
+                atom.vel = Vec3::new_zero();
+                continue;
+            }
+
+            atom.vel = sample_normal_vec(&mut self.barostat.rng, (k_t / atom.mass).sqrt());
+        }
+
+        for water in &mut self.water {
+            let mut r_com = Vec3::new_zero();
+            let mut mass_total = 0.0;
+            for atom in [&water.o, &water.h0, &water.h1] {
+                r_com += atom.posit * atom.mass;
+                mass_total += atom.mass;
+            }
+
+            if mass_total <= f32::EPSILON {
+                water.o.vel = Vec3::new_zero();
+                water.h0.vel = Vec3::new_zero();
+                water.h1.vel = Vec3::new_zero();
+                water.update_virtual_site();
+                continue;
+            }
+
+            r_com /= mass_total;
+
+            let r_o = water.o.posit - r_com;
+            let r_h0 = water.h0.posit - r_com;
+            let r_h1 = water.h1.posit - r_com;
+
+            let inertia = |r: Vec3, mass: f32| {
+                let r2 = r.dot(r);
+                [
+                    [
+                        mass * (r2 - r.x * r.x),
+                        -mass * r.x * r.y,
+                        -mass * r.x * r.z,
+                    ],
+                    [
+                        -mass * r.y * r.x,
+                        mass * (r2 - r.y * r.y),
+                        -mass * r.y * r.z,
+                    ],
+                    [
+                        -mass * r.z * r.x,
+                        -mass * r.z * r.y,
+                        mass * (r2 - r.z * r.z),
+                    ],
+                ]
+            };
+
+            let mut inertia_arr = inertia(r_o, water.o.mass);
+            for added in [inertia(r_h0, water.h0.mass), inertia(r_h1, water.h1.mass)] {
+                for i in 0..3 {
+                    for j in 0..3 {
+                        inertia_arr[i][j] += added[i][j];
+                    }
+                }
+            }
+
+            let inertia = Mat3F32::from_arr(inertia_arr);
+            let (eigvecs, eigvals) = inertia.eigen_vecs_vals();
+            let sample_angular_momentum = |rng: &mut ThreadRng, moment: f32| {
+                let n: f32 = rng.sample(StandardNormal);
+                n * (k_t * moment.max(0.0)).sqrt()
+            };
+            let angular_momentum_principal = Vec3::new(
+                sample_angular_momentum(&mut self.barostat.rng, eigvals.x),
+                sample_angular_momentum(&mut self.barostat.rng, eigvals.y),
+                sample_angular_momentum(&mut self.barostat.rng, eigvals.z),
+            );
+            let omega = inertia.solve_system(eigvecs * angular_momentum_principal);
+            let v_com = sample_normal_vec(&mut self.barostat.rng, (k_t / mass_total).sqrt());
+
+            water.o.vel = v_com + omega.cross(r_o);
+            water.h0.vel = v_com + omega.cross(r_h0);
+            water.h1.vel = v_com + omega.cross(r_h1);
+            water.update_virtual_site();
+        }
+
+        if matches!(
+            self.cfg.hydrogen_constraint,
+            HydrogenConstraint::Shake { shake_tolerance: _ } | HydrogenConstraint::Linear { .. }
+        ) {
+            self.rattle_hydrogens();
+        }
+
+        if zero_com_drift {
+            self.zero_linear_momentum();
+        }
+
+        self.kinetic_energy = self.measure_kinetic_energy();
+        let measured_k = self.measure_temperature();
+        if !measured_k.is_finite() || measured_k <= 0.0 {
+            return;
+        }
+
+        let lambda = (target_k as f64 / measured_k).sqrt() as f32;
+        for atom in &mut self.atoms {
+            if !atom.static_ {
+                atom.vel *= lambda;
+            }
+        }
+        for water in &mut self.water {
+            water.o.vel *= lambda;
+            water.h0.vel *= lambda;
+            water.h1.vel *= lambda;
+            water.update_virtual_site();
+        }
+
+        self.kinetic_energy = self.measure_kinetic_energy();
     }
 
     /// Used in temperature computation. Constraints tracked are Hydrogen if constrained, COM drift removal,

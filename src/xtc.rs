@@ -9,7 +9,7 @@ use std::path::Path;
 use lin_alg::f32::Vec3;
 use xdrfile::{Frame, Trajectory, XTCTrajectory};
 
-use crate::snapshot::Snapshot;
+use crate::{barostat::SimBox, snapshot::Snapshot};
 
 pub const NM_PER_ANGSTROM: f32 = 0.1;
 pub const ANGSTROM_PER_NM: f32 = 10.0;
@@ -47,6 +47,45 @@ fn fill_frame_coords(frame: &mut Frame, s: &Snapshot, write_water: bool, coord_s
 
 fn default_box_vector() -> [[f32; 3]; 3] {
     [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+}
+
+fn snapshot_box_vector(s: &Snapshot, coord_scale: f32) -> [[f32; 3]; 3] {
+    let Some(cell) = s.cell else {
+        return default_box_vector();
+    };
+
+    [
+        [cell.extent.x * coord_scale, 0.0, 0.0],
+        [0.0, cell.extent.y * coord_scale, 0.0],
+        [0.0, 0.0, cell.extent.z * coord_scale],
+    ]
+}
+
+fn cell_from_box_vector(box_vector: [[f32; 3]; 3], coord_unscale: f32) -> Option<SimBox> {
+    if !coord_unscale.is_finite() {
+        return None;
+    }
+
+    let extent = Vec3::new(
+        Vec3::new(box_vector[0][0], box_vector[0][1], box_vector[0][2]).magnitude()
+            * coord_unscale,
+        Vec3::new(box_vector[1][0], box_vector[1][1], box_vector[1][2]).magnitude()
+            * coord_unscale,
+        Vec3::new(box_vector[2][0], box_vector[2][1], box_vector[2][2]).magnitude()
+            * coord_unscale,
+    );
+
+    if extent.x.is_finite()
+        && extent.y.is_finite()
+        && extent.z.is_finite()
+        && extent.x > 0.0
+        && extent.y > 0.0
+        && extent.z > 0.0
+    {
+        Some(SimBox::new(Vec3::new_zero(), extent))
+    } else {
+        None
+    }
 }
 
 /// Create or append snapshots to an XTC file.
@@ -97,11 +136,11 @@ pub fn append_xtc_scaled(
     };
 
     let mut frame = Frame::with_len(n_atoms);
-    frame.box_vector = default_box_vector();
 
     for (i, s) in snapshots.iter().enumerate() {
         frame.step = i;
         frame.time = s.time as f32;
+        frame.box_vector = snapshot_box_vector(s, coord_scale);
         fill_frame_coords(&mut frame, s, write_water, coord_scale);
         trj.write(&frame).map_err(xdr_to_io)?;
     }
@@ -143,6 +182,7 @@ pub fn load_xtc_scaled(path: &Path, coord_unscale: f32) -> io::Result<Vec<Snapsh
         out.push(Snapshot {
             time: frame.time as f64,
             atom_posits,
+            cell: cell_from_box_vector(frame.box_vector, coord_unscale),
             ..Default::default()
         });
     }

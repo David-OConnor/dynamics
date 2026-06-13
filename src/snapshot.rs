@@ -126,6 +126,7 @@ pub struct Snapshot {
     pub atom_posits: Vec<Vec3>,
     pub atom_velocities: Option<Vec<Vec3>>,
     pub energy_data: Option<SnapshotEnergyData>,
+    pub cell: Option<SimBox>,
     pub water_o_posits: Vec<Vec3>,
     pub water_h0_posits: Vec<Vec3>,
     pub water_h1_posits: Vec<Vec3>,
@@ -158,6 +159,7 @@ impl Snapshot {
             // Keep trajectory/output coordinates in the primary unit cell so playback matches
             // GROMACS-style PBC visualization even though the force path already uses PBC.
             atom_posits: Self::wrap_atom_posits(&state.cell, state.atoms.iter().map(|a| a.posit)),
+            cell: Some(state.cell),
             water_o_posits,
             water_h0_posits,
             water_h1_posits,
@@ -289,6 +291,7 @@ impl Snapshot {
     }
 
     pub fn to_dcd(&self, cell: &SimBox, write_water: bool) -> DcdFrame {
+        let cell = self.cell.as_ref().unwrap_or(cell);
         let mut atom_posits = Self::wrap_atom_posits(cell, self.atom_posits.iter().copied());
 
         if write_water {
@@ -361,6 +364,7 @@ impl From<GromacsFrame> for Snapshot {
             atom_posits,
             atom_velocities,
             energy_data: frame.energy.map(SnapshotEnergyData::from),
+            cell: None,
             water_o_posits: Vec::new(),
             water_h0_posits: Vec::new(),
             water_h1_posits: Vec::new(),
@@ -394,6 +398,10 @@ impl From<DcdFrame> for Snapshot {
             atom_posits: frame.atom_posits,
             atom_velocities: None,
             energy_data: None,
+            cell: Some(SimBox::new(
+                frame.unit_cell.bounds_low,
+                frame.unit_cell.bounds_high,
+            )),
             water_o_posits: Vec::new(),
             water_h0_posits: Vec::new(),
             water_h1_posits: Vec::new(),
