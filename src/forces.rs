@@ -9,8 +9,10 @@ use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 /// This variant also computes energy.
 pub fn force_e_lj(dir: Vec3, inv_dist: f32, sigma: f32, eps: f32) -> (Vec3, f32) {
     let sr = sigma * inv_dist;
-    let sr6 = sr.powi(6);
-    let sr12 = sr6.powi(2);
+    let sr2 = sr * sr;
+    let sr4 = sr2 * sr2;
+    let sr6 = sr4 * sr2;
+    let sr12 = sr6 * sr6;
 
     let mag = 24. * eps * 2.0f32.mul_add(sr12, -sr6) * inv_dist;
 

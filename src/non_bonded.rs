@@ -274,13 +274,9 @@ fn calc_force_cpu(
     let n_wat = water.len();
     let n_mol = mol_start_indices.len();
 
-    // Map flattened atom index -> molecule index. We use this for assigning per-molecule-pair
-    // potential energy.
-    let find_mol_idx = |atom_idx: usize, starts: &[usize]| -> usize {
-        starts
-            .binary_search(&atom_idx)
-            .unwrap_or_else(|pos| if pos == 0 { 0 } else { pos - 1 })
-    };
+    // Map atom -> molecule once. The previous implementation binary-searched
+    // molecule starts twice for every non-water pair in the hot force loop.
+    let atom_to_mol = atom_to_mol_indices(n_std, mol_start_indices);
 
     pairs
         .par_iter()
@@ -352,8 +348,8 @@ fn calc_force_cpu(
                 // todo: QC this!
                 // Experimenting with per-mol potential energy.
                 if let (BodyRef::NonWater(i_tgt), BodyRef::NonWater(i_src)) = (p.tgt, p.src) {
-                    let m_t = find_mol_idx(i_tgt, mol_start_indices);
-                    let m_s = find_mol_idx(i_src, mol_start_indices);
+                    let m_t = atom_to_mol[i_tgt];
+                    let m_s = atom_to_mol[i_src];
                     let idx_ts = m_t * n_mol + m_s;
                     energy_between_mols[idx_ts] += e_pair as f64;
 

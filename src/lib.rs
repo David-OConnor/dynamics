@@ -1079,8 +1079,6 @@ impl MdState {
                 alchemical: module
                     .load_function("nonbonded_force_alchemical_kernel")
                     .unwrap(),
-                zero_f32: module.load_function("zero_f32").unwrap(),
-                zero_f64: module.load_function("zero_f64").unwrap(),
             });
 
             result.forces_posits_gpu = Some(ForcesPositsGpu::new(

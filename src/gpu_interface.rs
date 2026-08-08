@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{mem::size_of, sync::Arc};
 
-use cudarc::driver::{CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
-use lin_alg::{
-    f32::{Vec3, vec3s_from_dev},
-    f64::Vec3 as Vec3F64,
+use cudarc::driver::{
+    CudaFunction, CudaSlice, CudaStream, DeviceRepr, HostSlice, LaunchConfig, PushKernelArg,
+    SyncOnDrop, result,
 };
+use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 
 use crate::{
     AtomDynamics, ForcesOnWaterMol, MdOverrides,
@@ -12,11 +12,68 @@ use crate::{
     solvent::{WaterMolOpc, WaterSite},
 };
 
+/// Page-locked host memory without the write-combined flag used by cudarc's
+/// `PinnedHostSlice`. Write-combined memory is ideal for H2D staging but very
+/// slow for the CPU reads required after D2H force copies.
+struct PinnedBuffer<T: DeviceRepr> {
+    ptr: *mut T,
+    len: usize,
+    stream: Arc<CudaStream>,
+}
+
+unsafe impl<T: DeviceRepr> Send for PinnedBuffer<T> {}
+unsafe impl<T: DeviceRepr> Sync for PinnedBuffer<T> {}
+
+impl<T: DeviceRepr> PinnedBuffer<T> {
+    fn new(stream: &Arc<CudaStream>, len: usize) -> Self {
+        let ptr = unsafe { result::malloc_host(len * size_of::<T>(), 0).unwrap() } as *mut T;
+        assert!(!ptr.is_null());
+        Self {
+            ptr,
+            len,
+            stream: stream.clone(),
+        }
+    }
+
+    fn as_slice(&self) -> &[T] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl<T: DeviceRepr> Drop for PinnedBuffer<T> {
+    fn drop(&mut self) {
+        let _ = self.stream.synchronize();
+        let _ = unsafe { result::free_host(self.ptr.cast()) };
+    }
+}
+
+impl<T: DeviceRepr> HostSlice<T> for PinnedBuffer<T> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    unsafe fn stream_synced_slice<'a>(
+        &'a self,
+        _stream: &'a CudaStream,
+    ) -> (&'a [T], SyncOnDrop<'a>) {
+        (self.as_slice(), SyncOnDrop::Sync(None))
+    }
+
+    unsafe fn stream_synced_mut_slice<'a>(
+        &'a mut self,
+        _stream: &'a CudaStream,
+    ) -> (&'a mut [T], SyncOnDrop<'a>) {
+        (self.as_mut_slice(), SyncOnDrop::Sync(None))
+    }
+}
+
 pub(crate) struct GpuKernels {
     pub primary: CudaFunction, // Option only due to not impling Default.
     pub alchemical: CudaFunction,
-    pub zero_f32: CudaFunction,
-    pub zero_f64: CudaFunction,
 }
 
 /// Device buffers that persist across all steps. Mutated on the GPU.
@@ -43,6 +100,23 @@ pub(crate) struct ForcesPositsGpu {
     pub pos_w_m: CudaSlice<f32>,
     pub pos_w_h0: CudaSlice<f32>,
     pub pos_w_h1: CudaSlice<f32>,
+
+    // Reused page-locked host buffers. In addition to avoiding per-step heap
+    // allocations, pinned memory prevents cudarc from synchronizing after every
+    // individual H2D/D2H copy.
+    host_pos_dyn: PinnedBuffer<f32>,
+    host_pos_w_o: PinnedBuffer<f32>,
+    host_pos_w_m: PinnedBuffer<f32>,
+    host_pos_w_h0: PinnedBuffer<f32>,
+    host_pos_w_h1: PinnedBuffer<f32>,
+    host_forces_dyn: PinnedBuffer<f32>,
+    host_forces_w_o: PinnedBuffer<f32>,
+    host_forces_w_m: PinnedBuffer<f32>,
+    host_forces_w_h0: PinnedBuffer<f32>,
+    host_forces_w_h1: PinnedBuffer<f32>,
+    host_virial: PinnedBuffer<f64>,
+    host_energy: PinnedBuffer<f64>,
+    host_alch_dh_dl: PinnedBuffer<f64>,
 }
 
 impl ForcesPositsGpu {
@@ -53,22 +127,58 @@ impl ForcesPositsGpu {
         cutoff_ewald: f32,
         alpha_ewald: f32,
     ) -> Self {
+        // CUDA host/device allocation APIs do not accept zero-length allocations.
+        // Keep one unused element for systems with no solute or no water.
+        let n_dyn_storage = n_dyn.max(1);
+        let n_water_storage = n_water.max(1);
+
         // Set up empty device arrays the kernel will fill as output.
-        let forces_on_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
-        let forces_on_water_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
-        let forces_on_water_m = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
-        let forces_on_water_h0 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
-        let forces_on_water_h1 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let forces_on_dyn = stream.alloc_zeros::<f32>(n_dyn_storage * 3).unwrap();
+        let forces_on_water_o = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
+        let forces_on_water_m = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
+        let forces_on_water_h0 = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
+        let forces_on_water_h1 = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
 
         let virial_gpu = stream.clone_htod(&[0.0f64]).unwrap();
         let energy_gpu = stream.clone_htod(&[0.0f64]).unwrap();
         let alch_dh_dl_gpu = stream.clone_htod(&[0.0f64]).unwrap();
 
-        let pos_dyn = stream.alloc_zeros::<f32>(n_dyn * 3).unwrap();
-        let pos_w_o = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
-        let pos_w_m = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
-        let pos_w_h0 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
-        let pos_w_h1 = stream.alloc_zeros::<f32>(n_water * 3).unwrap();
+        let pos_dyn = stream.alloc_zeros::<f32>(n_dyn_storage * 3).unwrap();
+        let pos_w_o = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
+        let pos_w_m = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
+        let pos_w_h0 = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
+        let pos_w_h1 = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
+        let mut host_pos_dyn = PinnedBuffer::new(stream, n_dyn_storage * 3);
+        let mut host_pos_w_o = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_pos_w_m = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_pos_w_h0 = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_pos_w_h1 = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_forces_dyn = PinnedBuffer::new(stream, n_dyn_storage * 3);
+        let mut host_forces_w_o = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_forces_w_m = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_forces_w_h0 = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_forces_w_h1 = PinnedBuffer::new(stream, n_water_storage * 3);
+        let mut host_virial = PinnedBuffer::new(stream, 1);
+        let mut host_energy = PinnedBuffer::new(stream, 1);
+        let mut host_alch_dh_dl = PinnedBuffer::new(stream, 1);
+
+        for host in [
+            &mut host_pos_dyn,
+            &mut host_pos_w_o,
+            &mut host_pos_w_m,
+            &mut host_pos_w_h0,
+            &mut host_pos_w_h1,
+            &mut host_forces_dyn,
+            &mut host_forces_w_o,
+            &mut host_forces_w_m,
+            &mut host_forces_w_h0,
+            &mut host_forces_w_h1,
+        ] {
+            host.as_mut_slice().fill(0.0);
+        }
+        host_virial.as_mut_slice().fill(0.0);
+        host_energy.as_mut_slice().fill(0.0);
+        host_alch_dh_dl.as_mut_slice().fill(0.0);
 
         Self {
             forces_on_dyn,
@@ -87,6 +197,19 @@ impl ForcesPositsGpu {
             pos_w_m,
             pos_w_h0,
             pos_w_h1,
+            host_pos_dyn,
+            host_pos_w_o,
+            host_pos_w_m,
+            host_pos_w_h0,
+            host_pos_w_h1,
+            host_forces_dyn,
+            host_forces_w_o,
+            host_forces_w_m,
+            host_forces_w_h0,
+            host_forces_w_h1,
+            host_virial,
+            host_energy,
+            host_alch_dh_dl,
         }
     }
 }
@@ -294,33 +417,41 @@ fn upload_positions(
     atoms_dyn: &[AtomDynamics],
     water: &[WaterMolOpc],
 ) {
-    // pack to flat f32 arrays (x,y,z per atom)
-    let mut h_pos_dyn = Vec::with_capacity(atoms_dyn.len() * 3);
-    for a in atoms_dyn {
-        let [x, y, z] = a.posit.to_arr();
-        h_pos_dyn.extend_from_slice(&[x, y, z]);
+    {
+        let host = forces.host_pos_dyn.as_mut_slice();
+        for (dst, atom) in host.chunks_exact_mut(3).zip(atoms_dyn) {
+            dst.copy_from_slice(&atom.posit.to_arr());
+        }
+    }
+    {
+        let host_o = forces.host_pos_w_o.as_mut_slice();
+        let host_m = forces.host_pos_w_m.as_mut_slice();
+        let host_h0 = forces.host_pos_w_h0.as_mut_slice();
+        let host_h1 = forces.host_pos_w_h1.as_mut_slice();
+        for (i, molecule) in water.iter().enumerate() {
+            let offset = 3 * i;
+            host_o[offset..offset + 3].copy_from_slice(&molecule.o.posit.to_arr());
+            host_m[offset..offset + 3].copy_from_slice(&molecule.m.posit.to_arr());
+            host_h0[offset..offset + 3].copy_from_slice(&molecule.h0.posit.to_arr());
+            host_h1[offset..offset + 3].copy_from_slice(&molecule.h1.posit.to_arr());
+        }
     }
 
-    let mut h_pos_o = Vec::with_capacity(water.len() * 3);
-    let mut h_pos_m = Vec::with_capacity(water.len() * 3);
-    let mut h_pos_h0 = Vec::with_capacity(water.len() * 3);
-    let mut h_pos_h1 = Vec::with_capacity(water.len() * 3);
-
-    for w in water {
-        h_pos_o.extend_from_slice(&w.o.posit.to_arr());
-        h_pos_m.extend_from_slice(&w.m.posit.to_arr());
-        h_pos_h0.extend_from_slice(&w.h0.posit.to_arr());
-        h_pos_h1.extend_from_slice(&w.h1.posit.to_arr());
-    }
-
-    // `htod` here, as opposted to `stod`, copies into an existing array, instead of allocating
-    // a new one.
-    // Copy into existing device buffers (avoid reallocating)
-    stream.memcpy_htod(&h_pos_dyn, &mut forces.pos_dyn).unwrap();
-    stream.memcpy_htod(&h_pos_o, &mut forces.pos_w_o).unwrap();
-    stream.memcpy_htod(&h_pos_m, &mut forces.pos_w_m).unwrap();
-    stream.memcpy_htod(&h_pos_h0, &mut forces.pos_w_h0).unwrap();
-    stream.memcpy_htod(&h_pos_h1, &mut forces.pos_w_h1).unwrap();
+    stream
+        .memcpy_htod(&forces.host_pos_dyn, &mut forces.pos_dyn)
+        .unwrap();
+    stream
+        .memcpy_htod(&forces.host_pos_w_o, &mut forces.pos_w_o)
+        .unwrap();
+    stream
+        .memcpy_htod(&forces.host_pos_w_m, &mut forces.pos_w_m)
+        .unwrap();
+    stream
+        .memcpy_htod(&forces.host_pos_w_h0, &mut forces.pos_w_h0)
+        .unwrap();
+    stream
+        .memcpy_htod(&forces.host_pos_w_h1, &mut forces.pos_w_h1)
+        .unwrap();
 }
 
 /// Handles both LJ, and Coulomb (SPME short range) force using a shared kernel. Run this every step.
@@ -346,14 +477,7 @@ pub fn force_nonbonded_gpu(
 
     let n = pairs.len();
 
-    zero_forces_and_accums(
-        stream,
-        &kernels.zero_f32,
-        &kernels.zero_f64,
-        forces,
-        atoms_dyn.len(),
-        water.len(),
-    );
+    zero_forces_and_accums(stream, forces);
 
     // 1-4 scaling, and the symmetric case handled in the kernel.
     // Store immutable input arrays to the device.
@@ -363,6 +487,11 @@ pub fn force_nonbonded_gpu(
     let lj_disabled = overrides.lj_disabled as u8;
     let alchemical_enabled = per_neighbor.has_alchemical_interactions;
     let lambda_alch = lambda_alch as f32;
+    let cell_inv_extent = Vec3::new(
+        cell_extent.x.recip(),
+        cell_extent.y.recip(),
+        cell_extent.z.recip(),
+    );
 
     let cfg = LaunchConfig::for_num_elems(n_u32);
     let kernel_to_launch = if alchemical_enabled {
@@ -414,6 +543,7 @@ pub fn force_nonbonded_gpu(
     }
 
     launch_args.arg(&cell_extent);
+    launch_args.arg(&cell_inv_extent);
     launch_args.arg(&forces.cutoff_ewald);
     launch_args.arg(&forces.alpha_ewald);
     launch_args.arg(&n_u32);
@@ -433,38 +563,63 @@ pub fn force_nonbonded_gpu(
         }
     }
 
-    // todo: Consider dtoh; passing to an existing vec instead of re-allocating?
-    let forces_on_dyn = vec3s_from_dev(stream, &forces.forces_on_dyn);
+    // Queue every result copy into persistent pinned buffers. Reading the final
+    // scalar waits for the whole ordered stream once; the earlier copies then
+    // require no additional device synchronization.
+    stream
+        .memcpy_dtoh(&forces.forces_on_dyn, &mut forces.host_forces_dyn)
+        .unwrap();
+    stream
+        .memcpy_dtoh(&forces.forces_on_water_o, &mut forces.host_forces_w_o)
+        .unwrap();
+    stream
+        .memcpy_dtoh(&forces.forces_on_water_m, &mut forces.host_forces_w_m)
+        .unwrap();
+    stream
+        .memcpy_dtoh(&forces.forces_on_water_h0, &mut forces.host_forces_w_h0)
+        .unwrap();
+    stream
+        .memcpy_dtoh(&forces.forces_on_water_h1, &mut forces.host_forces_w_h1)
+        .unwrap();
+    stream
+        .memcpy_dtoh(&forces.virial_gpu, &mut forces.host_virial)
+        .unwrap();
+    stream
+        .memcpy_dtoh(&forces.energy_gpu, &mut forces.host_energy)
+        .unwrap();
+    stream
+        .memcpy_dtoh(&forces.alch_dh_dl_gpu, &mut forces.host_alch_dh_dl)
+        .unwrap();
 
-    let forces_on_water_o = vec3s_from_dev(stream, &forces.forces_on_water_o);
-    let forces_on_water_m = vec3s_from_dev(stream, &forces.forces_on_water_m);
-    let forces_on_water_h0 = vec3s_from_dev(stream, &forces.forces_on_water_h0);
-    let forces_on_water_h1 = vec3s_from_dev(stream, &forces.forces_on_water_h1);
+    stream.synchronize().unwrap();
+    let alch_value = forces.host_alch_dh_dl.as_slice()[0];
+    let forces_dyn_host = forces.host_forces_dyn.as_slice();
+    let forces_o_host = forces.host_forces_w_o.as_slice();
+    let forces_m_host = forces.host_forces_w_m.as_slice();
+    let forces_h0_host = forces.host_forces_w_h0.as_slice();
+    let forces_h1_host = forces.host_forces_w_h1.as_slice();
 
-    let mut forces_on_water = Vec::new();
+    let forces_on_dyn = forces_dyn_host
+        .chunks_exact(3)
+        .map(|f| Vec3F64::new(f[0] as f64, f[1] as f64, f[2] as f64))
+        .collect();
+
+    let mut forces_on_water = Vec::with_capacity(water.len());
     for i in 0..water.len() {
-        let f_o = forces_on_water_o[i].into();
-        let f_m = forces_on_water_m[i].into();
-        let f_h0 = forces_on_water_h0[i].into();
-        let f_h1 = forces_on_water_h1[i].into();
-
+        let offset = 3 * i;
+        let to_f64 =
+            |f: &[f32]| Vec3F64::new(f[offset] as f64, f[offset + 1] as f64, f[offset + 2] as f64);
         forces_on_water.push(ForcesOnWaterMol {
-            f_o,
-            f_m,
-            f_h0,
-            f_h1,
+            f_o: to_f64(forces_o_host),
+            f_m: to_f64(forces_m_host),
+            f_h0: to_f64(forces_h0_host),
+            f_h1: to_f64(forces_h1_host),
         });
     }
 
-    let virial = stream.clone_dtoh(&forces.virial_gpu).unwrap()[0];
-    let energy = stream.clone_dtoh(&forces.energy_gpu).unwrap()[0];
-    let alch_dh_dl = if alchemical_enabled {
-        stream.clone_dtoh(&forces.alch_dh_dl_gpu).unwrap()[0]
-    } else {
-        0.0
-    };
-
-    let forces_on_dyn = forces_on_dyn.into_iter().map(|f| f.into()).collect();
+    let virial = forces.host_virial.as_slice()[0];
+    let energy = forces.host_energy.as_slice()[0];
+    let alch_dh_dl = if alchemical_enabled { alch_value } else { 0.0 };
 
     (
         forces_on_dyn,
@@ -477,70 +632,14 @@ pub fn force_nonbonded_gpu(
 }
 
 /// Zero forces and accumulators on the device. Run this each step.
-fn zero_forces_and_accums(
-    stream: &Arc<CudaStream>,
-    zero_f32: &CudaFunction,
-    zero_f64: &CudaFunction,
-    forces: &mut ForcesPositsGpu,
-    n_non_water: usize,
-    n_water: usize,
-) {
-    // Non-solvent atoms: 3 floats per atom
-    let std_len_u32 = (n_non_water * 3) as u32;
-
-    // If 0, we get a panic when launching.
-    if std_len_u32 > 0 {
-        let cfg_dyn = LaunchConfig::for_num_elems(std_len_u32);
-        let mut l0 = stream.launch_builder(&zero_f32);
-
-        l0.arg(&mut forces.forces_on_dyn);
-        l0.arg(&std_len_u32);
-        unsafe { l0.launch(cfg_dyn) }.unwrap();
-    }
-
-    // solvent arrays: 3 floats per molecule for each site-buffer
-    let wat_len_u32 = (n_water * 3) as u32;
-
-    if wat_len_u32 > 0 {
-        let cfg_w = LaunchConfig::for_num_elems(wat_len_u32);
-
-        let mut l1 = stream.launch_builder(&zero_f32);
-        l1.arg(&mut forces.forces_on_water_o);
-        l1.arg(&wat_len_u32);
-        unsafe { l1.launch(cfg_w) }.unwrap();
-
-        let mut l2 = stream.launch_builder(&zero_f32);
-        l2.arg(&mut forces.forces_on_water_m);
-        l2.arg(&wat_len_u32);
-        unsafe { l2.launch(cfg_w) }.unwrap();
-
-        let mut l3 = stream.launch_builder(&zero_f32);
-        l3.arg(&mut forces.forces_on_water_h0);
-        l3.arg(&wat_len_u32);
-        unsafe { l3.launch(cfg_w) }.unwrap();
-
-        let mut l4 = stream.launch_builder(&zero_f32);
-        l4.arg(&mut forces.forces_on_water_h1);
-        l4.arg(&wat_len_u32);
-        unsafe { l4.launch(cfg_w) }.unwrap();
-    }
-
-    // scalars
-    let one: u32 = 1;
-    let cfg1 = LaunchConfig::for_num_elems(1);
-
-    let mut l5 = stream.launch_builder(&zero_f64);
-    l5.arg(&mut forces.virial_gpu);
-    l5.arg(&one);
-    unsafe { l5.launch(cfg1) }.unwrap();
-
-    let mut l6 = stream.launch_builder(&zero_f64);
-    l6.arg(&mut forces.energy_gpu);
-    l6.arg(&one);
-    unsafe { l6.launch(cfg1) }.unwrap();
-
-    let mut l7 = stream.launch_builder(&zero_f64);
-    l7.arg(&mut forces.alch_dh_dl_gpu);
-    l7.arg(&one);
-    unsafe { l7.launch(cfg1) }.unwrap();
+fn zero_forces_and_accums(stream: &Arc<CudaStream>, forces: &mut ForcesPositsGpu) {
+    // Driver-level async memsets avoid eight kernel launches per MD step.
+    stream.memset_zeros(&mut forces.forces_on_dyn).unwrap();
+    stream.memset_zeros(&mut forces.forces_on_water_o).unwrap();
+    stream.memset_zeros(&mut forces.forces_on_water_m).unwrap();
+    stream.memset_zeros(&mut forces.forces_on_water_h0).unwrap();
+    stream.memset_zeros(&mut forces.forces_on_water_h1).unwrap();
+    stream.memset_zeros(&mut forces.virial_gpu).unwrap();
+    stream.memset_zeros(&mut forces.energy_gpu).unwrap();
+    stream.memset_zeros(&mut forces.alch_dh_dl_gpu).unwrap();
 }

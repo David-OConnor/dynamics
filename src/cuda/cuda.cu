@@ -126,7 +126,9 @@ ForceEnergyDhdl lj_force_soft_core_decouple(
     const float hard_energy = 4.0f * eps * (sr12 - sr6);
 
     const float r = sqrtf(r_sq);
-    const float force_softening = powf(r * inv_r_sc, 5.0f);
+    const float r_ratio = r * inv_r_sc;
+    const float r_ratio2 = r_ratio * r_ratio;
+    const float force_softening = r_ratio2 * r_ratio2 * r_ratio;
     result.force = dir * (hard_force_mag * scale * force_softening);
     result.energy = hard_energy * scale;
 
@@ -220,6 +222,7 @@ void nonbonded_force_kernel(
     const uint8_t* symmetric,
     // Non-array inputs
     float3 cell_extent,
+    float3 cell_inv_extent,
     float cutoff_ewald,
     float alpha_ewald,
     uint32_t N,
@@ -251,7 +254,7 @@ void nonbonded_force_kernel(
         const uint8_t scale_14 = scale_14s[i];
 
         float3 diff = posit_tgt - posit_src;
-        diff = min_image(cell_extent, diff);
+        diff = min_image(cell_extent, cell_inv_extent, diff);
 
         // We set up r and its variants like this to share between the Coulomb and LJ
         // functions.
@@ -402,6 +405,7 @@ void nonbonded_force_alchemical_kernel(
     const uint8_t* alch_interactions,
     // Non-array inputs
     float3 cell_extent,
+    float3 cell_inv_extent,
     float cutoff_ewald,
     float alpha_ewald,
     uint32_t N,
@@ -438,7 +442,7 @@ void nonbonded_force_alchemical_kernel(
         const uint8_t is_alchemical = alch_interactions[i];
 
         float3 diff = posit_tgt - posit_src;
-        diff = min_image(cell_extent, diff);
+        diff = min_image(cell_extent, cell_inv_extent, diff);
 
         const float r_sq = diff.x * diff.x + diff.y * diff.y + diff.z * diff.z;
         if (r_sq < 1e-16f) {

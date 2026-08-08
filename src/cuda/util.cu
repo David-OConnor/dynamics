@@ -37,16 +37,6 @@ __device__ inline float3 operator*(const float3 &a, const float b) {
     return make_float3(a.x * b, a.y * b, a.z * b);
 }
 
-extern "C" __global__ void zero_f32(float* __restrict__ x, unsigned int n) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) x[i] = 0.0f;
-}
-
-extern "C" __global__ void zero_f64(double* __restrict__ x, unsigned int n) {
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) x[i] = 0.0;
-}
-
 // For returning both from a function.
 struct ForceEnergy {
     float3 force;
@@ -60,10 +50,10 @@ __device__ __forceinline__ void atomicAddFloat3(float3* addr, const float3 v) {
     atomicAdd(&addr->z, v.z);
 }
 
-__device__ inline float3 min_image(float3 ext, float3 dv) {
-    dv.x -= rintf(dv.x / ext.x) * ext.x;
-    dv.y -= rintf(dv.y / ext.y) * ext.y;
-    dv.z -= rintf(dv.z / ext.z) * ext.z;
+__device__ __forceinline__ float3 min_image(float3 ext, float3 inv_ext, float3 dv) {
+    dv.x -= rintf(dv.x * inv_ext.x) * ext.x;
+    dv.y -= rintf(dv.y * inv_ext.y) * ext.y;
+    dv.z -= rintf(dv.z * inv_ext.z) * ext.z;
 
     return dv;
 }
