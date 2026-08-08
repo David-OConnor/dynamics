@@ -1,17 +1,14 @@
 //! Taken from molchanica. Shows how to bind application-specific data structures to
 //! this library's API.
 
-use std::{
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{path::Path, time::Instant};
 
-use bio_files::{MmCif, Mol2, Sdf, create_bonds, md_params::ForceFieldParams};
+use bio_files::{MmCif, Sdf, create_bonds, md_params::ForceFieldParams};
 use dynamics::{
-    ComputationDevice, FfMolType, HydrogenConstraint, Integrator, MdConfig, MdState, MolDynamics,
-    ParamError, SimBoxInit,
+    BarostatCfg, ComputationDevice, FfMolType, HydrogenConstraint, Integrator, MdConfig, MdState,
+    MolDynamics, ParamError, SimBoxInit,
     params::{FfParamSet, prepare_peptide_mmcif},
-    snapshot::{SaveType, Snapshot, SnapshotHandler},
+    snapshot::{Snapshot, SnapshotHandlers},
 };
 use lin_alg::f64::Vec3;
 
@@ -86,7 +83,7 @@ pub fn build_dynamics(
     // See also: `MolDynamics::from_sdf()`, `::from_mol2()`, and `::from_amber_geostd("CPB")`
 
     println!("Initializing MD state...");
-    let mut md_state = MdState::new(dev, cfg, &mols, param_set)?;
+    let (mut md_state, _) = MdState::new(dev, cfg, &mols, param_set)?;
     println!("Done.");
 
     let start = Instant::now();
@@ -162,25 +159,23 @@ fn main() {
         // Kelvin. Defaults to 310 K.
         temp_target: 310.,
         // Bar (Pa/100). Defaults to 1 bar.
-        pressure_target: 1.,
+        barostat_cfg: Some(BarostatCfg {
+            pressure_target: 1.,
+            ..Default::default()
+        }),
         // Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
         // algorithms. This allows for higher time steps.
-        hydrogen_constraint: HydrogenConstraint::Constrained,
+        hydrogen_constraint: HydrogenConstraint::Linear { order: 4, iter: 1 },
         // Deafults to in-memory, every step
-        snapshot_handlers: vec![
-            SnapshotHandler {
-                save_type: SaveType::Memory,
-                ratio: 1,
-            },
-            SnapshotHandler {
-                save_type: SaveType::Dcd(PathBuf::from("output.dcd")),
-                ratio: 10,
-            },
-        ],
+        snapshot_handlers: SnapshotHandlers {
+            memory: Some(1),
+            dcd: Some(10),
+            ..Default::default()
+        },
         // Or sim_box: SimBoxInit::Fixed((Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.)),
         sim_box: SimBoxInit::Pad(10.),
         ..Default::default()
     };
 
-    let mut md = build_dynamics(&dev, vec![&mut mol], &protein, &param_set, &cfg, 100, 0.001);
+    let _md = build_dynamics(&dev, vec![&mut mol], &protein, &param_set, &cfg, 100, 0.001);
 }

@@ -1,11 +1,10 @@
 //! An MD sim which can be used for tests. Copy + paste + modify from `molchanica`.
+#![allow(dead_code)]
 
 #[cfg(feature = "cuda")]
 use cudarc::driver::CudaContext;
 
-use crate::{
-    ComputationDevice, MdConfig, MdState, MolDynamics, ParamError, SimBoxInit, params::FfParamSet,
-};
+use crate::{ComputationDevice, MdConfig, MdState, MolDynamics, ParamError, params::FfParamSet};
 
 pub(in crate::tests) fn build_dynamics(
     mols: Vec<MolDynamics>,
@@ -27,15 +26,8 @@ pub(in crate::tests) fn build_dynamics(
     #[cfg(not(feature = "cuda"))]
     let dev = ComputationDevice::Cpu; // todo: For now.
 
-    // Extract explicit box side-lengths so add_copies can keep molecules inside the boundary.
-    // Only meaningful for Fixed boxes; Pad boxes are sized after molecule placement so we skip them.
-    let box_dims = match &cfg.sim_box {
-        SimBoxInit::Fixed((lo, hi)) => Some((hi.x - lo.x, hi.y - lo.y, hi.z - lo.z)),
-        SimBoxInit::Pad(_) => None,
-    };
-
     println!("Initializing MD state...");
-    let md_state = MdState::new(&dev, &cfg, &mols, param_set)?;
+    let (md_state, _) = MdState::new(&dev, &cfg, &mols, param_set)?;
     println!("MD init done.");
 
     Ok(md_state)

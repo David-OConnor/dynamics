@@ -6,13 +6,15 @@ use lin_alg::f32::Vec3;
 use na_seq::Element;
 
 use crate::{
-    ComputationDevice, FfMolType, MdConfig, MdOverrides, MdState, MolDynamics, SimBoxInit,
+    ComputationDevice, FfMolType, Integrator, MdConfig, MdOverrides, MdState, MolDynamics,
+    SimBoxInit, Solvent,
     forces::force_e_lj,
-    non_bonded::{CHARGE_UNIT_SCALER, LONG_RANGE_CUTOFF, alchemical_lj_soft_core_decouple},
+    non_bonded::{CHARGE_UNIT_SCALER, alchemical_lj_soft_core_decouple},
     params::FfParamSet,
 };
 
 const EWALD_ALPHA: f32 = 0.35;
+const COULOMB_CUTOFF: f32 = 10.0;
 
 /// Build two test "ca" carbons positioned symmetrically around (30, 30, 30) in a 60 Å box.
 /// The atoms are given distinct serial numbers so that bonds can refer to them.
@@ -74,11 +76,12 @@ fn test_forces_general_on_pair() {
     // 60 Å box: large enough for SPME (> 2*(cutoff+skin) = 32 Å on each side).
     // Atoms are placed near the centre so they are well inside the box.
     let cfg = MdConfig {
+        integrator: Integrator::VerletVelocity { thermostat: None },
         sim_box: SimBoxInit::Fixed((Vec3::new(0., 0., 0.), Vec3::new(60., 60., 60.))),
+        solvent: Solvent::None,
+        barostat_cfg: None,
         overrides: MdOverrides {
-            skip_solvent: true,
-            thermo_disabled: true,
-            baro_disabled: true,
+            skip_counterion_insertion: true,
             ..Default::default()
         },
         max_init_relaxation_iters: None,
@@ -118,7 +121,7 @@ fn test_forces_general_on_pair() {
         };
 
         println!("Initializing MD state for dist={dist:.1} Å…");
-        let mut md = MdState::new(&dev, &cfg, &[mol_a, mol_b], &param_set).unwrap();
+        let (mut md, _) = MdState::new(&dev, &cfg, &[mol_a, mol_b], &param_set).unwrap();
 
         // One step: computes all forces (bonded + LJ + Coulomb SR + SPME).
         md.step(&dev, 0.001, None);
@@ -374,7 +377,7 @@ fn test_alchemical_lj_soft_core_overlap_is_finite() {
 #[test]
 fn test_coulomb_short_range_force_energy_consistency() {
     let alpha = EWALD_ALPHA;
-    let cutoff = LONG_RANGE_CUTOFF;
+    let cutoff = COULOMB_CUTOFF;
     let delta = 0.001_f32; // Å
 
     let charge_pairs: [(f32, f32); 3] = [
@@ -424,7 +427,7 @@ fn test_coulomb_short_range_force_energy_consistency() {
 #[test]
 fn test_coulomb_short_range_direction() {
     let alpha = EWALD_ALPHA;
-    let cutoff = LONG_RANGE_CUTOFF;
+    let cutoff = COULOMB_CUTOFF;
     // dir = (r_tgt − r_src) / |...|; tgt is to the right of src.
     let dir = Vec3::new(1.0, 0.0, 0.0);
     let q = CHARGE_UNIT_SCALER; // +1 e in Amber units
@@ -462,7 +465,7 @@ fn test_coulomb_short_range_direction() {
 #[test]
 fn test_coulomb_short_range_newton3() {
     let alpha = EWALD_ALPHA;
-    let cutoff = LONG_RANGE_CUTOFF;
+    let cutoff = COULOMB_CUTOFF;
     let dir = Vec3::new(1.0, 0.0, 0.0);
     let q = CHARGE_UNIT_SCALER;
 
@@ -489,12 +492,8 @@ fn test_coulomb_short_range_cutoff() {
     let dir = Vec3::new(1.0, 0.0, 0.0);
     let q = CHARGE_UNIT_SCALER;
 
-    for r in [
-        LONG_RANGE_CUTOFF,
-        LONG_RANGE_CUTOFF + 0.5,
-        LONG_RANGE_CUTOFF + 2.0,
-    ] {
-        let (f, e) = force_coulomb_short_range(dir, r, 1.0 / r, q, -q, LONG_RANGE_CUTOFF, alpha);
+    for r in [COULOMB_CUTOFF, COULOMB_CUTOFF + 0.5, COULOMB_CUTOFF + 2.0] {
+        let (f, e) = force_coulomb_short_range(dir, r, 1.0 / r, q, -q, COULOMB_CUTOFF, alpha);
         assert_eq!(
             f.magnitude_squared(),
             0.0,

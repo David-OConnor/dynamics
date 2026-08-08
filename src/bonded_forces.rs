@@ -19,14 +19,15 @@ pub fn f_bond_stretching(
 
     let r_delta = r_meas - params.r_0;
 
-    // Pre-scaled by 2 when building the Indexed params.
-    let term_1 = 2. * params.k_b * r_delta; // Shared bewteen force and energy.
+    // Derivative of the Amber harmonic potential k_b * (r - r_0)^2.
+    let term_1 = 2. * params.k_b * r_delta;
 
     // Unit check: kcal/mol/Å² * Å² = kcal/mol. (Energy).
     let f_mag = term_1 / r_meas.max(EPS);
 
-    // U = 2k_b x rΔ^2
-    let energy = term_1 * r_delta;
+    // Amber harmonic bond potential: U = k_b (r - r_0)^2.
+    // Its derivative is the 2*k_b*r_delta term used for the force above.
+    let energy = params.k_b * r_delta * r_delta;
 
     (diff * f_mag, energy)
 }
@@ -75,7 +76,9 @@ pub fn f_angle_bending(
     let f_1 = -(f_0 + f_2); // Newton's 3rd law
 
     let f = (f_0, f_1, f_2);
-    let energy = dV_dθ * Δθ;
+    // Amber harmonic angle potential: U = k (theta - theta_0)^2.
+    // `dV_dθ` already contains the factor of two needed by the force.
+    let energy = params.k * Δθ * Δθ;
 
     (f, energy)
 }

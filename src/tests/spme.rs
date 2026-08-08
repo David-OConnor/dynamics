@@ -16,12 +16,15 @@
 //! Run without features to test on CPU. Run `cargo test --features " cufft"` (or vkfft) to test
 //! on GPU. Test both.
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cufft", feature = "vkfft"))]
 use cudarc::driver::CudaContext;
 use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 use lin_alg::f32::Vec3;
 
-use crate::non_bonded::{CHARGE_UNIT_SCALER, EWALD_ALPHA, LONG_RANGE_CUTOFF};
+use crate::non_bonded::CHARGE_UNIT_SCALER;
+
+const EWALD_ALPHA: f32 = 0.35;
+const COULOMB_CUTOFF: f32 = 10.0;
 
 /// Electrostatic constant in Amber kcal/mol units: K = CHARGE_UNIT_SCALER².
 /// `E = K · q₁_e · q₂_e / r`  (charges in elementary units, r in Å → kcal/mol)
@@ -37,7 +40,7 @@ fn wrap_pos(p: Vec3, l: (f32, f32, f32)) -> Vec3 {
     Vec3::new(wrap1(p.x, l.0), wrap1(p.y, l.1), wrap1(p.z, l.2))
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cufft", feature = "vkfft"))]
 /// Build a PmeRecip with the given box and mesh spacing.
 /// Feature-gates match dynamics/src/non_bonded.rs.
 fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
@@ -50,7 +53,7 @@ fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
     PmeRecip::new(Some(&stream), dims, l, alpha)
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(any(feature = "cufft", feature = "vkfft")))]
 fn make_pme(l: (f32, f32, f32), alpha: f32, mesh_spacing: f32) -> PmeRecip {
     let dims = get_grid_n(l, mesh_spacing);
     PmeRecip::new(dims, l, alpha)
@@ -71,7 +74,7 @@ pub fn spme_pair_forces_energy(
     box_len: f32,
     alpha: f32,
 ) -> ((Vec3, Vec3, Vec3), (f32, f32, f32)) {
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cufft", feature = "vkfft"))]
     let stream = {
         let ctx = CudaContext::new(0).unwrap();
         ctx.default_stream()
@@ -95,7 +98,7 @@ pub fn spme_pair_forces_energy(
     let dir = diff * inv_dist;
 
     let (f_sr_1, e_sr) =
-        force_coulomb_short_range(dir, dist, inv_dist, q1, q2, LONG_RANGE_CUTOFF, alpha);
+        force_coulomb_short_range(dir, dist, inv_dist, q1, q2, COULOMB_CUTOFF, alpha);
 
     // Long-range forces
     let l = (box_len, box_len, box_len);
@@ -103,10 +106,10 @@ pub fn spme_pair_forces_energy(
     let pos = vec![wrap_pos(r1, l), wrap_pos(r2, l)];
     let q_arr = vec![q1, q2];
 
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cufft", feature = "vkfft"))]
     let (f_recip, e_lr) = pme.forces_gpu(&stream, &pos, &q_arr);
 
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
     let (f_recip, e_lr) = pme.forces(&pos, &q_arr);
 
     let e_total = e_sr + e_lr;
@@ -286,9 +289,9 @@ fn test_spme_force_newton3() {
         let inv_d = 1.0 / dist;
         let dir = diff * inv_d;
         let (f_sr_1, _) =
-            force_coulomb_short_range(dir, dist, inv_d, q1, q2, LONG_RANGE_CUTOFF, alpha);
+            force_coulomb_short_range(dir, dist, inv_d, q1, q2, COULOMB_CUTOFF, alpha);
         let (f_sr_2, _) =
-            force_coulomb_short_range(-dir, dist, inv_d, q2, q1, LONG_RANGE_CUTOFF, alpha);
+            force_coulomb_short_range(-dir, dist, inv_d, q2, q1, COULOMB_CUTOFF, alpha);
 
         // Long-range forces
         let l = (box_len, box_len, box_len);
@@ -325,13 +328,9 @@ fn test_short_range_cutoff() {
     let q = CHARGE_UNIT_SCALER;
     let dir = Vec3::new(1.0, 0.0, 0.0);
 
-    for dist in [
-        LONG_RANGE_CUTOFF,
-        LONG_RANGE_CUTOFF + 0.1,
-        LONG_RANGE_CUTOFF + 1.0,
-    ] {
+    for dist in [COULOMB_CUTOFF, COULOMB_CUTOFF + 0.1, COULOMB_CUTOFF + 1.0] {
         let (f, e) =
-            force_coulomb_short_range(dir, dist, 1.0 / dist, q, q, LONG_RANGE_CUTOFF, EWALD_ALPHA);
+            force_coulomb_short_range(dir, dist, 1.0 / dist, q, q, COULOMB_CUTOFF, EWALD_ALPHA);
         assert_eq!(
             f.magnitude_squared(),
             0.0,
@@ -372,7 +371,7 @@ fn test_spme_energy_non_cubic_box() {
     let diff = r1 - r2;
     let inv_d = 1.0 / dist;
     let dir = diff * inv_d;
-    let (_, e_sr) = force_coulomb_short_range(dir, dist, inv_d, q1, q2, LONG_RANGE_CUTOFF, alpha);
+    let (_, e_sr) = force_coulomb_short_range(dir, dist, inv_d, q1, q2, COULOMB_CUTOFF, alpha);
 
     let e_total = e_sr + e_lr;
     let e_vac = vacuum_coulomb_energy(1.0, -1.0, dist);

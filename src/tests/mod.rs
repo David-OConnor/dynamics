@@ -9,6 +9,7 @@ use crate::{
     partial_charge_inference::files::{GEOSTD_PATH, find_mol2_paths},
 };
 
+mod force_components;
 mod forces;
 mod md_sim;
 mod spme;
@@ -16,6 +17,11 @@ mod therm_baro;
 
 #[test]
 fn test_ff_types_geostd() {
+    if !Path::new(GEOSTD_PATH).is_dir() {
+        eprintln!("Skipping GeoStd corpus test: {GEOSTD_PATH} is not available");
+        return;
+    }
+
     for (i, path) in find_mol2_paths(Path::new(GEOSTD_PATH))
         .unwrap()
         .iter()

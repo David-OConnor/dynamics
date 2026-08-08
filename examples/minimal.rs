@@ -35,7 +35,7 @@ fn main() {
         },
     ];
 
-    let mut md = MdState::new(&dev, &MdConfig::default(), &mols, &param_set).unwrap();
+    let (mut md, _) = MdState::new(&dev, &MdConfig::default(), &mols, &param_set).unwrap();
 
     let n_steps = 100;
     let dt = 0.002; // picoseconds.
@@ -45,9 +45,10 @@ fn main() {
     }
 
     let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
+    let energy = snap.energy_data.as_ref().unwrap();
     println!(
         "KE: {}, PE: {}, Atom posits:",
-        snap.energy_kinetic, snap.energy_potential
+        energy.energy_kinetic, energy.energy_potential
     );
     for posit in &snap.atom_posits {
         println!("Posit: {posit}");
@@ -57,5 +58,5 @@ fn main() {
     // Do something with snapshot data, like displaying atom positions in your UI.
     // You can save to DCD file, and adjust the ratio they're saved at using the `MdConfig.snapshot_setup`
     // field: See the example below.
-    for snap in &md.snapshots {}
+    for _snap in &md.snapshots {}
 }
