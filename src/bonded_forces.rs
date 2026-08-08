@@ -56,29 +56,26 @@ pub fn f_angle_bending(
     let b_vec_01_len = b_vec_01_sq.sqrt();
     let b_vec_21_len = b_vec_21_sq.sqrt();
 
-    let inv_ab = 1.0 / (b_vec_01_len * b_vec_21_len);
+    let unit_01 = bond_vec_01 / b_vec_01_len;
+    let unit_21 = bond_vec_21 / b_vec_21_len;
+    let cos_theta = unit_01.dot(unit_21).clamp(-1.0, 1.0);
+    let theta = cos_theta.acos();
+    let sin_theta = (1.0 - cos_theta * cos_theta).sqrt().max(EPS);
 
-    let cos_θ = (bond_vec_01.dot(bond_vec_21) * inv_ab).clamp(-1.0, 1.0);
-    let θ = cos_θ.acos();
+    // Amber harmonic angle potential: U = k (theta - theta_0)^2.
+    let delta_theta = theta - params.theta_0;
+    let d_energy_d_theta = 2.0 * params.k * delta_theta;
 
-    let Δθ = params.theta_0 - θ;
-    let dV_dθ = 2. * params.k * Δθ;
+    // Cartesian gradients of theta for the two outer atoms.
+    let grad_0 = (unit_01 * cos_theta - unit_21) / (b_vec_01_len * sin_theta);
+    let grad_2 = (unit_21 * cos_theta - unit_01) / (b_vec_21_len * sin_theta);
 
-    // c is the vector normal to the plane defined by the 3 atoms
-    let c = bond_vec_01.cross(bond_vec_21);
-    let c_len_sq = c.magnitude_squared().max(EPS);
-
-    let grad_atom0 = (c.cross(bond_vec_01) * b_vec_21_len) / (c_len_sq * b_vec_01_len);
-    let grad_atom1 = (bond_vec_21.cross(c) * b_vec_01_len) / (c_len_sq * b_vec_21_len);
-
-    let f_0 = -grad_atom0 * dV_dθ;
-    let f_2 = -grad_atom1 * dV_dθ;
-    let f_1 = -(f_0 + f_2); // Newton's 3rd law
+    let f_0 = -grad_0 * d_energy_d_theta;
+    let f_2 = -grad_2 * d_energy_d_theta;
+    let f_1 = -(f_0 + f_2);
 
     let f = (f_0, f_1, f_2);
-    // Amber harmonic angle potential: U = k (theta - theta_0)^2.
-    // `dV_dθ` already contains the factor of two needed by the force.
-    let energy = params.k * Δθ * Δθ;
+    let energy = params.k * delta_theta * delta_theta;
 
     (f, energy)
 }
@@ -125,9 +122,15 @@ pub fn f_dihedral(
     let p1 = posit_0 + b1;
     let p2 = p1 + b2;
     let p3 = p2 + b3;
-    let dihe_measured = calc_dihedral_angle_v2(&(posit_0, p1, p2, p3));
+    // `lin_alg` measures this signed rotation in the opposite direction from
+    // the Amber/GROMACS proper-dihedral convention. Keep the raw angle for
+    // the Cartesian gradient below, but reverse it when evaluating the
+    // potential.
+    let dihe_raw = calc_dihedral_angle_v2(&(posit_0, p1, p2, p3));
+    let dihe_measured = std::f32::consts::TAU - dihe_raw;
 
     let mut energy = 0.;
+    // Derivative with respect to `dihe_raw` (not `dihe_measured`).
     let mut dV_dφ = 0.; // Scalar torque magnitude
 
     for param in params {
@@ -137,7 +140,7 @@ pub fn f_dihedral(
         let per = param.periodicity as f32;
 
         let dφ = per * dihe_measured - param.phase;
-        dV_dφ += -k * per * dφ.sin();
+        dV_dφ += k * per * dφ.sin();
         energy += k * (1.0 + dφ.cos());
     }
 

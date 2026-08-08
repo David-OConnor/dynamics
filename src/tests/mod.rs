@@ -11,6 +11,7 @@ use crate::{
 
 mod force_components;
 mod forces;
+mod gromacs_compare;
 mod md_sim;
 mod spme;
 mod therm_baro;
