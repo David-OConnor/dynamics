@@ -27,7 +27,7 @@ use crate::{
 pub(crate) mod add_hydrogens_2;
 pub mod bond_vecs;
 mod ph;
-mod sidechain;
+pub mod sidechain;
 
 // We use the normal AA, vice general form here, as that's the one available in the mmCIF files
 // we're parsing. This is despite the Amber data we are using for the source using the general versions.
