@@ -1,6 +1,6 @@
 [package]
 name = "dynamics"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 authors = ["David O'Connor <the_alchemist@fastmail.com>"]
 description = "Molecular dynamics"
@@ -39,7 +39,7 @@ include = [
 lin_alg = { version = "1.4.3", features = ["encode", "random"] }
 na_seq = "0.3.15"
 bio_files = "0.5.3"
-ewald = { version = "0.1.14" }
+ewald = { version = "0.1.15" }
 bio_apis = "0.3.0"
 #mol_defs = { path = "../mol_defs" }  # e.g. Dihedral and a few auxillary types.
 
@@ -74,7 +74,7 @@ cuda_setup = { version = "0.1.10", optional = true }
 
 [patch.crates-io]
 #ewald = { path = "../ewald" }
-bio_files = { path = "../bio_files" }
+#bio_files = { path = "../bio_files" }
 
 
 [features]
