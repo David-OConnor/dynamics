@@ -38,17 +38,17 @@ include = [
 [dependencies]
 lin_alg = { version = "1.4.3", features = ["encode", "random"] }
 na_seq = "0.3.15"
-bio_files = "0.5.2"
+bio_files = "0.5.3"
 ewald = { version = "0.1.14" }
-bio_apis = "0.2.5"
+bio_apis = "0.3.0"
 #mol_defs = { path = "../mol_defs" }  # e.g. Dihedral and a few auxillary types.
 
-rand = "0.10.1"
+rand = "0.10.2"
 rand_distr = "0.6.0"
 
-itertools = "0.14.0" # For combinations when matching angles.
+itertools = "0.15.0" # For combinations when matching angles.
 
-rayon = "1.11.0"  # Parallel execution on CPU using thread pools.
+rayon = "1.12.0"  # Parallel execution on CPU using thread pools.
 
 #bincode = { version = "2.0.1", optional = true }
 bincode = "2.0.1"
@@ -56,18 +56,20 @@ bincode = "2.0.1"
 # We use this to compute the volume of  solvent accessible surface mesh when adding solvent molecules
 mcubes = "0.1.7"
 
-candle-core = { version = "0.9.1" }
-candle-nn = { version = "0.9.1" }
+candle-core = { version = "0.11.0" }
+candle-nn = { version = "0.11.0" }
 
 lazy_static = "1.5.0"
 
-# todo: For now, we manually enablje dynamic-linking (either is fine) for running SPME tests.
-cudarc = { version = "0.19.0", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-linking", "cuda-13000"], optional = true }
-#cudarc = { version = "0.19.0", default-features = false, features = ["std", "driver", "nvrtc", "cuda-13000"], optional = true }
+# `dynamic-loading` keeps the CUDA driver library out of the executable's load-time dependencies, so
+# a binary built with the `cuda` feature still starts where no NVIDIA driver is installed. Cargo
+# unions features across the tree, and cudarc's build script rejects `dynamic-loading` and
+# `dynamic-linking` being active together, so `ewald` and any consuming binary must match this.
+cudarc = { version = "0.19.9", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13000"], optional = true }
 
 
 [build-dependencies]
-cuda_setup = { version = "0.1.9", optional = true }
+cuda_setup = { version = "0.1.10", optional = true }
 
 
 [patch.crates-io]
