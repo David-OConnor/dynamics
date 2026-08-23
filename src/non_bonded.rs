@@ -804,21 +804,26 @@ impl MdState {
         let mut pos = Vec::with_capacity(n_std + 3 * n_wat);
         let mut q = Vec::with_capacity(pos.capacity());
 
+        // Ewald's PME mesh is expressed in a local [0, L) coordinate frame. `SimBox::wrap`
+        // preserves the simulation box's absolute origin, so remove that origin before passing
+        // positions to PME. This matters for cells centered far from world-space zero.
+        let origin = self.cell.bounds_low;
+
         // Non-solvent atoms.
         for a in &self.atoms {
-            pos.push(self.cell.wrap(a.posit)); // [0,L) per axis
+            pos.push(self.cell.wrap(a.posit) - origin);
             q.push(a.partial_charge); // already scaled to Amber units
         }
 
         // Water sites. We omit O, as it has no charge.
         for w in &self.water {
-            pos.push(self.cell.wrap(w.m.posit));
+            pos.push(self.cell.wrap(w.m.posit) - origin);
             q.push(w.m.partial_charge);
 
-            pos.push(self.cell.wrap(w.h0.posit));
+            pos.push(self.cell.wrap(w.h0.posit) - origin);
             q.push(w.h0.partial_charge);
 
-            pos.push(self.cell.wrap(w.h1.posit));
+            pos.push(self.cell.wrap(w.h1.posit) - origin);
             q.push(w.h1.partial_charge);
         }
 

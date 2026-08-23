@@ -221,14 +221,22 @@ void nonbonded_force_kernel(
     const uint8_t* calc_coulombs,
     const uint8_t* symmetric,
     // Non-array inputs
-    float3 cell_extent,
-    float3 cell_inv_extent,
+    float cell_extent_x,
+    float cell_extent_y,
+    float cell_extent_z,
+    float cell_inv_extent_x,
+    float cell_inv_extent_y,
+    float cell_inv_extent_z,
     float cutoff_ewald,
     float alpha_ewald,
     uint32_t N,
     uint8_t coulomb_disabled, // bool
     uint8_t lj_disabled
 ) {
+    const float3 cell_extent = make_float3(cell_extent_x, cell_extent_y, cell_extent_z);
+    const float3 cell_inv_extent = make_float3(
+        cell_inv_extent_x, cell_inv_extent_y, cell_inv_extent_z
+    );
     size_t index = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
 
@@ -404,8 +412,12 @@ void nonbonded_force_alchemical_kernel(
     const uint8_t* symmetric,
     const uint8_t* alch_interactions,
     // Non-array inputs
-    float3 cell_extent,
-    float3 cell_inv_extent,
+    float cell_extent_x,
+    float cell_extent_y,
+    float cell_extent_z,
+    float cell_inv_extent_x,
+    float cell_inv_extent_y,
+    float cell_inv_extent_z,
     float cutoff_ewald,
     float alpha_ewald,
     uint32_t N,
@@ -413,6 +425,10 @@ void nonbonded_force_alchemical_kernel(
     uint8_t lj_disabled,
     float lambda_alch
 ) {
+    const float3 cell_extent = make_float3(cell_extent_x, cell_extent_y, cell_extent_z);
+    const float3 cell_inv_extent = make_float3(
+        cell_inv_extent_x, cell_inv_extent_y, cell_inv_extent_z
+    );
     size_t index = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
 

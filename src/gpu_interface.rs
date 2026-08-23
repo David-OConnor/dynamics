@@ -477,6 +477,33 @@ pub fn force_nonbonded_gpu(
 
     let n = pairs.len();
 
+    // The kernel uses `pairs.len()` as its loop bound, so every flattened neighbor
+    // array must describe exactly that many pairs. Check this at the launch site as
+    // well as during construction: neighbor lists can be rebuilt independently of
+    // the long-lived GPU force buffers.
+    for (name, len) in [
+        ("tgt_is", per_neighbor.tgt_is.len()),
+        ("src_is", per_neighbor.src_is.len()),
+        ("sigmas", per_neighbor.sigmas.len()),
+        ("epss", per_neighbor.epss.len()),
+        ("qs_tgt", per_neighbor.qs_tgt.len()),
+        ("qs_src", per_neighbor.qs_src.len()),
+        ("atom_types_tgt", per_neighbor.atom_types_tgt.len()),
+        ("water_types_tgt", per_neighbor.water_types_tgt.len()),
+        ("atom_types_src", per_neighbor.atom_types_src.len()),
+        ("water_types_src", per_neighbor.water_types_src.len()),
+        ("scale_14", per_neighbor.scale_14.len()),
+        ("calc_ljs", per_neighbor.calc_ljs.len()),
+        ("calc_coulombs", per_neighbor.calc_coulombs.len()),
+        ("symmetric", per_neighbor.symmetric.len()),
+        ("alch_interactions", per_neighbor.alch_interactions.len()),
+    ] {
+        assert_eq!(
+            len, n,
+            "nonbonded GPU metadata `{name}` is stale: {len} entries for {n} pairs"
+        );
+    }
+
     zero_forces_and_accums(stream, forces);
 
     // 1-4 scaling, and the symmetric case handled in the kernel.
@@ -542,8 +569,14 @@ pub fn force_nonbonded_gpu(
         launch_args.arg(&per_neighbor.alch_interactions);
     }
 
-    launch_args.arg(&cell_extent);
-    launch_args.arg(&cell_inv_extent);
+    // Use scalar components at the Rust/CUDA boundary; Rust's `Vec3` and CUDA's
+    // by-value `float3` do not share a guaranteed parameter ABI.
+    launch_args.arg(&cell_extent.x);
+    launch_args.arg(&cell_extent.y);
+    launch_args.arg(&cell_extent.z);
+    launch_args.arg(&cell_inv_extent.x);
+    launch_args.arg(&cell_inv_extent.y);
+    launch_args.arg(&cell_inv_extent.z);
     launch_args.arg(&forces.cutoff_ewald);
     launch_args.arg(&forces.alpha_ewald);
     launch_args.arg(&n_u32);
@@ -554,14 +587,7 @@ pub fn force_nonbonded_gpu(
         launch_args.arg(&lambda_alch);
     }
 
-    unsafe {
-        if launch_args.launch(cfg).is_err() {
-            eprintln!(
-                "Error launching the non bonded GPU force kernel. (This can happen if there is one or\
-                more NaNs in the system"
-            );
-        }
-    }
+    unsafe { launch_args.launch(cfg) }.expect("Unable to launch the nonbonded CUDA kernel");
 
     // Queue every result copy into persistent pinned buffers. Reading the final
     // scalar waits for the whole ordered stream once; the earlier copies then

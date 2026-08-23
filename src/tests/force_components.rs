@@ -491,6 +491,39 @@ fn gpu_short_range_matches_cpu_force_and_energy() {
 
 #[cfg(all(feature = "cuda", any(feature = "cufft", feature = "vkfft")))]
 #[test]
+fn gpu_spme_handles_translated_simulation_cell() {
+    let Some(gpu) = cuda_device() else {
+        return;
+    };
+    let params = FfParamSet::new_amber().unwrap();
+    let center = Vec3::new(432.0, 328.0, 378.0);
+    let solute = MolDynamics {
+        ff_mol_type: FfMolType::SmallOrganic,
+        atoms: vec![atom(1, center, 0.0)],
+        ..Default::default()
+    };
+    let config = MdConfig {
+        integrator: Integrator::VerletVelocity { thermostat: None },
+        sim_box: SimBoxInit::Fixed((center - Vec3::splat(15.0), center + Vec3::splat(15.0))),
+        solvent: Solvent::WaterOpcSpecifyMolCount(32),
+        barostat_cfg: None,
+        max_init_relaxation_iters: None,
+        recenter_sim_box: false,
+        overrides: MdOverrides {
+            bonded_disabled: true,
+            skip_counterion_insertion: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let (state, _) = MdState::new(&gpu, &config, &[solute], &params).unwrap();
+    assert_eq!(state.atoms.len(), 1);
+    assert!(!state.water.is_empty());
+}
+
+#[cfg(all(feature = "cuda", any(feature = "cufft", feature = "vkfft")))]
+#[test]
 fn gpu_spme_and_combined_forces_match_cpu() {
     let Some(gpu) = cuda_device() else {
         return;

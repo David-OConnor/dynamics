@@ -333,34 +333,26 @@ fn find_angle_alts(
 fn find_dihedral_alts(
     gaff2: &ForceFieldParams,
     parmchk: &ParmChk,
-    _atcor: &AtCor,
+    atcor: &AtCor,
     eq_map: &HashMap<String, &str>,
     key: &(String, String, String, String),
     proper: bool,
 ) -> Option<Vec<DihedralParams>> {
-    // Apply Atcor.
-    // If a given param is in Atcor, use that to map to its canonical type. For now, we just
-    // pick the first one; that seems to work for these like "n7"
-    // let key0 = match atcor.get(&key.0) {
-    //     Some(v) => v.1[0].clone(),
-    //     None => key.0.clone(),
-    // };
-    // let key1 = match atcor.get(&key.1) {
-    //     Some(v) => v.1[0].clone(),
-    //     None => key.1.clone(),
-    // };
-    // let key2 = match atcor.get(&key.2) {
-    //     Some(v) => v.1[0].clone(),
-    //     None => key.2.clone(),
-    // };
-    // let key3 = match atcor.get(&key.3) {
-    //     Some(v) => v.1[0].clone(),
-    //     None => key.3.clone(),
-    // };
-    let key0 = key.0.clone();
-    let key1 = key.1.clone();
-    let key2 = key.2.clone();
-    let key3 = key.3.clone();
+    // Apply Amber's atom-type corrections before looking for a related torsion. This is already
+    // done for missing bonds and angles above, and is equally important for dihedrals. For example,
+    // ATCOR maps `nz` (an n4-like nitrogen with three hydrogens) to `n4`, for which GAFF2 provides
+    // the general `X-c3-n4-X` torsion.
+    let corrected = |atom_type: &String| {
+        atcor
+            .get(atom_type)
+            .and_then(|(_, alternatives)| alternatives.first())
+            .cloned()
+            .unwrap_or_else(|| atom_type.clone())
+    };
+    let key0 = corrected(&key.0);
+    let key1 = corrected(&key.1);
+    let key2 = corrected(&key.2);
+    let key3 = corrected(&key.3);
 
     // Apply eq values from PARMCHK; this is our ad hoc approach, as the parsing isn't giving
     // us useful information here.
@@ -718,4 +710,63 @@ fn is_default_improper_candidate(key: (&str, &str, &str, &str)) -> bool {
     let heavy_neighbors = neighbors.iter().filter(|t| !is_hydrogen_ff_type(t)).count();
 
     heavy_neighbors >= 2
+}
+
+#[cfg(test)]
+mod tests {
+    use bio_files::AtomGeneric;
+    use na_seq::Element;
+
+    use super::assign_missing_params;
+    use crate::params::FfParamSet;
+
+    fn atom(serial_number: u32, element: Element, ff_type: &str) -> AtomGeneric {
+        AtomGeneric {
+            serial_number,
+            element,
+            force_field_type: Some(ff_type.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn infers_missing_params_for_os_c3_nz_hn_chain() {
+        let params = FfParamSet::new_amber().expect("Amber parameters should load");
+        let gaff2 = params
+            .small_mol
+            .as_ref()
+            .expect("GAFF2 should be part of the Amber parameter set");
+
+        let atoms = vec![
+            atom(1, Element::Oxygen, "os"),
+            atom(2, Element::Carbon, "c3"),
+            atom(3, Element::Nitrogen, "nz"),
+            atom(4, Element::Hydrogen, "hn"),
+            atom(5, Element::Hydrogen, "hn"),
+            atom(6, Element::Hydrogen, "hn"),
+        ];
+        let adjacency = vec![
+            vec![1],
+            vec![0, 2],
+            vec![1, 3, 4, 5],
+            vec![2],
+            vec![2],
+            vec![2],
+        ];
+
+        let inferred = assign_missing_params(&atoms, &adjacency, gaff2)
+            .expect("ATCOR's nz -> n4 mapping should provide GAFF2 fallbacks");
+
+        assert!(
+            inferred
+                .angle
+                .contains_key(&("os".to_owned(), "c3".to_owned(), "nz".to_owned()))
+        );
+        assert!(inferred.dihedral.contains_key(&(
+            "os".to_owned(),
+            "c3".to_owned(),
+            "nz".to_owned(),
+            "hn".to_owned()
+        )));
+    }
 }
