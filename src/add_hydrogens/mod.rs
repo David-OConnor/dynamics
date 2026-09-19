@@ -235,6 +235,12 @@ pub(crate) fn h_type_in_res_sidechain(
         return Ok(Some(AtomTypeInRes::Hetero(val)));
     };
 
+    // Methionine's thioether sulfur carries no hydrogen, even when incomplete
+    // coordinates or bond inference leave it with only one detected neighbor.
+    if aa == AminoAcid::Met && *parent_tir == AtomTypeInRes::SD {
+        return Ok(None);
+    }
+
     // todo: Assign the number based on parent type as well??
     let depth = match parent_tir {
         AtomTypeInRes::CB => 'B',

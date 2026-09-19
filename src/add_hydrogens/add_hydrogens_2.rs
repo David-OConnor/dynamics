@@ -131,19 +131,22 @@ fn find_bonded_atoms<'a>(
     atoms: &[&'a AtomGeneric],
     atom_i: usize,
 ) -> Vec<(usize, &'a AtomGeneric)> {
-    // todo: Adj this len A/R, or calc it per-branch with a fn.
-    // todo 1.80 seems to work well, but causes, for example, the CG - S bond in Met to be missed.
-    // todo: 1.85 works in that case.
     const BONDED_LEN_THRESH: f64 = 1.85;
+    // Sulfur bonds need more room than C/N/O bonds. For example, MET SD-CE in
+    // 1KEJ reaches 1.918 Å; missing it also gives CE the wrong hydrogen geometry.
+    const SULFUR_BONDED_LEN_THRESH: f64 = 2.1;
 
     atoms
         .iter()
         .enumerate()
         .filter(|(j, a)| {
-            atom_i != *j
-                && (a.posit - atom.posit).magnitude() < BONDED_LEN_THRESH
-                && a.element != Hydrogen
-            // atom_i != *j && (a.posit - atom.posit).magnitude() < 1.40
+            let threshold = if atom.element == Sulfur || a.element == Sulfur {
+                SULFUR_BONDED_LEN_THRESH
+            } else {
+                BONDED_LEN_THRESH
+            };
+
+            atom_i != *j && (a.posit - atom.posit).magnitude() < threshold && a.element != Hydrogen
         })
         .map(|(j, a)| (j, *a))
         .collect()
@@ -309,6 +312,14 @@ fn add_h_sc_het(
                             if angle > PLANAR_ANGLE_THRESH {
                                 planar = true;
                             }
+                        }
+
+                        // MET CB and CG are methylene carbons. Distorted coordinates
+                        // can exceed the planar-angle cutoff, but each still needs two H.
+                        if aa == Some(AminoAcid::Met)
+                            && matches!(parent_tir, AtomTypeInRes::CB | AtomTypeInRes::CG)
+                        {
+                            planar = false;
                         }
 
                         // Add a single H
