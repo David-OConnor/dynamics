@@ -47,6 +47,18 @@ fn force_stats(state: &MdState) -> (f32, f32) {
 }
 
 impl MdState {
+    /// Evaluate the short-range potential used by minimization at the current positions,
+    /// without moving atoms or changing velocities. Rebuild neighbors because callers may
+    /// have replaced coordinates (e.g. a rigid-body or torsion search).
+    pub fn minimization_energy(&mut self, dev: &ComputationDevice) -> f64 {
+        let prev_recip = self.cfg.overrides.long_range_recip_disabled;
+        self.cfg.overrides.long_range_recip_disabled = true;
+        self.build_all_neighbors(dev);
+        compute_forces_and_energy(self, dev, &None);
+        self.cfg.overrides.long_range_recip_disabled = prev_recip;
+        self.potential_energy
+    }
+
     /// Relaxes the molecules using a steepest-descent energy minimizer. Use this at the start of the simulation
     /// to control kinetic energy that
     /// arrises from differences between atom positions, and bonded parameters. It can also be called
