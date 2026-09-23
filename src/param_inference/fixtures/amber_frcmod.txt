@@ -1,0 +1,2128 @@
+@@methane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@ethane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@ethylene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c2-ha-c2-ha         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@acetylene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@butadiene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ce-ha-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+c2-ce-ce-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+
+NONBON
+
+
+
+
+@@hexatriene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ce-ha-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+c2-ce-ce-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+ce-cf-ce-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+ce-cf-cf-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+c2-cf-cf-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+cf-ha-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+
+NONBON
+
+
+
+
+@@enone
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ce-ha-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+c -c2-ce-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+c3-ce-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@styrene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+ca-ca-ce-ha   4    2.800       180.000           2.000      same as X -c2-ca-X , penalty score=237.0
+
+IMPROPER
+ce-ha-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+c2-ca-ce-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+ca-ca-ca-ce         1.1          180.0         2.0          Using the default value
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@acrylonitrile
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c2-ce-cg-n1   2    0.000       180.000           2.000      same as X -c1-ce-X , penalty score= 97.0
+ha-ce-cg-n1   2    0.000       180.000           2.000      same as X -c1-ce-X , penalty score= 97.0
+
+IMPROPER
+ce-ha-c2-ha         1.1          180.0         2.0          Using the default value
+c2-cg-ce-ha         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@allene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c1-ha-c2-ha         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@benzene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@pyridine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-h4-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.3 (use general term))
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@pyrrole
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+cc-cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+cc-h4-cd-na         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+cd-cd-na-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@furan
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cc-cd-os-cd   1    0.980       180.000           1.000      same as cd-cc-os-c2, penalty score=254.0
+h4-cd-os-cd   2    2.100       180.000           2.000      same as X -c2-os-X , penalty score=232.0
+
+IMPROPER
+cc-cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+cc-h4-cd-os         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+
+NONBON
+
+
+
+
+@@thiophene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cc-cd-ss-cd   1    2.430       180.000           1.000      same as cd-cc-ss-c2, penalty score=254.0
+h4-cd-ss-cd   2    2.200       180.000           2.000      same as X -c2-ss-X , penalty score=232.0
+
+IMPROPER
+cc-cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+cc-h4-cd-ss         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+
+NONBON
+
+
+
+
+@@imidazole
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+h5-na-cc-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.5 (use general term))
+cc-h4-cd-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+cd-h4-cc-na         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+cc-cc-na-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@pyrazole
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+cc-cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+cc-h4-cc-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+cd-hn-na-nd         1.1          180.0         2.0          Using the default value
+cc-h4-cd-na         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+
+NONBON
+
+
+
+
+@@pyrimidine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-h4-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.3 (use general term))
+h5-nb-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.6 (use general term))
+
+NONBON
+
+
+
+
+@@indole
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+ca-ca-cd-cc   1    3.770       180.000           2.000      same as ca-ca-ce-cc, penalty score=142.0
+ca-ca-cd-ha   4    2.800       180.000           2.000      same as X -c2-ca-X , penalty score=232.0
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-na         1.1          180.0         2.0          Using the default value
+ca-cc-na-hn         1.1          180.0         2.0          Using general improper torsional angle  X- X-na-hn, penalty score=  6.0)
+cd-h4-cc-na         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+ca-cc-cd-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+ca-ca-ca-cd         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@naphthalene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-ca         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@biphenyl
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-cp-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-cp-cp         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@quinone
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+cc-cd-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+c -cc-cd-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+
+NONBON
+
+
+
+
+@@cyclopropane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@cyclobutane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@cyclopentane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c5-c5-c5-c5   1    0.520         0.000           3.000      same as c3-c3-c3-c3, penalty score=  0.0
+c5-c5-c5-hc   1    0.130         0.000           3.000      same as c3-c3-c3-hc, penalty score=  0.0
+hc-c5-c5-hc   1    0.120         0.000           3.000      same as hc-c3-c3-hc, penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@cyclohexane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c6-c6-c6-c6   1    0.520         0.000           3.000      same as c3-c3-c3-c3, penalty score=  0.0
+c6-c6-c6-hc   1    0.130         0.000           3.000      same as c3-c3-c3-hc, penalty score=  0.0
+hc-c6-c6-hc   1    0.120         0.000           3.000      same as hc-c3-c3-hc, penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@cyclononane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@cyclodecane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@decalin
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c6-c6-c6-c6   1    0.520         0.000           3.000      same as c3-c3-c3-c3, penalty score=  0.0
+c6-c6-c6-hc   1    0.130         0.000           3.000      same as c3-c3-c3-hc, penalty score=  0.0
+hc-c6-c6-hc   1    0.120         0.000           3.000      same as hc-c3-c3-hc, penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@norbornane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c5-c5-c5-c5   1    0.520         0.000           3.000      same as c3-c3-c3-c3, penalty score=  0.0
+c5-c5-c5-hc   1    0.130         0.000           3.000      same as c3-c3-c3-hc, penalty score=  0.0
+hc-c5-c5-hc   1    0.120         0.000           3.000      same as hc-c3-c3-hc, penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@ammonia
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@methylamine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+h1-c3-n8-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@dimethylamine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+h1-c3-n7-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@trimethylamine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@ammonium
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@methylammonium
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@aniline
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+ca-ca-nv-hn   4    4.200       180.000           2.000      same as X -ca-nh-X , penalty score=  0.0
+
+IMPROPER
+ca-hn-nv-hn         1.1          180.0         2.0          Using the default value
+ca-ca-ca-nv         1.1          180.0         2.0          Using the default value
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@enamine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c2-c2-nv-hn   4    2.700       180.000           2.000      same as X -c2-nh-X , penalty score=  0.0
+h4-c2-nv-hn   4    2.700       180.000           2.000      same as X -c2-nh-X , penalty score=  0.0
+
+IMPROPER
+c2-hn-nv-hn         1.1          180.0         2.0          Using the default value
+c2-h4-c2-nv         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 75.4 (use general term))
+c2-ha-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+
+NONBON
+
+
+
+
+@@acetamide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c3-c -nt-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -nt-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -nt-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+
+IMPROPER
+c3-nt-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -hn-nt-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@n_methylacetamide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c3-c -ns-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-c3   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -ns-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+h1-c3-ns-hn   6    0.000         0.000           2.000      same as X -c3-n -X , penalty score=  0.0
+
+IMPROPER
+c3-ns-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -c3-ns-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@dimethylacetamide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-n -c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -c3-n -c3         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@thioamide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c3-cs-nt-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+s -cs-nt-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+hc-c3-cs-s    6    0.000       180.000           2.000      same as X -c -c3-X , penalty score=  0.0
+hc-c3-cs-nt   6    0.000       180.000           2.000      same as X -c -c3-X , penalty score=  0.0
+
+IMPROPER
+c3-nt-cs-s          1.1          180.0         2.0          Using the default value
+cs-hn-nt-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@urea
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+nt-c -nt-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -nt-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -nt-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+
+IMPROPER
+c -hn-nt-hn         1.1          180.0         2.0          Using the default value
+nt-nt-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@guanidine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+nv-c2-nv-hn   4    2.700       180.000           2.000      same as X -c2-nh-X , penalty score=  0.0
+n2-c2-nv-hn   4    2.700       180.000           2.000      same as X -c2-nh-X , penalty score=  0.0
+
+IMPROPER
+c2-hn-nv-hn         1.1          180.0         2.0          Using the default value
+n2-nv-c2-nv         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@guanidinium
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+nv-cz-nv-hn   4    2.700       180.000           2.000      same as X -c2-nh-X , penalty score=462.5
+
+IMPROPER
+cz-hn-nv-hn         1.1          180.0         2.0          Using the default value
+nv-nv-cz-nv         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@aziridine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cx-cx-n5-cx   1    0.140         0.000           3.000      same as c3-c3-n7-c3, penalty score=266.0
+cx-cx-n5-hn   1    0.217         0.000           3.000      same as c3-c3-n3-hn, penalty score=179.0
+h1-cx-n5-cx   1    0.215         0.000           3.000      same as h1-c3-n7-c3, penalty score=179.0
+h1-cx-n5-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score= 92.0
+
+IMPROPER
+cx-cx-n5-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@azetidine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cy-cy-n6-cy   1    0.140         0.000           3.000      same as c3-c3-n7-c3, penalty score=260.5
+cy-cy-n6-hn   1    0.217         0.000           3.000      same as c3-c3-n3-hn, penalty score=173.5
+h1-cy-n6-cy   1    0.215         0.000           3.000      same as h1-c3-n7-c3, penalty score=173.5
+h1-cy-n6-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score= 86.5
+
+IMPROPER
+cy-cy-n6-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@n_methylaziridine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cx-cx-np-c3   1    0.730         0.000           3.000      same as c3-c3-n3-c3, penalty score=179.0
+h1-cx-np-c3   1    0.225         0.000           3.000      same as h1-c3-n3-c3, penalty score= 92.0
+cx-cx-np-cx   1    0.730         0.000           3.000      same as c3-c3-n3-c3, penalty score=266.0
+h1-cx-np-cx   1    0.225         0.000           3.000      same as h1-c3-n3-c3, penalty score=179.0
+h1-c3-np-cx   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+
+IMPROPER
+c3-cx-np-cx         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@piperidine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c6-c6-c6-n7   1    0.210         0.000           3.000      same as c3-c3-c3-n3, penalty score=  0.0
+c6-c6-c6-h1   9    1.400         0.000           3.000      same as X -c3-c3-X , penalty score=  0.0
+c6-c6-c6-c6   1    0.520         0.000           3.000      same as c3-c3-c3-c3, penalty score=  0.0
+c6-c6-c6-hc   1    0.130         0.000           3.000      same as c3-c3-c3-hc, penalty score=  0.0
+c6-c6-n7-c6   1    0.140         0.000           3.000      same as c3-c3-n7-c3, penalty score=  0.0
+c6-c6-n7-hn   1    0.217         0.000           3.000      same as c3-c3-n3-hn, penalty score=  0.0
+h1-c6-n7-c6   1    0.215         0.000           3.000      same as h1-c3-n7-c3, penalty score=  0.0
+hc-c6-c6-n7   1    0.100         0.000           3.000      same as hc-c3-c3-n3, penalty score=  0.0
+hc-c6-c6-hc   1    0.120         0.000           3.000      same as hc-c3-c3-hc, penalty score=  0.0
+h1-c6-c6-hc   9    1.400         0.000           3.000      same as X -c3-c3-X , penalty score=  0.0
+h1-c6-n7-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@beta_lactam
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+o -c -ns-cy   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -ns-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+cy-c -ns-cy   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+cy-c -ns-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+cy-cy-ns-c    6    0.000         0.000           2.000      same as X -cy-n -X , penalty score=  0.0
+cy-cy-ns-hn   6    0.000         0.000           2.000      same as X -cy-n -X , penalty score=  0.0
+h1-cy-ns-c    6    0.000         0.000           2.000      same as X -cy-n -X , penalty score=  0.0
+h1-cy-ns-hn   6    0.000         0.000           2.000      same as X -cy-n -X , penalty score=  0.0
+
+IMPROPER
+cy-ns-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -cy-ns-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@ethanol
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@ether
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@water
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@epoxide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cx-cx-op-cx   1    0.750         0.000          -3.000      same as c3-c3-os-c3
+cx-cx-op-cx   1    0.080         0.000          -2.000      same as c3-c3-os-c3
+cx-cx-op-cx   1    0.880       180.000           1.000      same as c3-c3-os-c3, penalty score=266.0
+h1-cx-op-cx   1    0.337         0.000           3.000      same as h1-c3-os-c3, penalty score=179.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@oxetane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cy-cy-oq-cy   1    0.750         0.000          -3.000      same as c3-c3-os-c3
+cy-cy-oq-cy   1    0.080         0.000          -2.000      same as c3-c3-os-c3
+cy-cy-oq-cy   1    0.880       180.000           1.000      same as c3-c3-os-c3, penalty score=260.5
+h1-cy-oq-cy   1    0.337         0.000           3.000      same as h1-c3-os-c3, penalty score=173.5
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@acetone
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-c3-c -o          1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@acetate
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-o -c -o          1.1          180.0         2.0          Using general improper torsional angle  X- o- c- o, penalty score=  3.0)
+
+NONBON
+
+
+
+
+@@acetic_acid
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@methylacetate
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-o -c -os         1.1          180.0         2.0          Same as X -o -c -o , penalty score= 49.6 (use general term))
+
+NONBON
+
+
+
+
+@@nitromethane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-o -no-o          1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@nitrile
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@imine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-h4-c2-n2         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@methanethiol
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@sulfide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@disulfide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@sulfoxide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@sulfone
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@sulfonamide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+hn-n8-s6-c3   6   18.800         0.000           2.000      same as X -n3-s6-X , penalty score=  0.0
+hn-n8-s6-o    6   18.800         0.000           2.000      same as X -n3-s6-X , penalty score=  0.0
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@aryl_sulfone
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-sy         1.1          180.0         2.0          Using the default value
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@phosphate
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@phosphonate
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@phosphine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@fluoromethane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@difluoromethane
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@chloroform
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@glycine_zwitterion
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c -c3-nz-hn   9    1.400         0.000           3.000      same as X -c3-n4-X , penalty score=  0.0
+
+IMPROPER
+c3-o -c -o          1.1          180.0         2.0          Using general improper torsional angle  X- o- c- o, penalty score=  3.0)
+
+NONBON
+
+
+
+
+@@alanine_zwitterion
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c3-c3-nz-hn   9    1.400         0.000           3.000      same as X -c3-n4-X , penalty score=  0.0
+c -c3-nz-hn   9    1.400         0.000           3.000      same as X -c3-n4-X , penalty score=  0.0
+
+IMPROPER
+c3-o -c -o          1.1          180.0         2.0          Using general improper torsional angle  X- o- c- o, penalty score=  3.0)
+
+NONBON
+
+
+
+
+@@aspirin
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-o -c -os         1.1          180.0         2.0          Same as X -o -c -o , penalty score= 49.6 (use general term))
+ca-ca-ca-os         1.1          180.0         2.0          Using the default value
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+c -ca-ca-ca         1.1          180.0         2.0          Using the default value
+ca-o -c -oh         1.1          180.0         2.0          Same as X -o -c -o , penalty score= 48.9 (use general term))
+
+NONBON
+
+
+
+
+@@acetaminophen
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c3-c -ns-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-ca   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -ns-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+ca-ca-ns-hn   4    1.800       180.000           2.000      same as X -ca-n -X , penalty score=  0.0
+
+IMPROPER
+c3-ns-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -ca-ns-hn         1.1          180.0         2.0          Same as X -X -n -hn, penalty score=  6.0 (use general term))
+ca-ca-ca-ns         1.1          180.0         2.0          Using the default value
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-oh         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@ibuprofen
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@caffeine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c -c -n -c3         1.1          180.0         2.0          Using the default value
+cc-n -c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -cd-cc-na         1.1          180.0         2.0          Using the default value
+cc-n -cd-nd         1.1          180.0         2.0          Using the default value
+h5-na-cc-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.5 (use general term))
+c3-cc-na-cc         1.1          180.0         2.0          Using the default value
+c -c3-n -cd         1.1          180.0         2.0          Using the default value
+n -n -c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@adenine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+nb-ca-nv-hn   4    4.200       180.000           2.000      same as X -ca-nh-X , penalty score=  0.0
+ca-ca-nv-hn   4    4.200       180.000           2.000      same as X -ca-nh-X , penalty score=  0.0
+
+IMPROPER
+ca-hn-nv-hn         1.1          180.0         2.0          Using the default value
+ca-nb-ca-nv         1.1          180.0         2.0          Using the default value
+h5-nb-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.6 (use general term))
+ca-na-ca-nb         1.1          180.0         2.0          Using the default value
+ca-cc-na-hn         1.1          180.0         2.0          Using general improper torsional angle  X- X-na-hn, penalty score=  6.0)
+h5-na-cc-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.5 (use general term))
+ca-ca-ca-nd         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@guanine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+nv-cc-ns-c    4    6.600       180.000           2.000      same as X -n -cc-X , penalty score=  0.0
+nv-cc-ns-hn   4    6.600       180.000           2.000      same as X -n -cc-X , penalty score=  0.0
+nd-cc-ns-c    4    6.600       180.000           2.000      same as X -n -cc-X , penalty score=  0.0
+nd-cc-ns-hn   4    6.600       180.000           2.000      same as X -n -cc-X , penalty score=  0.0
+cc-c -ns-cc   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+cc-c -ns-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-cc   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -ns-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+nd-cc-nv-hn   4    4.200       180.000           2.000      same as X -cc-nh-X , penalty score=  0.0
+ns-cc-nv-hn   4    4.200       180.000           2.000      same as X -cc-nh-X , penalty score=  0.0
+
+IMPROPER
+cc-hn-nv-hn         1.1          180.0         2.0          Using the default value
+nd-ns-cc-nv         1.1          180.0         2.0          Using the default value
+cc-na-cd-nd         1.1          180.0         2.0          Using the default value
+cc-cd-na-hn         1.1          180.0         2.0          Using general improper torsional angle  X- X-na-hn, penalty score=  6.0)
+h5-na-cc-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.5 (use general term))
+c -cd-cc-nd         1.1          180.0         2.0          Using the default value
+cc-ns-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -cc-ns-hn         1.1          180.0         2.0          Same as X -X -n -hn, penalty score=  6.0 (use general term))
+
+NONBON
+
+
+
+
+@@cytosine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cc-cd-ns-c    4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+cc-cd-ns-hn   4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+o -c -ns-cd   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+nd-c -ns-cd   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+cc-cc-nv-hn   4    4.200       180.000           2.000      same as X -cc-nh-X , penalty score=  0.0
+nd-cc-nv-hn   4    4.200       180.000           2.000      same as X -cc-nh-X , penalty score=  0.0
+h4-cd-ns-c    4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+h4-cd-ns-hn   4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+o -c -ns-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -ns-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+nd-c -ns-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+
+IMPROPER
+cc-hn-nv-hn         1.1          180.0         2.0          Using the default value
+cc-nd-cc-nv         1.1          180.0         2.0          Using the default value
+cc-cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+cc-h4-cd-ns         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+c -cd-ns-hn         1.1          180.0         2.0          Same as X -X -n -hn, penalty score=  6.0 (use general term))
+nd-ns-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@uracil
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+o -c -ns-c    4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+o -c -ns-hn   1    2.500       180.000          -2.000      same as o -c -n -hn
+o -c -ns-hn   1    2.000         0.000           1.000      same as o -c -n -hn, penalty score=  0.0
+cc-c -ns-c    4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+cc-c -ns-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+cc-cd-ns-c    4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+cc-cd-ns-hn   4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+o -c -ns-cd   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+ns-c -ns-cd   4    3.490       180.000           2.000      same as n -c -n -cd, penalty score=  0.0
+ns-c -ns-c    4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+ns-c -ns-hn   4   10.000       180.000           2.000      same as X -c -n -X , penalty score=  0.0
+h4-cd-ns-c    4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+h4-cd-ns-hn   4    6.600       180.000           2.000      same as X -n -cd-X , penalty score=  0.0
+
+IMPROPER
+cc-ns-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+cc-h4-cd-ns         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+c -cd-ns-hn         1.1          180.0         2.0          Same as X -X -n -hn, penalty score=  6.0 (use general term))
+ns-ns-c -o         10.5          180.0         2.0          Using general improper torsional angle  X- X- c- o, penalty score=  6.0)
+c -c -ns-hn         1.1          180.0         2.0          Same as X -X -n -hn, penalty score=  6.0 (use general term))
+
+NONBON
+
+
+
+
+@@histidine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+c -c3-n8-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+h1-c3-n8-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+
+IMPROPER
+c3-cd-cc-na         1.1          180.0         2.0          Using the default value
+cc-h4-cd-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.2 (use general term))
+h5-na-cc-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.5 (use general term))
+cc-cc-na-hn         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@proline
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+o -c -c5-c5   1    0.200       180.000          -2.000      same as o -c -c3-c3
+o -c -c5-c5   1    0.440       180.000          -3.000      same as o -c -c3-c3
+o -c -c5-c5   1    0.680         0.000           1.000      same as o -c -c3-c3, penalty score=  0.0
+o -c -c5-n7   6    0.000       180.000           2.000      same as X -c -c3-X , penalty score=  0.0
+o -c -c5-h1   1    0.800         0.000          -1.000      same as o -c -c3-h1
+o -c -c5-h1   1    0.080       180.000           3.000      same as o -c -c3-h1, penalty score=  0.0
+c -c5-c5-c5   1    0.000         0.000          -3.000      same as c -c3-c3-c3
+c -c5-c5-c5   1    0.040         0.000          -2.000      same as c -c3-c3-c3
+c -c5-c5-c5   1    0.460       180.000           1.000      same as c -c3-c3-c3, penalty score=  0.0
+c -c5-c5-hc   9    1.400         0.000           3.000      same as X -c3-c3-X , penalty score=  0.0
+c -c5-n7-c5   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+c -c5-n7-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+oh-c -c5-c5   6    0.000       180.000           2.000      same as X -c -c3-X , penalty score=  0.0
+oh-c -c5-n7   6    0.000       180.000           2.000      same as X -c -c3-X , penalty score=  0.0
+oh-c -c5-h1   6    0.000       180.000           2.000      same as X -c -c3-X , penalty score=  0.0
+c5-c -oh-ho   1    1.800       180.000           2.000      same as c3-c -oh-ho, penalty score=  0.0
+c5-c5-c5-c5   1    0.520         0.000           3.000      same as c3-c3-c3-c3, penalty score=  0.0
+c5-c5-c5-hc   1    0.130         0.000           3.000      same as c3-c3-c3-hc, penalty score=  0.0
+c5-c5-n7-c5   1    0.140         0.000           3.000      same as c3-c3-n7-c3, penalty score=  0.0
+c5-c5-n7-hn   1    0.217         0.000           3.000      same as c3-c3-n3-hn, penalty score=  0.0
+c5-c5-c5-n7   1    0.210         0.000           3.000      same as c3-c3-c3-n3, penalty score=  0.0
+c5-c5-c5-h1   9    1.400         0.000           3.000      same as X -c3-c3-X , penalty score=  0.0
+hc-c5-c5-n7   1    0.100         0.000           3.000      same as hc-c3-c3-n3, penalty score=  0.0
+h1-c5-c5-hc   9    1.400         0.000           3.000      same as X -c3-c3-X , penalty score=  0.0
+h1-c5-n7-c5   1    0.215         0.000           3.000      same as h1-c3-n7-c3, penalty score=  0.0
+h1-c5-n7-hn   6    1.800         0.000           3.000      same as X -c3-n3-X , penalty score=  0.0
+hc-c5-c5-hc   1    0.120         0.000           3.000      same as hc-c3-c3-hc, penalty score=  0.0
+
+IMPROPER
+c5-o -c -oh         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@pyridinium
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-h4-ca-na         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.3 (use general term))
+ca-ca-na-hn         1.1          180.0         2.0          Using general improper torsional angle  X- X-na-hn, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@tetrazole
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+h5-na-cc-nd         1.1          180.0         2.0          Using the default value
+cc-hn-na-nc         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@triazine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+h5-nb-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.6 (use general term))
+
+NONBON
+
+
+
+
+@@bipyridyl
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+cp-cp-nb-ca   1    0.870       180.000           2.000      same as ca-ca-ne-c2, penalty score=709.0
+ca-cp-nb-ca   1    0.870       180.000           2.000      same as ca-ca-ne-c2, penalty score=622.0
+
+IMPROPER
+ca-cp-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-h4-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.3 (use general term))
+cp-h4-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.3 (use general term))
+ca-ca-cp-cp         1.1          180.0         2.0          Using the default value
+ca-cp-cp-nb         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@pyrene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-ca         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@benzenesulfonamide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+hn-n8-sy-o    6   18.800         0.000           2.000      same as X -n3-sy-X , penalty score=  0.0
+hn-n8-sy-ca   6   18.800         0.000           2.000      same as X -n3-sy-X , penalty score=  0.0
+
+IMPROPER
+ca-ca-ca-sy         1.1          180.0         2.0          Using the default value
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@dimethylsulfonamide
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@dimethylphosphate
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@methylphosphonium
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
+@@carbonate
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+o -o -c -o          1.1          180.0         2.0          Using general improper torsional angle  X- o- c- o, penalty score=  3.0)
+
+NONBON
+
+
+
+
+@@oxalate
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c -o -c -o          1.1          180.0         2.0          Using general improper torsional angle  X- o- c- o, penalty score=  3.0)
+
+NONBON
+
+
+
+
+@@betaine
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-o -c -o          1.1          180.0         2.0          Using general improper torsional angle  X- o- c- o, penalty score=  3.0)
+
+NONBON
+
+
+
+
+@@cycloheptatriene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+c3-ce-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+c2-ce-ce-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+ce-cf-ce-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+ce-cf-cf-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+c2-cf-cf-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 46.8 (use general term))
+c3-cf-c2-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 47.1 (use general term))
+
+NONBON
+
+
+
+
+@@cyclooctatetraene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+cc-cd-cc-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+cc-cd-cd-ha         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 38.9 (use general term))
+
+NONBON
+
+
+
+
+@@quinoline
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-nb         1.1          180.0         2.0          Using the default value
+ca-h4-ca-nb         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 44.3 (use general term))
+ca-ca-ca-ca         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@benzimidazole
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+ca-ca-ca-na         1.1          180.0         2.0          Using the default value
+ca-cc-na-hn         1.1          180.0         2.0          Using general improper torsional angle  X- X-na-hn, penalty score=  6.0)
+h5-na-cc-nd         1.1          180.0         2.0          Same as X -X -ca-ha, penalty score= 67.5 (use general term))
+ca-ca-ca-nd         1.1          180.0         2.0          Using the default value
+
+NONBON
+
+
+
+
+@@phenylacetylene
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+ca-ca-cg-c1   2    0.000       180.000           2.000      same as X -c1-ca-X , penalty score= 97.0
+
+IMPROPER
+ca-ca-ca-cg         1.1          180.0         2.0          Using the default value
+ca-ca-ca-ha         1.1          180.0         2.0          Using general improper torsional angle  X- X-ca-ha, penalty score=  6.0)
+
+NONBON
+
+
+
+
+@@butadiyne
+Remark line goes here
+MASS
+
+BOND
+
+ANGLE
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+
+
+
