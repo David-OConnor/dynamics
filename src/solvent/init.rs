@@ -18,7 +18,7 @@ use crate::{
     barostat::SimBox,
     partial_charge_inference::{files::load_from_bytes_bincode, save},
     sa_surface,
-    solvent::WaterMolOpc,
+    solvent::{WaterModel, WaterMolOpc},
 };
 // 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing
 // and maintaining the solvent density and molecule count.
@@ -397,6 +397,7 @@ pub fn water_mols_from_template(
     // molecules that the filter would reject are acceptable starting points; the MD
     // equilibration run will push them to their natural first-shell distances.
     skip_pbc_filter: bool,
+    water_model: &WaterModel,
 ) -> Vec<WaterMolOpc> {
     match water_mols_from_template_in_region(
         cell,
@@ -405,6 +406,7 @@ pub fn water_mols_from_template(
         specify_num_water,
         template_type,
         skip_pbc_filter,
+        water_model,
     ) {
         Ok(water) => water,
         Err(e) => {
@@ -449,6 +451,7 @@ pub fn water_mols_from_template_in_region(
     specify_num_water: Option<usize>,
     template_type: &SolventTemplateType,
     skip_pbc_filter: bool,
+    water_model: &WaterModel,
 ) -> io::Result<Vec<WaterMolOpc>> {
     water_mols_from_template_in_region_avoiding(
         cell,
@@ -458,6 +461,7 @@ pub fn water_mols_from_template_in_region(
         specify_num_water,
         template_type,
         skip_pbc_filter,
+        water_model,
     )
 }
 
@@ -525,6 +529,7 @@ pub(crate) fn water_mols_from_template_in_region_avoiding(
     specify_num_water: Option<usize>,
     template_type: &SolventTemplateType,
     skip_pbc_filter: bool,
+    water_model: &WaterModel,
 ) -> io::Result<Vec<WaterMolOpc>> {
     validate_positive_cell("Simulation cell", cell)?;
     validate_positive_cell("Water placement region", region)?;
@@ -660,6 +665,7 @@ pub(crate) fn water_mols_from_template_in_region_avoiding(
             Vec3::new_zero(),
             Vec3::new_zero(),
             Quaternion::new_identity(),
+            water_model,
         );
 
         // todo: I'm not sure how we're handling the M/EP point. I guess it's placed
@@ -672,7 +678,7 @@ pub(crate) fn water_mols_from_template_in_region_avoiding(
         mol.o.vel = candidate.o_velocity;
         mol.h0.vel = candidate.h0_velocity;
         mol.h1.vel = candidate.h1_velocity;
-        mol.update_virtual_site();
+        mol.update_virtual_site(water_model);
 
         result.push(mol);
         placed_tiles.push(candidate.tile);

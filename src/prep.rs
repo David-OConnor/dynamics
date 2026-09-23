@@ -30,7 +30,7 @@ use bio_files::{
     md_params::ForceFieldParams,
 };
 
-use crate::MdState;
+use crate::{MdState, non_bonded::Scale14};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
 /// the baseline.
@@ -111,14 +111,14 @@ impl MdState {
     /// We use this to set up optimizations defined in the Amber reference manual. `excluded` deals
     /// with sections were we skip coulomb and Vdw interactions for atoms separated by 1 or 2 bonds. `scaled14` applies a force
     /// scaler for these interactions, when separated by 3 bonds.
-    pub(crate) fn setup_nonbonded_exclusion_scale_flags(&mut self) {
+    ///
+    /// `atom_scale_14` holds the 1-4 scale factors of each atom's force field, indexed by atom. The
+    /// atoms of a dihedral always share a molecule, so we take the factors from its first atom.
+    pub(crate) fn setup_nonbonded_exclusion_scale_flags(&mut self, atom_scale_14: &[Scale14]) {
         // Helper to store pairs in canonical (low,high) order
+        let canonical = |i: usize, j: usize| if i < j { (i, j) } else { (j, i) };
         let push = |set: &mut HashSet<(usize, usize)>, i: usize, j: usize| {
-            if i < j {
-                set.insert((i, j));
-            } else {
-                set.insert((j, i));
-            }
+            set.insert(canonical(i, j));
         };
 
         // 1-2
@@ -133,11 +133,12 @@ impl MdState {
 
         // 1-4. We do not count improper dihedrals here.
         for indices in self.force_field_params.dihedral.keys() {
-            push(&mut self.pairs_14_scaled, indices.0, indices.3);
+            self.pairs_14_scaled
+                .insert(canonical(indices.0, indices.3), atom_scale_14[indices.0]);
         }
 
         // Make sure no 1-4 pair is also in the excluded set
-        for p in &self.pairs_14_scaled {
+        for p in self.pairs_14_scaled.keys() {
             self.pairs_excluded_12_13.remove(p);
         }
     }

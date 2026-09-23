@@ -14,10 +14,7 @@ use crate::{
     CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComMotionRemoval, ComputationDevice,
     HydrogenConstraint, MdState, Solvent,
     barostat::measure_pressure,
-    solvent::{
-        ACCEL_CONV_WATER_H, ACCEL_CONV_WATER_O,
-        opc_settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
-    },
+    solvent::opc_settle::{RESET_ANGLE_RATIO, integrate_rigid_water, reset_angle},
     thermostat::{LANGEVIN_GAMMA_DEFAULT, LANGEVIN_GAMMA_WATER_INIT, TAU_TEMP_WATER_INIT},
 };
 
@@ -184,6 +181,7 @@ impl MdState {
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
+                        &self.water_model,
                     );
                 }
 
@@ -303,6 +301,7 @@ impl MdState {
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
+                        &self.water_model,
                     );
                 }
                 // The box dimensions changed; update PME so the next force computation
@@ -398,6 +397,7 @@ impl MdState {
                         &mut self.cell,
                         &mut self.atoms,
                         &mut self.water,
+                        &self.water_model,
                     );
                     self.regen_pme(dev);
                 }
@@ -444,7 +444,7 @@ impl MdState {
 
         if self.step_count.is_multiple_of(RESET_ANGLE_RATIO) && self.step_count != 0 {
             for mol in &mut self.water {
-                reset_angle(mol, &self.cell);
+                reset_angle(mol, &self.cell, &self.water_model);
             }
         }
 
@@ -492,7 +492,7 @@ impl MdState {
             w.h0.vel += w.h0.accel * dt_kick;
             w.h1.vel += w.h1.accel * dt_kick;
 
-            let _ = integrate_rigid_water(w, dt_drift, &self.cell);
+            let _ = integrate_rigid_water(w, dt_drift, &self.cell, &self.water_model);
         }
 
         match self.cfg.hydrogen_constraint {
@@ -537,14 +537,16 @@ impl MdState {
             a.vel += a.accel * dt;
         }
 
+        let (accel_conv_o, accel_conv_h) = self.water_model.accel_conversions();
+
         for w in &mut self.water {
             // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
             // w.project_ep_force_to_real_sites(&self.cell);
-            w.project_ep_force();
+            w.project_ep_force(&self.water_model);
 
-            w.o.accel = w.o.force * ACCEL_CONV_WATER_O;
-            w.h0.accel = w.h0.force * ACCEL_CONV_WATER_H;
-            w.h1.accel = w.h1.force * ACCEL_CONV_WATER_H;
+            w.o.accel = w.o.force * accel_conv_o;
+            w.h0.accel = w.h0.force * accel_conv_h;
+            w.h1.accel = w.h1.force * accel_conv_h;
 
             w.o.vel += w.o.accel * dt;
             w.h0.vel += w.h0.accel * dt;
@@ -572,7 +574,7 @@ impl MdState {
         }
 
         for w in &mut self.water {
-            let _ = integrate_rigid_water(w, dt, &self.cell);
+            let _ = integrate_rigid_water(w, dt, &self.cell, &self.water_model);
         }
 
         match self.cfg.hydrogen_constraint {

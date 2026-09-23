@@ -5,6 +5,8 @@
 
 use std::{collections::HashMap, io, path::PathBuf};
 
+#[cfg(feature = "encode")]
+use bincode::{Decode, Encode};
 use bio_files::{
     AtomGeneric, BondGeneric, ChainGeneric, LipidStandard, MmCif, ResidueEnd, ResidueGeneric,
     ResidueType, create_bonds,
@@ -15,7 +17,13 @@ use bio_files::{
 };
 use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element};
 
-use crate::{Dihedral, ParamError, merge_params, populate_hydrogens_dihedrals};
+use crate::{
+    Dihedral, FfMolType, ParamError, merge_params,
+    non_bonded::{LjCombiningRule, Scale14},
+    param_inference::update_small_mol_params,
+    populate_hydrogens_dihedrals,
+    solvent::WaterModel,
+};
 
 pub type ProtFfChargeMap = HashMap<AminoAcidGeneral, Vec<ChargeParamsProtein>>;
 pub type LipidFfChargeMap = HashMap<LipidStandard, Vec<ChargeParams>>;
@@ -47,12 +55,90 @@ pub const RNA_LIB: &str = include_str!("../param_data/RNA.lib");
 // todo, and not required. YIL: Yildirim torsion refit. CI: Legacy Cornell-style. SHAW: incomplete,
 // todo from a person named Shaw.
 
-// Note: Water parameters are concise; we store them directly.
+// Note: Water parameters are concise; we store them directly. See `WaterModel`.
+
+/// A family of force fields, with its conventions and recommended water model. We resolve this
+/// to data once, with `FfParamSet::from_family`; the rest of the library uses that data, and
+/// doesn't match on the family.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ForceFieldFamily {
+    /// ff19SB (proteins), OL24 (DNA), OL3 (RNA), lipid21, and GAFF2 (small molecules), with
+    /// OPC water. Amber's recommendations as of Sept 2025.
+    #[default]
+    Amber,
+}
+
+/// How we assign force field types, partial charges, and missing bonded parameters to small
+/// molecules that don't have them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SmallMolTyper {
+    /// GAFF2 types using Antechamber's rules, partial charges from this library's trained model,
+    /// and parmchk-style estimates for missing parameters. See `param_inference`.
+    #[default]
+    Gaff2,
+}
+
+impl SmallMolTyper {
+    /// Assigns force field types and partial charges to `atoms` in place, and returns
+    /// molecule-specific parameters. `general_params` is the family's small-molecule set.
+    pub fn assign(
+        self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+        adjacency_list: Option<&[Vec<usize>]>,
+        general_params: &ForceFieldParams,
+    ) -> io::Result<ForceFieldParams> {
+        match self {
+            Self::Gaff2 => update_small_mol_params(atoms, bonds, adjacency_list, general_params),
+        }
+    }
+}
+
+/// 1-4 scale factors for each molecule type.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Scale14ByMolType {
+    pub peptide: Scale14,
+    pub small_organic: Scale14,
+    pub dna: Scale14,
+    pub rna: Scale14,
+    pub lipid: Scale14,
+    /// Set this to `Scale14::GLYCAM` if loading GLYCAM parameters.
+    pub carbohydrate: Scale14,
+}
+
+impl Scale14ByMolType {
+    pub fn get(&self, mol_type: FfMolType) -> Scale14 {
+        match mol_type {
+            FfMolType::Peptide => self.peptide,
+            FfMolType::SmallOrganic => self.small_organic,
+            FfMolType::Dna => self.dna,
+            FfMolType::Rna => self.rna,
+            FfMolType::Lipid => self.lipid,
+            FfMolType::Carbohydrate => self.carbohydrate,
+        }
+    }
+}
+
+/// Non-bonded conventions that are part of a force field's definition, rather than of individual
+/// atom types. These must match the parameters they're used with.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NonBondedRules {
+    /// Applies to all pairs in the system, so all molecules' parameters must use the same rule.
+    pub lj_combining: LjCombiningRule,
+    pub scale_14: Scale14ByMolType,
+}
 
 #[derive(Default, Debug)]
 /// A set of general parameters that aren't molecule-specific. E.g. from GAFF2, OL3, RNA, or amino19.
 /// These are used as a baseline, and in some cases, overridden by molecule-specific parameters.
+///
+/// This also holds the rest of what defines a force field family: its non-bonded conventions,
+/// recommended water model, and small-molecule typing.
 pub struct FfParamSet {
+    /// The family these parameters belong to. `MdState::new` requires this to match
+    /// `MdConfig::ff_family`.
+    pub family: ForceFieldFamily,
     pub peptide: Option<ForceFieldParams>,
     pub small_mol: Option<ForceFieldParams>,
     pub dna: Option<ForceFieldParams>,
@@ -66,6 +152,12 @@ pub struct FfParamSet {
     // todo: QC these types; lipid as place holder. See how they parse.
     pub dna_ff_q_map: Option<NucleicAcidFfChargeMap>,
     pub rna_ff_q_map: Option<NucleicAcidFfChargeMap>,
+    /// Defaults to Amber's conventions, which also cover GAFF2, lipid21, and the nucleic acid sets.
+    pub nonbonded_rules: NonBondedRules,
+    /// The water model this family recommends, including its counter-ions. `MdConfig::water_model`
+    /// overrides this.
+    pub default_water: WaterModel,
+    pub small_mol_typer: SmallMolTyper,
 }
 
 /// Paths for to general parameter files. Used to create a FfParamSet.
@@ -94,11 +186,21 @@ pub struct ParamGeneralPaths {
 }
 
 impl FfParamSet {
+    /// Load the parameter set for a force field family, using parameter files included with this
+    /// library.
+    pub fn from_family(family: ForceFieldFamily) -> io::Result<Self> {
+        match family {
+            ForceFieldFamily::Amber => Self::new_amber(),
+        }
+    }
+
     /// Load general parameter files for the most common classes of organic molecules.
     /// This also populates ff type and charge for protein atoms; these are provided by molecule-specific
     /// formats for small molecules.
+    ///
+    /// These are Amber-format files (.dat, .frcmod, .lib), so we use Amber's conventions.
     pub fn new(paths: &ParamGeneralPaths) -> io::Result<Self> {
-        let mut result = FfParamSet::default();
+        let mut result = Self::amber_conventions();
 
         if let Some(p) = &paths.peptide {
             let peptide = ForceFieldParams::load_dat(p)?;
@@ -158,7 +260,7 @@ impl FfParamSet {
     /// the param sets recommended by Amber, CAO Sept 2025: ff19SB, OL24, OL3, GLYCAM_06j, lipids21,
     /// and gaff2.
     pub fn new_amber() -> io::Result<Self> {
-        let mut result = FfParamSet::default();
+        let mut result = Self::amber_conventions();
 
         // We use parm19 for both peptides, and nucleic acids.
         let parm19 = ForceFieldParams::from_dat(PARM_19)?;
@@ -204,6 +306,29 @@ impl FfParamSet {
         result.rna_ff_q_map = Some(rna_charges);
 
         Ok(result)
+    }
+
+    /// An empty set with Amber's family tag, non-bonded rules, water model, and typing.
+    fn amber_conventions() -> Self {
+        Self {
+            family: ForceFieldFamily::Amber,
+            nonbonded_rules: NonBondedRules {
+                lj_combining: LjCombiningRule::LorentzBerthelot,
+                scale_14: Scale14ByMolType {
+                    peptide: Scale14::AMBER,
+                    small_organic: Scale14::AMBER,
+                    dna: Scale14::AMBER,
+                    rna: Scale14::AMBER,
+                    lipid: Scale14::AMBER,
+                    // todo: GLYCAM (Amber's recommendation) uses `Scale14::GLYCAM`, but we don't
+                    // todo: include its parameters yet. We use this for all molecules, as before.
+                    carbohydrate: Scale14::AMBER,
+                },
+            },
+            default_water: WaterModel::OPC,
+            small_mol_typer: SmallMolTyper::Gaff2,
+            ..Default::default()
+        }
     }
 }
 

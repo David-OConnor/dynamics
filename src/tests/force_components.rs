@@ -14,8 +14,8 @@ use lin_alg::f32::Vec3;
 use na_seq::Element;
 
 use crate::{
-    ComputationDevice, FfMolType, Integrator, MdConfig, MdOverrides, MdState, MolDynamics,
-    SimBoxInit, Solvent,
+    ComputationDevice, FfMolType, Integrator, LjModifier, MdConfig, MdOverrides, MdState,
+    MolDynamics, SimBoxInit, Solvent, WaterModel,
     barostat::SimBox,
     bonded_forces::{f_angle_bending, f_bond_stretching, f_dihedral},
     forces::force_e_lj,
@@ -234,6 +234,17 @@ fn evaluate_pair(
     dist: f32,
     overrides: MdOverrides,
 ) -> MdState {
+    evaluate_pair_with_lj_modifier(dev, q0, q1, dist, overrides, LjModifier::None)
+}
+
+fn evaluate_pair_with_lj_modifier(
+    dev: &ComputationDevice,
+    q0: f32,
+    q1: f32,
+    dist: f32,
+    overrides: MdOverrides,
+    lj_modifier: LjModifier,
+) -> MdState {
     let center = BOX_LEN / 2.0;
     let mols = [
         MolDynamics {
@@ -248,7 +259,11 @@ fn evaluate_pair(
         },
     ];
     let params = FfParamSet::new_amber().unwrap();
-    let (mut state, _) = MdState::new(dev, &base_config(overrides), &mols, &params).unwrap();
+    let cfg = MdConfig {
+        lj_modifier,
+        ..base_config(overrides)
+    };
+    let (mut state, _) = MdState::new(dev, &cfg, &mols, &params).unwrap();
     state.reset_f_acc_pe_virial();
     state.apply_all_forces(dev, &None);
     state
@@ -489,6 +504,57 @@ fn gpu_short_range_matches_cpu_force_and_energy() {
     );
 }
 
+/// The CUDA kernel applies LJ modifiers the same way as the CPU, including in the switching region.
+#[cfg(feature = "cuda")]
+#[test]
+fn gpu_lj_modifiers_match_cpu() {
+    let Some(gpu) = cuda_device() else {
+        return;
+    };
+    let overrides = MdOverrides {
+        bonded_disabled: true,
+        coulomb_disabled: true,
+        long_range_recip_disabled: true,
+        ..Default::default()
+    };
+
+    for modifier in [
+        LjModifier::PotentialShift,
+        LjModifier::ForceSwitch { r_switch: 8.0 },
+    ] {
+        for dist in [4.5, 9.0] {
+            let cpu = evaluate_pair_with_lj_modifier(
+                &ComputationDevice::Cpu,
+                0.,
+                0.,
+                dist,
+                overrides.clone(),
+                modifier,
+            );
+            let gpu =
+                evaluate_pair_with_lj_modifier(&gpu, 0., 0., dist, overrides.clone(), modifier);
+
+            let label = format!("{modifier:?} at {dist} Å");
+            for i in 0..2 {
+                assert_vec_close(
+                    gpu.atoms[i].force,
+                    cpu.atoms[i].force,
+                    2e-4,
+                    1e-6,
+                    &format!("GPU LJ force, {label}"),
+                );
+            }
+            assert_close(
+                gpu.potential_energy_nonbonded as f32,
+                cpu.potential_energy_nonbonded as f32,
+                2e-4,
+                1e-6,
+                &format!("GPU LJ energy, {label}"),
+            );
+        }
+    }
+}
+
 #[cfg(all(feature = "cuda", any(feature = "cufft", feature = "vkfft")))]
 #[test]
 fn gpu_spme_handles_translated_simulation_cell() {
@@ -548,4 +614,31 @@ fn gpu_spme_and_combined_forces_match_cpu() {
         "GPU PME combined energy",
     );
     assert_component_superposition(&gpu, 0.015);
+}
+
+/// The water model comes from the parameter set's family unless the config overrides it.
+#[test]
+fn water_model_resolves_from_family_or_override() {
+    let params = FfParamSet::new_amber().unwrap();
+    let mols = [MolDynamics {
+        ff_mol_type: FfMolType::SmallOrganic,
+        atoms: vec![atom(1, Vec3::splat(BOX_LEN / 2.0), 0.)],
+        ..Default::default()
+    }];
+
+    let cfg = base_config(MdOverrides::default());
+    let (state, _) = MdState::new(&ComputationDevice::Cpu, &cfg, &mols, &params).unwrap();
+    assert_eq!(state.water_model, params.default_water);
+
+    // A 3-site variant of OPC.
+    let override_ = WaterModel {
+        o_m_dist: 0.,
+        ..WaterModel::OPC
+    };
+    let cfg = MdConfig {
+        water_model: Some(override_),
+        ..cfg
+    };
+    let (state, _) = MdState::new(&ComputationDevice::Cpu, &cfg, &mols, &params).unwrap();
+    assert_eq!(state.water_model, override_);
 }

@@ -14,9 +14,11 @@ use bio_files::{
 use crate::{
     MdOverrides, SimBoxInit, barostat,
     integrate::Integrator,
+    non_bonded::LjModifier,
+    params::ForceFieldFamily,
     prep::HydrogenConstraint,
     snapshot::SnapshotHandlers,
-    solvent::{Solvent, init::SolventTemplateType},
+    solvent::{Solvent, WaterModel, init::SolventTemplateType},
     thermostat::{TAU_TEMP_DEFAULT, TEMP_DEFAULT},
 };
 
@@ -41,6 +43,9 @@ pub enum ComMotionRemoval {
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MdConfig {
+    /// The force field family. `MdState::new` requires this to match the family of the
+    /// `FfParamSet` passed to it.
+    pub ff_family: ForceFieldFamily,
     /// Defaults to Velocity Verlet.
     pub integrator: Integrator,
     /// Legacy on/off switch for COM motion removal.
@@ -62,6 +67,9 @@ pub struct MdConfig {
     /// to set periodic boundary conditions for SPME computatations and general wrapping/min-image.
     pub sim_box: SimBoxInit,
     pub solvent: Solvent,
+    /// Overrides the force field family's recommended water model (e.g. OPC for Amber) for water
+    /// solvent. The model includes the counter-ions we add to neutralize the system.
+    pub water_model: Option<WaterModel>,
     /// Prior to the first integrator step, we attempt to relax energy in the system.
     /// Use no more than this many iterations to do so. Higher can produce better results,
     /// but is slower. If None, don't relax.
@@ -98,8 +106,10 @@ pub struct MdConfig {
     /// The distance at which we cut off short-range (Direct) Coulomb operations, and transtion
     /// to SPME reciprical forces. Å
     pub coulomb_cutoff: f32,
-    /// A hard distance cutoff for VDW forces. Å
+    /// A distance cutoff for VDW forces. Å
     pub lj_cutoff: f32,
+    /// How LJ forces and energy are brought to zero at `lj_cutoff`. Defaults to truncation.
+    pub lj_modifier: LjModifier,
     /// If enabled, keep the cell centered on the dynamic atoms at init and during the run.
     /// Disable this for pulling / driven systems where you want the box to remain fixed.
     pub recenter_sim_box: bool,
@@ -109,6 +119,7 @@ pub struct MdConfig {
 impl Default for MdConfig {
     fn default() -> Self {
         Self {
+            ff_family: Default::default(),
             integrator: Default::default(),
             zero_com_drift: true,
             com_motion_removal: ComMotionRemoval::Linear,
@@ -119,6 +130,7 @@ impl Default for MdConfig {
             snapshot_handlers: Default::default(),
             sim_box: Default::default(),
             solvent: Default::default(),
+            water_model: None,
             max_init_relaxation_iters: Some(1_000), // todo: A/R
             // GROMACS emtol = 1000, converted to our units. This is not the same as its default
             // of 10: It's loose, for this initial energy minimization. We are converting from
@@ -133,6 +145,7 @@ impl Default for MdConfig {
             spme_alpha: 0.26,
             coulomb_cutoff: 10.,
             lj_cutoff: 10.,
+            lj_modifier: Default::default(),
             recenter_sim_box: true,
             overrides: Default::default(),
         }
@@ -196,6 +209,20 @@ impl MdConfig {
 
         const ANGSTROM_TO_NM: f32 = 0.1;
 
+        // Note: We export `LjModifier::None` as GROMACS' default (Potential-shift), as we did prior to
+        // making the modifier configurable.
+        let vdw_modifier = match self.lj_modifier {
+            LjModifier::None => VdwModifier::default(),
+            LjModifier::PotentialShift => VdwModifier::PotentialShift,
+            LjModifier::ForceSwitch { .. } => {
+                eprintln!(
+                    "Warning: Exporting an LJ force switch to GROMACS without its switch distance; \
+                     set `rvdw-switch` in the MDP manually."
+                );
+                VdwModifier::ForceSwitch
+            }
+        };
+
         // Many of these values are the MdpParams defaults, but we specify here
         // to be explicit, and not miss any.
         MdpParams {
@@ -213,7 +240,7 @@ impl MdConfig {
             }),
             rcoulomb: self.coulomb_cutoff * ANGSTROM_TO_NM,
             vdwtype: VdwType::CutOff,
-            vdw_modifier: VdwModifier::default(),
+            vdw_modifier,
             rvdw: self.lj_cutoff * ANGSTROM_TO_NM,
             thermostat,
             // We only have one temperature-coupling group in this lib.
@@ -327,6 +354,7 @@ impl From<MdpParams> for MdConfig {
         let def = Self::default();
 
         Self {
+            ff_family: def.ff_family,
             integrator,
             zero_com_drift: true,
             com_motion_removal: def.com_motion_removal,
@@ -337,6 +365,7 @@ impl From<MdpParams> for MdConfig {
             snapshot_handlers,
             sim_box: Default::default(),
             solvent: Default::default(),
+            water_model: def.water_model,
             max_init_relaxation_iters: def.max_init_relaxation_iters,
             energy_minimization_tolerance: def.energy_minimization_tolerance,
             neighbor_skin: def.neighbor_skin,
@@ -348,6 +377,8 @@ impl From<MdpParams> for MdConfig {
             spme_alpha,
             coulomb_cutoff: p.rcoulomb * NM_TO_ANGSTROM,
             lj_cutoff: p.rvdw * NM_TO_ANGSTROM,
+            // We don't map GROMACS' modifier here, as its default (Potential-shift) differs from ours.
+            lj_modifier: def.lj_modifier,
             recenter_sim_box: def.recenter_sim_box,
         }
     }

@@ -8,7 +8,8 @@ use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 
 use crate::{
     AtomDynamics, ForcesOnWaterMol, MdOverrides,
-    non_bonded::{BodyRef, LjTables, NonBondedPair},
+    forces::LjModCoeffs,
+    non_bonded::{BodyRef, LjTables, NonBondedPair, Scale14},
     solvent::{WaterMolOpc, WaterSite},
 };
 
@@ -230,8 +231,12 @@ pub(crate) struct PerNeighborGpu {
     pub water_types_tgt: CudaSlice<u8>,
     pub atom_types_src: CudaSlice<u8>,
     pub water_types_src: CudaSlice<u8>,
-    // These are booleans for potentially safer FFI.
+    /// Per pair: 0 for pairs that aren't 1-4. Otherwise, an index into the scale-factor tables.
     pub scale_14: CudaSlice<u8>,
+    /// Distinct 1-4 scale factors, indexed by `scale_14`. Index 0 is unscaled.
+    pub scale_14_lj_table: CudaSlice<f32>,
+    pub scale_14_coulomb_table: CudaSlice<f32>,
+    // These are booleans for potentially safer FFI.
     pub calc_ljs: CudaSlice<u8>,
     pub calc_coulombs: CudaSlice<u8>,
     pub symmetric: CudaSlice<u8>,
@@ -256,7 +261,12 @@ impl PerNeighborGpu {
         let mut qs_tgt = Vec::with_capacity(n);
         let mut qs_src = Vec::with_capacity(n);
 
-        let mut scale_14s = Vec::with_capacity(n);
+        let mut scale_14s: Vec<u8> = Vec::with_capacity(n);
+        // Distinct 1-4 scale factors; there is usually one per force field in the system.
+        let mut scale_14_table = vec![Scale14 {
+            lj: 1.,
+            coulomb: 1.,
+        }];
 
         let mut tgt_is: Vec<u32> = Vec::with_capacity(n);
         let mut src_is: Vec<u32> = Vec::with_capacity(n);
@@ -330,7 +340,19 @@ impl PerNeighborGpu {
             qs_tgt.push(q_tgt);
             qs_src.push(q_src);
 
-            scale_14s.push(pair.scale_14);
+            scale_14s.push(match pair.scale_14 {
+                None => 0,
+                Some(s) => {
+                    let i = match scale_14_table.iter().skip(1).position(|v| *v == s) {
+                        Some(i) => i + 1,
+                        None => {
+                            scale_14_table.push(s);
+                            scale_14_table.len() - 1
+                        }
+                    };
+                    u8::try_from(i).expect("Too many distinct 1-4 scale factors for the GPU")
+                }
+            });
 
             calc_ljs.push(pair.calc_lj);
             calc_coulombs.push(pair.calc_coulomb);
@@ -361,7 +383,8 @@ impl PerNeighborGpu {
             assert_eq!(alch_interactions.len(), n);
         }
 
-        let scale_14: Vec<_> = scale_14s.iter().map(|v| *v as u8).collect();
+        let scale_14_lj_table: Vec<f32> = scale_14_table.iter().map(|s| s.lj).collect();
+        let scale_14_coulomb_table: Vec<f32> = scale_14_table.iter().map(|s| s.coulomb).collect();
         let calc_ljs: Vec<_> = calc_ljs.iter().map(|v| *v as u8).collect();
         let calc_coulombs: Vec<_> = calc_coulombs.iter().map(|v| *v as u8).collect();
         let symmetric: Vec<_> = symmetric.iter().map(|v| *v as u8).collect();
@@ -382,8 +405,10 @@ impl PerNeighborGpu {
         let atom_types_src = stream.clone_htod(&atom_types_src).unwrap();
         let water_types_src = stream.clone_htod(&water_types_src).unwrap();
 
-        // For Amber-style 1-4 covalent bond scaling; not general LJ.
-        let scale_14 = stream.clone_htod(&scale_14).unwrap();
+        // For 1-4 covalent bond scaling; not general LJ.
+        let scale_14 = stream.clone_htod(&scale_14s).unwrap();
+        let scale_14_lj_table = stream.clone_htod(&scale_14_lj_table).unwrap();
+        let scale_14_coulomb_table = stream.clone_htod(&scale_14_coulomb_table).unwrap();
         let calc_ljs = stream.clone_htod(&calc_ljs).unwrap();
         let calc_coulombs = stream.clone_htod(&calc_coulombs).unwrap();
         let symmetric = stream.clone_htod(&symmetric).unwrap();
@@ -401,6 +426,8 @@ impl PerNeighborGpu {
             atom_types_src,
             water_types_src,
             scale_14,
+            scale_14_lj_table,
+            scale_14_coulomb_table,
             calc_ljs,
             calc_coulombs,
             symmetric,
@@ -472,6 +499,7 @@ pub fn force_nonbonded_gpu(
     per_neighbor: &PerNeighborGpu,
     overrides: &MdOverrides,
     lambda_alch: f64,
+    lj_mod: &LjModCoeffs,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>, f64) {
     upload_positions(stream, forces, atoms_dyn, water);
 
@@ -512,6 +540,7 @@ pub fn force_nonbonded_gpu(
     let n_u32 = n as u32;
     let coulomb_disabled = overrides.coulomb_disabled as u8;
     let lj_disabled = overrides.lj_disabled as u8;
+    let lj_mod_enabled = lj_mod.enabled as u8;
     let alchemical_enabled = per_neighbor.has_alchemical_interactions;
     let lambda_alch = lambda_alch as f32;
     let cell_inv_extent = Vec3::new(
@@ -561,6 +590,8 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&per_neighbor.atom_types_src);
     launch_args.arg(&per_neighbor.water_types_src);
     launch_args.arg(&per_neighbor.scale_14);
+    launch_args.arg(&per_neighbor.scale_14_lj_table);
+    launch_args.arg(&per_neighbor.scale_14_coulomb_table);
     launch_args.arg(&per_neighbor.calc_ljs);
     launch_args.arg(&per_neighbor.calc_coulombs);
     launch_args.arg(&per_neighbor.symmetric);
@@ -582,6 +613,16 @@ pub fn force_nonbonded_gpu(
     launch_args.arg(&n_u32);
     launch_args.arg(&coulomb_disabled);
     launch_args.arg(&lj_disabled);
+    // LJ cutoff and modifier coefficients. See `LjModCoeffs`.
+    launch_args.arg(&lj_mod.cutoff);
+    launch_args.arg(&lj_mod_enabled);
+    launch_args.arg(&lj_mod.r_switch);
+    launch_args.arg(&lj_mod.a6);
+    launch_args.arg(&lj_mod.b6);
+    launch_args.arg(&lj_mod.c6);
+    launch_args.arg(&lj_mod.a12);
+    launch_args.arg(&lj_mod.b12);
+    launch_args.arg(&lj_mod.c12);
 
     if alchemical_enabled {
         launch_args.arg(&lambda_alch);

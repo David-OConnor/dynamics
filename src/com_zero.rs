@@ -2,10 +2,7 @@
 
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 
-use crate::{
-    MdState,
-    solvent::{H_MASS, MASS_WATER_MOL, O_MASS},
-};
+use crate::MdState;
 
 const EPS: f64 = 1e-6;
 
@@ -23,12 +20,13 @@ impl MdState {
             p_sum += p;
         }
 
+        let wm = &self.water_model;
         for w in &self.water {
-            mass_sum += MASS_WATER_MOL as f64;
+            mass_sum += wm.mass() as f64;
 
-            let p_o: Vec3F64 = (w.o.vel * O_MASS).into();
-            let p_h0: Vec3F64 = (w.h0.vel * H_MASS).into();
-            let p_h1: Vec3F64 = (w.h1.vel * H_MASS).into();
+            let p_o: Vec3F64 = (w.o.vel * wm.mass_o).into();
+            let p_h0: Vec3F64 = (w.h0.vel * wm.mass_h).into();
+            let p_h1: Vec3F64 = (w.h1.vel * wm.mass_h).into();
 
             p_sum += p_o + p_h0 + p_h1;
         }
@@ -120,12 +118,13 @@ impl MdState {
             m_r_sum += m_r;
         }
 
+        let wm = &self.water_model;
         for w in &self.water {
-            mass_sum += MASS_WATER_MOL as f64;
+            mass_sum += wm.mass() as f64;
 
-            let mr_o: Vec3F64 = (w.o.posit * O_MASS).into();
-            let mr_h0: Vec3F64 = (w.h0.posit * H_MASS).into();
-            let mr_h1: Vec3F64 = (w.h1.posit * H_MASS).into();
+            let mr_o: Vec3F64 = (w.o.posit * wm.mass_o).into();
+            let mr_h0: Vec3F64 = (w.h0.posit * wm.mass_h).into();
+            let mr_h1: Vec3F64 = (w.h1.posit * wm.mass_h).into();
 
             m_r_sum += mr_o + mr_h0 + mr_h1;
         }

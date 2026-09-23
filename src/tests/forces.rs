@@ -8,8 +8,9 @@ use na_seq::Element;
 use crate::{
     ComputationDevice, FfMolType, Integrator, MdConfig, MdOverrides, MdState, MolDynamics,
     SimBoxInit, Solvent,
-    forces::force_e_lj,
-    non_bonded::{CHARGE_UNIT_SCALER, alchemical_lj_soft_core_decouple},
+    alchemical::{SOFT_CORE_ALPHA, SOFT_CORE_SIGMA_MIN},
+    forces::{LjModCoeffs, force_e_lj, force_e_lj_mod},
+    non_bonded::{CHARGE_UNIT_SCALER, LjModifier, alchemical_lj_soft_core_decouple},
     params::FfParamSet,
 };
 
@@ -302,8 +303,10 @@ fn test_alchemical_lj_soft_core_endpoints() {
     let dir = Vec3::new(1.0, 0.0, 0.0);
 
     let (hard_f, hard_e) = force_e_lj(dir, 1.0 / r, sigma, eps);
-    let (f0, e0, _) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 0.0);
-    let (f1, e1, dhdl1) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 1.0);
+    let (f0, e0, _) =
+        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 0.0, &LjModCoeffs::default());
+    let (f1, e1, dhdl1) =
+        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 1.0, &LjModCoeffs::default());
 
     assert_close_f32(e0, hard_e, 1e-5, "soft-core lambda=0 energy");
     assert_close_f32(f0.x, hard_f.x, 1e-5, "soft-core lambda=0 force");
@@ -331,10 +334,24 @@ fn test_alchemical_lj_soft_core_dhdl_matches_finite_difference() {
     let delta = 1e-3_f32;
     let dir = Vec3::new(1.0, 0.0, 0.0);
 
-    let (_, _, dhdl) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda);
-    let (_, e_plus, _) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda + delta);
-    let (_, e_minus, _) =
-        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda - delta);
+    let (_, _, dhdl) =
+        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda, &LjModCoeffs::default());
+    let (_, e_plus, _) = alchemical_lj_soft_core_decouple(
+        dir,
+        dist_sq,
+        sigma,
+        eps,
+        lambda + delta,
+        &LjModCoeffs::default(),
+    );
+    let (_, e_minus, _) = alchemical_lj_soft_core_decouple(
+        dir,
+        dist_sq,
+        sigma,
+        eps,
+        lambda - delta,
+        &LjModCoeffs::default(),
+    );
     let numerical = (e_plus - e_minus) / (2.0 * delta);
 
     assert_close_f32(
@@ -353,7 +370,8 @@ fn test_alchemical_lj_soft_core_overlap_is_finite() {
     let dist_sq = r * r;
     let dir = Vec3::new(1.0, 0.0, 0.0);
 
-    let (force, energy, dhdl) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 0.5);
+    let (force, energy, dhdl) =
+        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, 0.5, &LjModCoeffs::default());
 
     assert!(force.x.is_finite() && force.y.is_finite() && force.z.is_finite());
     assert!(
@@ -363,6 +381,130 @@ fn test_alchemical_lj_soft_core_overlap_is_finite() {
     assert!(
         dhdl.is_finite(),
         "soft-core overlap dH/dlambda must be finite"
+    );
+}
+
+// ── LJ cutoff modifiers ───────────────────────────────────────────────────────
+
+const LJ_MOD_CUTOFF: f32 = 12.0;
+
+fn lj_modifiers() -> [(LjModifier, &'static str); 2] {
+    [
+        (LjModifier::PotentialShift, "potential shift"),
+        (LjModifier::ForceSwitch { r_switch: 10.0 }, "force switch"),
+    ]
+}
+
+/// Modified LJ energy along +x, at distance r.
+fn lj_mod_energy(r: f32, sigma: f32, eps: f32, lj_mod: &LjModCoeffs) -> f32 {
+    force_e_lj_mod(Vec3::new(1.0, 0.0, 0.0), r, 1.0 / r, sigma, eps, lj_mod).1
+}
+
+/// For each modifier, force must equal −dE/dr, including inside the switching region.
+#[test]
+fn test_lj_modifiers_force_matches_energy_gradient() {
+    let sigma = 3.4_f32;
+    let eps = 0.086_f32;
+    let delta = 1e-3_f32;
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+
+    for (modifier, label) in lj_modifiers() {
+        let lj_mod = LjModCoeffs::new(modifier, LJ_MOD_CUTOFF);
+
+        for r in [3.5_f32, 5.0, 9.0, 10.5, 11.5] {
+            let (force, _) = force_e_lj_mod(dir, r, 1.0 / r, sigma, eps, &lj_mod);
+            let numerical = -(lj_mod_energy(r + delta, sigma, eps, &lj_mod)
+                - lj_mod_energy(r - delta, sigma, eps, &lj_mod))
+                / (2.0 * delta);
+
+            assert_close_f32(
+                force.x,
+                numerical,
+                5e-3,
+                &format!("{label}: F = −dE/dr at r={r}Å"),
+            );
+        }
+    }
+}
+
+/// Modified energies are zero at the cutoff. Force-switched forces are too, and the force switch
+/// leaves forces unmodified below the switching distance.
+#[test]
+fn test_lj_modifiers_at_boundaries() {
+    let sigma = 3.4_f32;
+    let eps = 0.086_f32;
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+    let rc = LJ_MOD_CUTOFF;
+
+    for (modifier, label) in lj_modifiers() {
+        let lj_mod = LjModCoeffs::new(modifier, rc);
+        let (_, e_rc) = force_e_lj_mod(dir, rc, 1.0 / rc, sigma, eps, &lj_mod);
+        assert!(
+            e_rc.abs() < 1e-8,
+            "{label}: energy at the cutoff is {e_rc:e}"
+        );
+    }
+
+    let lj_mod = LjModCoeffs::new(LjModifier::ForceSwitch { r_switch: 10.0 }, rc);
+    let (f_rc, _) = force_e_lj_mod(dir, rc, 1.0 / rc, sigma, eps, &lj_mod);
+    assert!(
+        f_rc.x.abs() < 1e-8,
+        "force switch: force at the cutoff is {:e}",
+        f_rc.x
+    );
+
+    for r in [4.0_f32, 9.9] {
+        let (f_switched, _) = force_e_lj_mod(dir, r, 1.0 / r, sigma, eps, &lj_mod);
+        let (f_plain, _) = force_e_lj(dir, 1.0 / r, sigma, eps);
+        assert_close_f32(
+            f_switched.x,
+            f_plain.x,
+            1e-5,
+            &format!("force switch: F at r={r}Å"),
+        );
+    }
+}
+
+/// With a modifier, soft-core dH/dλ still matches finite differences, and the interaction is zero
+/// once the soft-core distance reaches the cutoff.
+#[test]
+fn test_alchemical_lj_soft_core_with_modifier() {
+    let sigma = 3.4_f32;
+    let eps = 0.086_f32;
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+    let lj_mod = LjModCoeffs::new(LjModifier::ForceSwitch { r_switch: 10.0 }, LJ_MOD_CUTOFF);
+
+    let r = 10.5_f32;
+    let dist_sq = r * r;
+    let lambda = 0.35_f32;
+    let delta = 1e-3_f32;
+
+    let (_, _, dhdl) = alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda, &lj_mod);
+    let (_, e_plus, _) =
+        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda + delta, &lj_mod);
+    let (_, e_minus, _) =
+        alchemical_lj_soft_core_decouple(dir, dist_sq, sigma, eps, lambda - delta, &lj_mod);
+    let numerical = (e_plus - e_minus) / (2.0 * delta);
+
+    assert_close_f32(
+        dhdl,
+        numerical,
+        0.02,
+        "soft-core LJ dH/dλ with a force switch",
+    );
+
+    // Inside the cutoff, with a soft-core distance past it.
+    let lambda = 0.9_f32;
+    let soft_core_shift = SOFT_CORE_ALPHA * sigma.max(SOFT_CORE_SIGMA_MIN).powi(6) * lambda;
+    let r = (LJ_MOD_CUTOFF.powi(6) - 0.5 * soft_core_shift).powf(1. / 6.);
+    assert!(r < LJ_MOD_CUTOFF);
+
+    let (force, energy, dhdl) =
+        alchemical_lj_soft_core_decouple(dir, r * r, sigma, eps, lambda, &lj_mod);
+    assert_eq!(
+        (force.x, energy, dhdl),
+        (0., 0., 0.),
+        "soft-core LJ beyond the cutoff"
     );
 }
 

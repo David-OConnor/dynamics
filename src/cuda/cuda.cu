@@ -62,6 +62,63 @@ ForceEnergy lj_force(
     return result;
 }
 
+// Coefficients that apply an LJ cutoff modifier, computed on the host. See `LjModCoeffs`
+// in `forces.rs`.
+struct LjModCoeffs {
+    float cutoff;
+    bool enabled;
+    float r_switch;
+    float a6;
+    float b6;
+    float c6;
+    float a12;
+    float b12;
+    float c12;
+};
+
+// Returns (force correction, energy correction) at distance r. Add the force correction to the
+// unmodified force magnitude, and subtract the energy correction from the unmodified energy.
+// See `LjModCoeffs::correction` in `forces.rs`.
+__device__
+float2 lj_mod_correction(const LjModCoeffs& m, float r, float sigma, float eps) {
+    const float s2 = sigma * sigma;
+    const float s6 = s2 * s2 * s2;
+    const float s12 = s6 * s6;
+
+    const float d = fmaxf(r - m.r_switch, 0.f);
+    const float d2 = d * d;
+    const float d3 = d2 * d;
+    const float d4 = d2 * d2;
+
+    const float f = s12 * (m.a12 * d2 + m.b12 * d3) - s6 * (m.a6 * d2 + m.b6 * d3);
+    const float e = s12 * (m.a12 / 3.f * d3 + m.b12 / 4.f * d4 + m.c12)
+        - s6 * (m.a6 / 3.f * d3 + m.b6 / 4.f * d4 + m.c6);
+
+    return make_float2(4.f * eps * f, 4.f * eps * e);
+}
+
+// LJ force and energy, with the cutoff modifier applied. Callers apply the cutoff itself.
+__device__
+ForceEnergy lj_force_mod(
+    float3 diff,
+    float r,
+    float inv_r,
+    float3 dir,
+    float sigma,
+    float eps,
+    const LjModCoeffs& m
+) {
+    ForceEnergy result = lj_force(diff, r, inv_r, dir, sigma, eps);
+
+    if (m.enabled) {
+        const float2 corr = lj_mod_correction(m, r, sigma, eps);
+        result.force = result.force + dir * corr.x;
+        result.energy -= corr.y;
+    }
+
+    return result;
+}
+
 struct ForceEnergyDhdl {
     float3 force;
     float energy;
@@ -70,13 +127,16 @@ struct ForceEnergyDhdl {
 
 // Beutler/GROMACS-style LJ decoupling for a B state with zero LJ interaction:
 // V_sc(r, lambda) = (1 - lambda) * V_LJ((r^6 + alpha*sigma_sc^6*lambda^p)^(1/6)).
+// The LJ modifier applies at r_sc; with a modifier, the interaction is zero once r_sc reaches
+// the cutoff.
 __device__
 ForceEnergyDhdl lj_force_soft_core_decouple(
     float r_sq,
     float3 dir,
     float sigma,
     float eps,
-    float lambda
+    float lambda,
+    const LjModCoeffs& lj_mod
 ) {
     ForceEnergyDhdl result;
     result.force = make_float3(0.f, 0.f, 0.f);
@@ -96,7 +156,8 @@ ForceEnergyDhdl lj_force_soft_core_decouple(
         }
 
         const float inv_r = rsqrtf(r_sq);
-        ForceEnergy hard = lj_force(make_float3(0.f, 0.f, 0.f), r_sq * inv_r, inv_r, dir, sigma, eps);
+        ForceEnergy hard =
+            lj_force_mod(make_float3(0.f, 0.f, 0.f), r_sq * inv_r, inv_r, dir, sigma, eps, lj_mod);
         result.force = hard.force * scale;
         result.energy = hard.energy * scale;
         result.dh_dl = -hard.energy;
@@ -116,14 +177,24 @@ ForceEnergyDhdl lj_force_soft_core_decouple(
     }
 
     const float r_sc = powf(r_sc6, 1.0f / 6.0f);
+    if (lj_mod.enabled && r_sc >= lj_mod.cutoff) {
+        return result;
+    }
+
     const float inv_r_sc = 1.0f / r_sc;
     const float sr = sigma * inv_r_sc;
     const float sr2 = sr * sr;
     const float sr4 = sr2 * sr2;
     const float sr6 = sr4 * sr2;
     const float sr12 = sr6 * sr6;
-    const float hard_force_mag = 24.0f * eps * fmaf(2.0f, sr12, -sr6) * inv_r_sc;
-    const float hard_energy = 4.0f * eps * (sr12 - sr6);
+    float hard_force_mag = 24.0f * eps * fmaf(2.0f, sr12, -sr6) * inv_r_sc;
+    float hard_energy = 4.0f * eps * (sr12 - sr6);
+
+    if (lj_mod.enabled) {
+        const float2 corr = lj_mod_correction(lj_mod, r_sc, sigma, eps);
+        hard_force_mag += corr.x;
+        hard_energy -= corr.y;
+    }
 
     const float r = sqrtf(r_sq);
     const float r_ratio = r * inv_r_sc;
@@ -215,8 +286,11 @@ void nonbonded_force_kernel(
     // For symmetric application
     const uint8_t* atom_types_src,
     const uint8_t* water_types_src,
-    // These are bools.
+    // 0 for pairs that aren't 1-4. Otherwise, an index into the scale-factor tables.
     const uint8_t* scale_14s,
+    const float* scale_14_ljs,
+    const float* scale_14_coulombs,
+    // These are bools.
     const uint8_t* calc_ljs,
     const uint8_t* calc_coulombs,
     const uint8_t* symmetric,
@@ -231,12 +305,25 @@ void nonbonded_force_kernel(
     float alpha_ewald,
     uint32_t N,
     uint8_t coulomb_disabled, // bool
-    uint8_t lj_disabled
+    uint8_t lj_disabled,
+    // LJ cutoff and modifier coefficients. See `LjModCoeffs`.
+    float lj_cutoff,
+    uint8_t lj_mod_enabled,
+    float lj_r_switch,
+    float lj_a6,
+    float lj_b6,
+    float lj_c6,
+    float lj_a12,
+    float lj_b12,
+    float lj_c12
 ) {
     const float3 cell_extent = make_float3(cell_extent_x, cell_extent_y, cell_extent_z);
     const float3 cell_inv_extent = make_float3(
         cell_inv_extent_x, cell_inv_extent_y, cell_inv_extent_z
     );
+    const LjModCoeffs lj_mod = {
+        lj_cutoff, lj_mod_enabled != 0, lj_r_switch, lj_a6, lj_b6, lj_c6, lj_a12, lj_b12, lj_c12
+    };
     size_t index = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
 
@@ -282,8 +369,10 @@ void nonbonded_force_kernel(
         f_lj.force = make_float3(0.f, 0.f, 0.f);
         f_lj.energy = 0.f;
 
-        if (calc_ljs[i] && !lj_disabled) {
-            f_lj = lj_force(diff, r, inv_r, dir, sigma, eps);
+        // Note: Unlike the CPU path, we only apply the LJ cutoff when a modifier is set; pairs
+        // out to the neighbor-list distance otherwise contribute.
+        if (calc_ljs[i] && !lj_disabled && (!lj_mod.enabled || r <= lj_cutoff)) {
+            f_lj = lj_force_mod(diff, r, inv_r, dir, sigma, eps, lj_mod);
         }
 
         const float q_tgt = qs_tgt[i];
@@ -306,11 +395,14 @@ void nonbonded_force_kernel(
         }
 
         if (scale_14) {
-            f_lj.force = f_lj.force * 0.5f;
-            f_lj.energy = f_lj.energy * 0.5f;
+            const float s_lj = scale_14_ljs[scale_14];
+            const float s_coulomb = scale_14_coulombs[scale_14];
 
-            f_coulomb.force = f_coulomb.force * 0.833333333f;
-            f_coulomb.energy = f_coulomb.energy * 0.833333333f;
+            f_lj.force = f_lj.force * s_lj;
+            f_lj.energy = f_lj.energy * s_lj;
+
+            f_coulomb.force = f_coulomb.force * s_coulomb;
+            f_coulomb.energy = f_coulomb.energy * s_coulomb;
         }
 
         const float3 f = f_lj.force + f_coulomb.force;
@@ -405,8 +497,11 @@ void nonbonded_force_alchemical_kernel(
     // For symmetric application
     const uint8_t* atom_types_src,
     const uint8_t* water_types_src,
-    // These are bools.
+    // 0 for pairs that aren't 1-4. Otherwise, an index into the scale-factor tables.
     const uint8_t* scale_14s,
+    const float* scale_14_ljs,
+    const float* scale_14_coulombs,
+    // These are bools.
     const uint8_t* calc_ljs,
     const uint8_t* calc_coulombs,
     const uint8_t* symmetric,
@@ -423,12 +518,25 @@ void nonbonded_force_alchemical_kernel(
     uint32_t N,
     uint8_t coulomb_disabled,
     uint8_t lj_disabled,
+    // LJ cutoff and modifier coefficients. See `LjModCoeffs`.
+    float lj_cutoff,
+    uint8_t lj_mod_enabled,
+    float lj_r_switch,
+    float lj_a6,
+    float lj_b6,
+    float lj_c6,
+    float lj_a12,
+    float lj_b12,
+    float lj_c12,
     float lambda_alch
 ) {
     const float3 cell_extent = make_float3(cell_extent_x, cell_extent_y, cell_extent_z);
     const float3 cell_inv_extent = make_float3(
         cell_inv_extent_x, cell_inv_extent_y, cell_inv_extent_z
     );
+    const LjModCoeffs lj_mod = {
+        lj_cutoff, lj_mod_enabled != 0, lj_r_switch, lj_a6, lj_b6, lj_c6, lj_a12, lj_b12, lj_c12
+    };
     size_t index = blockIdx.x * blockDim.x + threadIdx.x;
     size_t stride = blockDim.x * gridDim.x;
 
@@ -474,15 +582,17 @@ void nonbonded_force_alchemical_kernel(
         f_lj.energy = 0.f;
         float dh_dl_pair = 0.f;
 
-        if (calc_ljs[i] && !lj_disabled) {
+        // Note: Unlike the CPU path, we only apply the LJ cutoff when a modifier is set; pairs
+        // out to the neighbor-list distance otherwise contribute.
+        if (calc_ljs[i] && !lj_disabled && (!lj_mod.enabled || r <= lj_cutoff)) {
             if (is_alchemical) {
                 const ForceEnergyDhdl f_lj_sc =
-                    lj_force_soft_core_decouple(r_sq, dir, sigma, eps, schedule.lj_lambda);
+                    lj_force_soft_core_decouple(r_sq, dir, sigma, eps, schedule.lj_lambda, lj_mod);
                 f_lj.force = f_lj_sc.force;
                 f_lj.energy = f_lj_sc.energy;
                 dh_dl_pair += f_lj_sc.dh_dl * schedule.lj_dlambda_dlambda;
             } else {
-                f_lj = lj_force(diff, r, inv_r, dir, sigma, eps);
+                f_lj = lj_force_mod(diff, r, inv_r, dir, sigma, eps, lj_mod);
             }
         }
 
@@ -506,12 +616,15 @@ void nonbonded_force_alchemical_kernel(
         }
 
         if (scale_14) {
-            f_lj.force = f_lj.force * 0.5f;
-            f_lj.energy = f_lj.energy * 0.5f;
-            dh_dl_pair *= 0.5f;
+            const float s_lj = scale_14_ljs[scale_14];
+            const float s_coulomb = scale_14_coulombs[scale_14];
 
-            f_coulomb.force = f_coulomb.force * 0.833333333f;
-            f_coulomb.energy = f_coulomb.energy * 0.833333333f;
+            f_lj.force = f_lj.force * s_lj;
+            f_lj.energy = f_lj.energy * s_lj;
+            dh_dl_pair *= s_lj;
+
+            f_coulomb.force = f_coulomb.force * s_coulomb;
+            f_coulomb.energy = f_coulomb.energy * s_coulomb;
         }
 
         const float3 f = is_alchemical

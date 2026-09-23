@@ -23,7 +23,7 @@ use crate::{
     AtomDynamics, ComputationDevice, MdState, MolDynamics, NATIVE_TO_KCAL,
     barostat::SimBox,
     solvent::{
-        WaterMolOpc,
+        WaterModel, WaterMolOpc,
         init::{MIN_WATER_O_O_DIST_SQ, n_water_mols},
         shrinking_box::ShrinkingBoxCfg,
     },
@@ -52,6 +52,7 @@ pub fn make_water_mols_grid(
     cell: &SimBox,
     temperature_tgt: f32,
     zero_com_drift: bool,
+    water_model: &WaterModel,
 ) -> Vec<WaterMolOpc> {
     println!("Initializing a solvent grid, as part of template preparation...");
     // Initialize an RNG for orientations.
@@ -107,6 +108,7 @@ pub fn make_water_mols_grid(
             posit,
             Vec3::new_zero(),
             Quaternion::random(&mut rng, Some(distro)),
+            water_model,
         ));
         num_added += 1;
 
@@ -427,6 +429,7 @@ impl MdState {
             &self.cell,
             water_temperature_tgt,
             &mut rand::rng(),
+            &self.water_model,
         );
 
         if placed_water.len() != water_count {
@@ -541,6 +544,7 @@ fn place_interleaved_opc_waters(
     cell: &SimBox,
     temperature_tgt: f32,
     rng: &mut ThreadRng,
+    water_model: &WaterModel,
 ) -> Vec<WaterMolOpc> {
     const MAX_WATER_ROT_ATTEMPTS: usize = 12;
     const MIN_CENTER_OFFSET_FRAC: f64 = 0.12;
@@ -574,6 +578,7 @@ fn place_interleaved_opc_waters(
                     o_posit,
                     Vec3::new_zero(),
                     Quaternion::random(rng, Some(distro)),
+                    water_model,
                 );
 
                 if water_conflicts_with_solvent(&candidate, solvent_atom_posits, cell) {

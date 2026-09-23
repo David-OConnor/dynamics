@@ -5,10 +5,7 @@ use na_seq::Element;
 use rand::{RngExt, distr::Distribution, prelude::ThreadRng};
 use rand_distr::{ChiSquared, StandardNormal};
 
-use crate::{
-    ComMotionRemoval, HydrogenConstraint, MdState, NATIVE_TO_KCAL,
-    solvent::{H_MASS, MASS_WATER_MOL, O_MASS},
-};
+use crate::{ComMotionRemoval, HydrogenConstraint, MdState, NATIVE_TO_KCAL};
 
 // Per-molecule Boltzmann, in kcal/mol/K.
 // For assigning velocities from temperature, and other thermostat/barostat use.
@@ -75,9 +72,12 @@ impl MdState {
             }
         }
 
+        let wm = &self.water_model;
+        let (m_o, m_h, m_mol) = (wm.mass_o, wm.mass_h, wm.mass());
+
         for w in &self.water {
-            let v_com = (w.o.vel * O_MASS + w.h0.vel * H_MASS + w.h1.vel * H_MASS) / MASS_WATER_MOL;
-            result += (MASS_WATER_MOL * v_com.magnitude_squared()) as f64;
+            let v_com = (w.o.vel * m_o + w.h0.vel * m_h + w.h1.vel * m_h) / m_mol;
+            result += (m_mol * v_com.magnitude_squared()) as f64;
         }
 
         result * 0.5 * NATIVE_TO_KCAL as f64
@@ -99,6 +99,7 @@ impl MdState {
         }
 
         let k_t = KB_A2_PS2_PER_K_PER_AMU * target_k;
+        let water_model = self.water_model;
 
         for atom in &mut self.atoms {
             if atom.static_ || !atom.mass.is_finite() || atom.mass <= f32::EPSILON {
@@ -121,7 +122,7 @@ impl MdState {
                 water.o.vel = Vec3::new_zero();
                 water.h0.vel = Vec3::new_zero();
                 water.h1.vel = Vec3::new_zero();
-                water.update_virtual_site();
+                water.update_virtual_site(&water_model);
                 continue;
             }
 
@@ -178,7 +179,7 @@ impl MdState {
             water.o.vel = v_com + omega.cross(r_o);
             water.h0.vel = v_com + omega.cross(r_h0);
             water.h1.vel = v_com + omega.cross(r_h1);
-            water.update_virtual_site();
+            water.update_virtual_site(&water_model);
         }
 
         if matches!(
@@ -208,7 +209,7 @@ impl MdState {
             water.o.vel *= lambda;
             water.h0.vel *= lambda;
             water.h1.vel *= lambda;
-            water.update_virtual_site();
+            water.update_virtual_site(&water_model);
         }
 
         self.kinetic_energy = self.measure_kinetic_energy();
@@ -310,8 +311,8 @@ impl MdState {
         let s2 = (1.0 - c * c).max(0.0); // numerical guard
 
         let sigma_num = KB_A2_PS2_PER_K_PER_AMU * temp_tgt_k * s2;
-        let sigma_o = (sigma_num / O_MASS).sqrt();
-        let sigma_h = (sigma_num / H_MASS).sqrt();
+        let sigma_o = (sigma_num / self.water_model.mass_o).sqrt();
+        let sigma_h = (sigma_num / self.water_model.mass_h).sqrt();
 
         for a in &mut self.atoms {
             if a.static_ {

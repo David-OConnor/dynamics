@@ -15,7 +15,8 @@ use rand::prelude::ThreadRng;
 use rand_distr::{Distribution, StandardNormal};
 
 use crate::{
-    AtomDynamics, KCAL_TO_NATIVE, MdState, NATIVE_TO_KCAL, SimBoxInit, solvent::WaterMolOpc,
+    AtomDynamics, KCAL_TO_NATIVE, MdState, NATIVE_TO_KCAL, SimBoxInit,
+    solvent::{WaterModel, WaterMolOpc},
 };
 
 pub(crate) const BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED: f64 = 69476.95457055373;
@@ -363,6 +364,7 @@ impl Barostat {
         simbox: &mut SimBox,
         atoms_dyn: &mut [AtomDynamics],
         waters: &mut [WaterMolOpc],
+        water_model: &WaterModel,
     ) {
         // todo: Temporarily disabled  barostat, until pressure measurements are fixed
         return;
@@ -408,7 +410,7 @@ impl Barostat {
             w.h1.vel *= lc;
 
             // We moved O and Hs above; update EP.
-            w.update_virtual_site();
+            w.update_virtual_site(water_model);
         }
     }
 }

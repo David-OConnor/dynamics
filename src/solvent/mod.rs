@@ -1,8 +1,9 @@
 #![allow(non_upper_case_globals)]
 #![allow(clippy::excessive_precision)]
 
-//! We use the [OPC model](https://pubs.acs.org/doi/10.1021/jz501780a) for solvent.
-//! See also, the Amber Reference Manual.
+//! We use the [OPC model](https://pubs.acs.org/doi/10.1021/jz501780a) for solvent by default.
+//! See also, the Amber Reference Manual. Other rigid 3 and 4-site models can be configured using
+//! `WaterModel`.
 //!
 //! This is a rigid model that includes an "EP" or "M" massless charge-only molecule (No LJ terms),
 //! and no charge on the Oxygen. We integrate it using standard Amber-style forces.
@@ -28,6 +29,8 @@ use std::{
     fmt::{Display, Formatter},
 };
 
+#[cfg(feature = "encode")]
+use bincode::{Decode, Encode};
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16};
@@ -48,50 +51,145 @@ pub(crate) mod opc_settle;
 pub(crate) mod shrinking_box;
 pub(crate) mod template_creation;
 
-use opc_settle::RA;
-
-// Constant parameters below are for the OPC solvent (JPCL, 2014, 5 (21), pp 3863-3871)
-// (Amber 2025, frcmod.opc) EP/M is the massless, 4th charge.
-// These values are taken directly from `frcmod.opc`, in the Amber package. We have omitted
-// values that are 0., or otherwise not relevant in this model. (e.g. EP mass, O charge, bonded params
-// other than bond distances and the valence angle)
-pub(crate) const O_MASS: f32 = 16.;
-pub(crate) const H_MASS: f32 = 1.008;
-pub(crate) const MASS_WATER_MOL: f32 = O_MASS + 2.0 * H_MASS;
-
-// We have commented out flexible-bond parameters that are provided by Amber, but not
-// used in this rigid model.
-
-// Å; bond distance. (frcmod.opc, or Table 2.)
-pub(crate) const O_EP_R: f32 = 0.159_398_33;
-pub(crate) const O_H_R: f32 = 0.872_433_13;
-
-// Angle bending angle, radians.
-pub(crate) const H_O_H_θ: f32 = 1.808_161_105_066; // (103.6 degrees in frcmod.opc)
-const H_O_H_θ_HALF: f32 = 0.5 * H_O_H_θ;
-
 // For converting from R_star to eps. See notes in bio_files's `LjParams`.
 const SIGMA_FACTOR: f32 = 2. / 1.122_462_048_309_373;
 
-// Van der Waals / JL params. Only O carries this.
-const O_RSTAR: f32 = 1.777_167_268;
-pub const O_SIGMA: f32 = O_RSTAR * SIGMA_FACTOR;
-pub const O_EPS: f32 = 0.212_800_813_0;
+/// Parameters for a rigid water model: O, two H, and a massless charge site M (also called EP) on
+/// the H-O-H bisector. O carries no charge; M carries -2 × the H charge. Only O has LJ parameters.
+/// A 3-site model such as TIP3P is represented with `o_m_dist = 0`, so M coincides with O and
+/// carries its charge.
+///
+/// Note: Molecules placed from a template keep the template's geometry until `reset_angle` runs,
+/// so templates should match the model's geometry.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterModel {
+    /// amu
+    pub mass_o: f32,
+    /// amu
+    pub mass_h: f32,
+    /// Å
+    pub o_h_dist: f32,
+    /// Å. From O to M, along the H-O-H bisector. 0 for 3-site models.
+    pub o_m_dist: f32,
+    /// Radians
+    pub h_o_h_angle: f32,
+    /// Elementary charge units.
+    pub q_h: f32,
+    /// Å
+    pub lj_sigma_o: f32,
+    /// kcal/mol
+    pub lj_eps_o: f32,
+    /// We add these counter-ions to neutralize the system. Ion parameters are generally tuned for
+    /// a specific water model.
+    pub cation: IonParams,
+    pub anion: IonParams,
+}
 
-// Partial charges in elementary charge. See the OPC paper, Table 2. None on O.
-const Q_H: f32 = 0.6791 * CHARGE_UNIT_SCALER;
-const Q_EP: f32 = -2. * Q_H;
+impl WaterModel {
+    /// The OPC model (JPCL, 2014, 5 (21), pp 3863-3871); values taken directly from Amber 2025's
+    /// `frcmod.opc`. Ions use Joung–Cheatham parameters tuned for OPC (`frcmod.ionsjc_opc`),
+    /// with sigma = 2 * R_MIN_HALF / 2^(1/6).
+    pub const OPC: Self = Self {
+        mass_o: 16.,
+        mass_h: 1.008,
+        o_h_dist: 0.872_433_13,
+        o_m_dist: 0.159_398_33,
+        h_o_h_angle: 1.808_161_105_066, // 103.6°
+        // See the OPC paper, Table 2.
+        q_h: 0.6791,
+        lj_sigma_o: 1.777_167_268 * SIGMA_FACTOR,
+        lj_eps_o: 0.212_800_813_0,
+        cation: IonParams {
+            ion: Ion::Sodium,
+            mass: 22.99,
+            lj_sigma: 2.439,
+            lj_eps: 0.1065,
+        },
+        anion: IonParams {
+            ion: Ion::Chloride,
+            mass: 35.45,
+            lj_sigma: 4.478,
+            lj_eps: 0.0073,
+        },
+    };
 
-// Consts for force projection from the virtual site.
-// For a bisector site at distance d_OM, with bond length d_OH and angle theta:
-// c_H = (d_OM / (d_OH * cos(theta/2))) / 2.0;
-// We pre-calculate the cos part.
-const C_H: f32 = (O_EP_R / RA) / 2.;
-const C_O: f32 = 1.0 - 2.0 * C_H;
+    /// amu
+    pub fn mass(&self) -> f32 {
+        self.mass_o + 2.0 * self.mass_h
+    }
 
-// We use this to convert from force to acceleration, in the appropriate units.
-pub(crate) const ACCEL_CONV_WATER_O: f32 = KCAL_TO_NATIVE / O_MASS;
-pub(crate) const ACCEL_CONV_WATER_H: f32 = KCAL_TO_NATIVE / H_MASS;
+    /// Distance from O to the midpoint of the H-H line. Å
+    pub(crate) fn ra(&self) -> f32 {
+        self.o_h_dist * (0.5 * self.h_o_h_angle).cos()
+    }
+
+    /// Coefficients (O, each H) we use to project force on M to the real sites. For a bisector
+    /// site at distance d_OM, with bond length d_OH and angle theta:
+    /// c_H = (d_OM / (d_OH * cos(theta/2))) / 2.0. This conserves force and torque exactly.
+    pub(crate) fn m_force_coeffs(&self) -> (f32, f32) {
+        let c_h = (self.o_m_dist / self.ra()) / 2.;
+        (1.0 - 2.0 * c_h, c_h)
+    }
+
+    /// (O, H). Converts force to acceleration, in our internal units.
+    pub(crate) fn accel_conversions(&self) -> (f32, f32) {
+        (KCAL_TO_NATIVE / self.mass_o, KCAL_TO_NATIVE / self.mass_h)
+    }
+}
+
+impl Default for WaterModel {
+    fn default() -> Self {
+        Self::OPC
+    }
+}
+
+/// A monatomic ion species, for neutralizing the system.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Ion {
+    Sodium,
+    Potassium,
+    Chloride,
+}
+
+impl Ion {
+    pub fn element(self) -> Element {
+        match self {
+            Self::Sodium => Element::Sodium,
+            Self::Potassium => Element::Potassium,
+            Self::Chloride => Element::Chlorine,
+        }
+    }
+
+    /// Elementary charge units.
+    pub fn charge(self) -> f32 {
+        match self {
+            Self::Sodium | Self::Potassium => 1.,
+            Self::Chloride => -1.,
+        }
+    }
+
+    pub fn ff_type(self) -> &'static str {
+        match self {
+            Self::Sodium => "Na+",
+            Self::Potassium => "K+",
+            Self::Chloride => "Cl-",
+        }
+    }
+}
+
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IonParams {
+    pub ion: Ion,
+    /// amu
+    pub mass: f32,
+    /// Å
+    pub lj_sigma: f32,
+    /// kcal/mol
+    pub lj_eps: f32,
+}
 
 /// Used when configuring a MD Sim. We use OPC (rigid) water as a default, but can
 /// use custom solvents as well, from arbitrary molecules using standard MD forcefields.
@@ -334,7 +432,12 @@ pub struct WaterMolx16 {
 }
 
 impl WaterMolOpc {
-    pub fn new(o_pos: Vec3F32, vel: Vec3F32, orientation: QuaternionF32) -> Self {
+    pub fn new(
+        o_pos: Vec3F32,
+        vel: Vec3F32,
+        orientation: QuaternionF32,
+        model: &WaterModel,
+    ) -> Self {
         // Set up H and EP/M positions based on orientation.
         // Unit vectors defining the body frame
         let z_local = orientation.rotate_vec(Z_VEC);
@@ -342,15 +445,18 @@ impl WaterMolOpc {
 
         // Place Hs in the plane spanned by ex, ez with the right HOH angle.
         // Let the bisector be ez, and put the hydrogens symmetrically around it.
+        let angle_half = 0.5 * model.h_o_h_angle;
 
-        let h0_dir = (z_local * H_O_H_θ_HALF.cos() + e_local * H_O_H_θ_HALF.sin()).to_normalized();
-        let h1_dir = (z_local * H_O_H_θ_HALF.cos() - e_local * H_O_H_θ_HALF.sin()).to_normalized();
+        let h0_dir = (z_local * angle_half.cos() + e_local * angle_half.sin()).to_normalized();
+        let h1_dir = (z_local * angle_half.cos() - e_local * angle_half.sin()).to_normalized();
 
-        let h0_pos = o_pos + h0_dir * O_H_R;
-        let h1_pos = o_pos + h1_dir * O_H_R;
+        let h0_pos = o_pos + h0_dir * model.o_h_dist;
+        let h1_pos = o_pos + h1_dir * model.o_h_dist;
 
         // EP on the HOH bisector at fixed O–EP distance
-        let ep_pos = o_pos + (h0_pos - o_pos + h1_pos - o_pos).to_normalized() * O_EP_R;
+        let ep_pos = o_pos + (h0_pos - o_pos + h1_pos - o_pos).to_normalized() * model.o_m_dist;
+
+        let q_h = model.q_h * CHARGE_UNIT_SCALER;
 
         let h0 = AtomDynamics {
             force_field_type: String::from("HW"),
@@ -358,8 +464,8 @@ impl WaterMolOpc {
             posit: h0_pos,
             vel,
             // This is actually force for our purposes, in the context of solvent molecules.
-            mass: H_MASS,
-            partial_charge: Q_H,
+            mass: model.mass_h,
+            partial_charge: q_h,
             ..Default::default()
         };
 
@@ -369,10 +475,10 @@ impl WaterMolOpc {
                 force_field_type: String::from("OW"),
                 posit: o_pos,
                 element: Element::Oxygen,
-                mass: O_MASS,
+                mass: model.mass_o,
                 partial_charge: 0.,
-                lj_sigma: O_SIGMA,
-                lj_eps: O_EPS,
+                lj_sigma: model.lj_sigma_o,
+                lj_eps: model.lj_eps_o,
                 ..h0.clone()
             },
             h1: AtomDynamics {
@@ -385,7 +491,7 @@ impl WaterMolOpc {
                 posit: ep_pos,
                 element: Element::Potassium, // Placeholder
                 mass: 0.,
-                partial_charge: Q_EP,
+                partial_charge: -2. * q_h,
                 ..h0.clone()
             },
             h0,
@@ -394,13 +500,14 @@ impl WaterMolOpc {
 
     /// Run this after updating force on the M/EP site; converts its force to the O and H sites,
     /// and leaves it at 0.
-    pub(crate) fn project_ep_force(&mut self) {
+    pub(crate) fn project_ep_force(&mut self, model: &WaterModel) {
         let f_m = self.m.force;
+        let (c_o, c_h) = model.m_force_coeffs();
 
         // Exact force conservation, exact torque conservation (for this geometry)
-        self.o.force += f_m * C_O;
-        self.h0.force += f_m * C_H;
-        self.h1.force += f_m * C_H;
+        self.o.force += f_m * c_o;
+        self.h0.force += f_m * c_h;
+        self.h1.force += f_m * c_h;
 
         self.m.force = Vec3F32::new_zero();
     }
@@ -408,7 +515,7 @@ impl WaterMolOpc {
     // todo: Experimenting
     /// Places the M (EP) site based on current O and H positions.
     /// Call this after Initialization, Settle, or Barostat scaling.
-    pub(crate) fn update_virtual_site(&mut self) {
+    pub(crate) fn update_virtual_site(&mut self, model: &WaterModel) {
         // Fast approximate bisector reconstruction
         let v_h0 = self.h0.posit - self.o.posit;
         let v_h1 = self.h1.posit - self.o.posit;
@@ -418,8 +525,7 @@ impl WaterMolOpc {
 
         // This squareroot is unavoidable for exact distance,
         // but cheaper than the full geometry logic in your snippet.
-        // O_EP_R_0 is the parameter distance (e.g. 0.15 A).
-        self.m.posit = self.o.posit + bis.to_normalized() * O_EP_R;
+        self.m.posit = self.o.posit + bis.to_normalized() * model.o_m_dist;
 
         // Interpolate velocity for M (important for thermostats)
         // M is approx midway between H's angularly, but closer to O.

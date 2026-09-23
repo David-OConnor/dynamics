@@ -5,7 +5,7 @@ use lin_alg::f32::Vec3;
 use crate::{
     AtomDynamics, MdState, NATIVE_TO_KCAL, Solvent,
     barostat::BAR_PER_KCAL_MOL_PER_ANSTROM_CUBED,
-    solvent::{H_MASS, MASS_WATER_MOL, O_MASS, WaterMolOpc},
+    solvent::{WaterModel, WaterMolOpc},
     thermostat::GAS_CONST_R,
 };
 
@@ -73,17 +73,17 @@ fn test_measure_kinetic_energy_includes_water() {
 
     md.water = vec![WaterMolOpc {
         o: AtomDynamics {
-            mass: O_MASS,
+            mass: WaterModel::OPC.mass_o,
             vel: v_o,
             ..Default::default()
         },
         h0: AtomDynamics {
-            mass: H_MASS,
+            mass: WaterModel::OPC.mass_h,
             vel: v_h,
             ..Default::default()
         },
         h1: AtomDynamics {
-            mass: H_MASS,
+            mass: WaterModel::OPC.mass_h,
             vel: v_h,
             ..Default::default()
         },
@@ -91,7 +91,9 @@ fn test_measure_kinetic_energy_includes_water() {
     }];
 
     let expected = 0.5
-        * (O_MASS as f64 * 4.0 + H_MASS as f64 * 1.0 + H_MASS as f64 * 1.0)
+        * (WaterModel::OPC.mass_o as f64 * 4.0
+            + WaterModel::OPC.mass_h as f64 * 1.0
+            + WaterModel::OPC.mass_h as f64 * 1.0)
         * NATIVE_TO_KCAL as f64;
     let got = md.measure_kinetic_energy();
     assert_close(got, expected, 1e-5, "KE from water molecule");
@@ -106,24 +108,24 @@ fn test_measure_kinetic_energy_translational_rigid_translation() {
 
     md.water = vec![WaterMolOpc {
         o: AtomDynamics {
-            mass: O_MASS,
+            mass: WaterModel::OPC.mass_o,
             vel: v_com,
             ..Default::default()
         },
         h0: AtomDynamics {
-            mass: H_MASS,
+            mass: WaterModel::OPC.mass_h,
             vel: v_com,
             ..Default::default()
         },
         h1: AtomDynamics {
-            mass: H_MASS,
+            mass: WaterModel::OPC.mass_h,
             vel: v_com,
             ..Default::default()
         },
         m: AtomDynamics::default(),
     }];
 
-    let expected = 0.5 * MASS_WATER_MOL as f64 * 9.0 * NATIVE_TO_KCAL as f64;
+    let expected = 0.5 * WaterModel::OPC.mass() as f64 * 9.0 * NATIVE_TO_KCAL as f64;
     let got = md.measure_kinetic_energy_translational();
     assert_close(got, expected, 1e-5, "translational KE — rigid translation");
 }
@@ -133,21 +135,25 @@ fn test_measure_kinetic_energy_translational_rigid_translation() {
 fn test_measure_kinetic_energy_translational_excludes_rotation() {
     let mut md = MdState::default();
     let v_h = Vec3::new(0.0, 1.0, 0.0);
-    let v_o = Vec3::new(0.0, -2.0 * H_MASS / O_MASS, 0.0); // COM vel = 0
+    let v_o = Vec3::new(
+        0.0,
+        -2.0 * WaterModel::OPC.mass_h / WaterModel::OPC.mass_o,
+        0.0,
+    ); // COM vel = 0
 
     md.water = vec![WaterMolOpc {
         o: AtomDynamics {
-            mass: O_MASS,
+            mass: WaterModel::OPC.mass_o,
             vel: v_o,
             ..Default::default()
         },
         h0: AtomDynamics {
-            mass: H_MASS,
+            mass: WaterModel::OPC.mass_h,
             vel: v_h,
             ..Default::default()
         },
         h1: AtomDynamics {
-            mass: H_MASS,
+            mass: WaterModel::OPC.mass_h,
             vel: v_h,
             ..Default::default()
         },

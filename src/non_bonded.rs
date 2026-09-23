@@ -2,6 +2,8 @@
 
 use std::ops::AddAssign;
 
+#[cfg(feature = "encode")]
+use bincode::{Decode, Encode};
 use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 #[allow(unused)]
 #[cfg(target_arch = "x86_64")]
@@ -17,8 +19,8 @@ use crate::{
         SOFT_CORE_ALPHA, SOFT_CORE_POWER, SOFT_CORE_SIGMA_MIN, staged_decoupling_schedule,
     },
     barostat::SimBox,
-    forces::force_e_lj,
-    solvent::{ForcesOnWaterMol, O_EPS, O_SIGMA, WaterMolOpc, WaterSite},
+    forces::{LjModCoeffs, force_e_lj_mod},
+    solvent::{ForcesOnWaterMol, WaterModel, WaterMolOpc, WaterSite},
     validate_mol_start_indices,
 };
 #[allow(unused)]
@@ -47,13 +49,84 @@ use crate::{AtomDynamicsx8, AtomDynamicsx16};
 // // Common rule for α: erfc(α r_c) ≲ 10⁻⁴…10⁻⁵
 // pub const EWALD_ALPHA: f32 = 0.35; // Å^-1. 0.35 is good for cutoff of 10–12 Å.
 
-// See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
-// "Non-bonded interactions between atoms separated by three consecutive bonds... require a special
-// treatment in Amber force fields."
-// "By default, vdW 1-4 interactions are divided (scaled down) by a factor of 2.0, electrostatic 1-4 terms by a factor
-// of 1.2."
-const SCALE_LJ_14: f32 = 0.5;
-pub const SCALE_COUL_14: f32 = 1.0 / 1.2;
+/// Scale factors for non-bonded interactions between atoms separated by three bonds (1-4 pairs).
+/// These are part of a force field's definition, so each molecule's 1-4 pairs use the factors of
+/// the force field its parameters come from.
+///
+/// See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
+/// "Non-bonded interactions between atoms separated by three consecutive bonds... require a special
+/// treatment in Amber force fields."
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scale14 {
+    /// Multiplies LJ force and energy. This is 1/SCNB in Amber terms.
+    pub lj: f32,
+    /// Multiplies Coulomb force and energy. This is 1/SCEE in Amber terms.
+    pub coulomb: f32,
+}
+
+impl Scale14 {
+    /// "By default, vdW 1-4 interactions are divided (scaled down) by a factor of 2.0, electrostatic
+    /// 1-4 terms by a factor of 1.2." (SCNB = 2.0, SCEE = 1.2) Used by ff19SB, GAFF2, lipid21, OL3,
+    /// OL24, and OpenFF.
+    pub const AMBER: Self = Self {
+        lj: 0.5,
+        coulomb: 1.0 / 1.2,
+    };
+    /// GLYCAM carbohydrates leave 1-4 interactions unscaled. (SCNB = SCEE = 1.0)
+    pub const GLYCAM: Self = Self {
+        lj: 1.0,
+        coulomb: 1.0,
+    };
+}
+
+impl Default for Scale14 {
+    fn default() -> Self {
+        Self::AMBER
+    }
+}
+
+/// How we combine per-atom LJ parameters into pair parameters. This is part of a force field's
+/// definition.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LjCombiningRule {
+    /// σ = (σ_i + σ_j) / 2, ε = √(ε_i ε_j). Amber, CHARMM, and OpenFF. GROMACS `comb-rule = 2`.
+    #[default]
+    LorentzBerthelot,
+    /// σ = √(σ_i σ_j), ε = √(ε_i ε_j). OPLS-AA. GROMACS `comb-rule = 3`.
+    Geometric,
+}
+
+impl LjCombiningRule {
+    /// Returns (σ, ε) for a pair. Order doesn't matter.
+    pub fn combine(self, sigma_0: f32, eps_0: f32, sigma_1: f32, eps_1: f32) -> (f32, f32) {
+        let σ = match self {
+            Self::LorentzBerthelot => 0.5 * (sigma_0 + sigma_1),
+            Self::Geometric => (sigma_0 * sigma_1).sqrt(),
+        };
+        let ε = (eps_0 * eps_1).sqrt();
+
+        (σ, ε)
+    }
+}
+
+/// How the LJ interaction is brought to zero at `MdConfig::lj_cutoff`. See the GROMACS reference
+/// manual, "Modified non-bonded interactions".
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LjModifier {
+    /// Truncate at the cutoff; force and energy drop to zero there. This is Amber's convention.
+    #[default]
+    None,
+    /// Shift the potential by a constant so it's zero at the cutoff. Forces are unchanged.
+    /// GROMACS `Potential-shift`.
+    PotentialShift,
+    /// Smoothly switch the force to zero between `r_switch` (Å) and the cutoff, and shift the
+    /// potential to match. GROMACS `Force-switch`. CHARMM36 uses this with `r_switch` = 10 Å, and a
+    /// 12 Å cutoff.
+    ForceSwitch { r_switch: f32 },
+}
 
 // Multiply by this to convert partial charges from elementary charge (What we store in Atoms loaded from mol2
 // files and amino19.lib.) to the self-consistent amber units required to calculate Coulomb force.
@@ -79,13 +152,15 @@ pub enum LjTableIndices {
 /// memory use, and reduces CPU use. We use indices, as they're faster than HashMaps.
 /// The indices are flattened, of each interaction pair. Values are (σ, ε).
 ///
-/// Water-solvent is not included, as it's a single, hard-coded parameter pair.
+/// Water-water is a single parameter pair, since only water O carries LJ.
 #[derive(Default)]
 pub struct LjTables {
     /// Non-solvent, non-solvent interactions. Upper triangle.
     pub std: Vec<(f32, f32)>,
     /// Water, non-solvent interactions.
     pub water_std: Vec<(f32, f32)>,
+    /// Water O, water O. Combining identical atoms yields their own parameters under any rule.
+    pub water_water: (f32, f32),
     pub n_std: usize,
 }
 
@@ -115,12 +190,16 @@ pub struct LjTablesx16 {
 // todo setting up your table by atom type, instead of by atom, if that proves to be a problem.
 impl LjTables {
     /// Create an indexed table, flattened.
-    pub fn new(atoms: &[AtomDynamics]) -> Self {
+    pub fn new(atoms: &[AtomDynamics], water_model: &WaterModel, rule: LjCombiningRule) -> Self {
         let n_std = atoms.len();
+        let water_water = (water_model.lj_sigma_o, water_model.lj_eps_o);
 
         if n_std == 0 {
             // Otherwise, we will get an out-of-bounds error when subtracting.
-            return Default::default();
+            return Self {
+                water_water,
+                ..Default::default()
+            };
         }
 
         // Construct an upper triangle table, excluding reverse order, and self interactions.
@@ -131,22 +210,30 @@ impl LjTables {
                 if i_1 <= i_0 {
                     continue;
                 }
-                let (σ, ε) = combine_lj_params(atom_0, atom_1);
-                std.push((σ, ε));
+                std.push(rule.combine(
+                    atom_0.lj_sigma,
+                    atom_0.lj_eps,
+                    atom_1.lj_sigma,
+                    atom_1.lj_eps,
+                ));
             }
         }
 
         // One LJ pair per dynamic atom vs solvent O:
         let mut water_std = Vec::with_capacity(n_std);
         for atom in atoms {
-            let σ = 0.5 * (atom.lj_sigma + O_SIGMA);
-            let ε = (atom.lj_eps * O_EPS).sqrt();
-            water_std.push((σ, ε));
+            water_std.push(rule.combine(
+                atom.lj_sigma,
+                atom.lj_eps,
+                water_model.lj_sigma_o,
+                water_model.lj_eps_o,
+            ));
         }
 
         Self {
             std,
             water_std,
+            water_water,
             n_std,
         }
     }
@@ -177,7 +264,7 @@ impl LjTables {
                 self.std[idx]
             }
             LjTableIndices::StdWater(ix) => self.water_std[*ix],
-            LjTableIndices::WaterWater => (O_SIGMA, O_EPS),
+            LjTableIndices::WaterWater => self.water_water,
         }
     }
 }
@@ -219,7 +306,8 @@ impl BodyRef {
 pub struct NonBondedPair {
     pub tgt: BodyRef,
     pub src: BodyRef,
-    pub scale_14: bool,
+    /// Present if this is a 1-4 pair.
+    pub scale_14: Option<Scale14>,
     pub lj_indices: LjTableIndices,
     pub calc_lj: bool,
     pub calc_coulomb: bool,
@@ -268,7 +356,7 @@ fn calc_force_cpu(
     lambda_alch: f64,
     spme_alpha: f32,
     coulomb_cutoff: f32,
-    lj_cutoff: f32,
+    lj_mod: &LjModCoeffs,
 ) -> (Vec<Vec3F64>, Vec<ForcesOnWaterMol>, f64, f64, Vec<f64>, f64) {
     let n_std = atoms_std.len();
     let n_wat = water.len();
@@ -321,7 +409,7 @@ fn calc_force_cpu(
                     overrides,
                     spme_alpha,
                     coulomb_cutoff,
-                    lj_cutoff,
+                    lj_mod,
                     alchemical_lambda,
                 );
 
@@ -439,6 +527,8 @@ impl MdState {
     /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
     /// applies forces from non-solvent, and solvent sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
+        let lj_mod = LjModCoeffs::new(self.cfg.lj_modifier, self.cfg.lj_cutoff);
+
         let (f_on_non_water, f_on_water, virial, energy, energy_between_mols, alch_dh_dl) =
             match dev {
                 ComputationDevice::Cpu => {
@@ -471,7 +561,7 @@ impl MdState {
                         self.alchemical.lambda,
                         self.cfg.spme_alpha,
                         self.cfg.coulomb_cutoff,
-                        self.cfg.lj_cutoff,
+                        &lj_mod,
                     )
                 }
                 #[cfg(feature = "cuda")]
@@ -488,6 +578,7 @@ impl MdState {
                             self.per_neighbor_gpu.as_ref().unwrap(),
                             &self.cfg.overrides,
                             self.alchemical.lambda,
+                            &lj_mod,
                         );
                     (
                         f_std,
@@ -577,7 +668,7 @@ impl MdState {
                         if exclusions.contains(&key) {
                             return None;
                         }
-                        let scale_14 = scaled_set.contains(&key);
+                        let scale_14 = scaled_set.get(&key).copied();
                         let alch_interaction = alch_mol_idx.is_some_and(|m_alch| {
                             let tgt_is_alch = atom_to_mol[i_tgt] == m_alch;
                             let src_is_alch = atom_to_mol[i_src] == m_alch;
@@ -613,7 +704,7 @@ impl MdState {
                         sites.into_iter().map(move |site| NonBondedPair {
                             tgt: BodyRef::NonWater(i_std),
                             src: BodyRef::Water { mol: i_water, site },
-                            scale_14: false,
+                            scale_14: None,
                             lj_indices: LjTableIndices::StdWater(i_std),
                             calc_lj: site == WaterSite::O,
                             calc_coulomb: site != WaterSite::O,
@@ -651,7 +742,7 @@ impl MdState {
                                 mol: i_1,
                                 site: site_1,
                             },
-                            scale_14: false,
+                            scale_14: None,
                             lj_indices: LjTableIndices::WaterWater,
                             calc_lj,
                             calc_coulomb,
@@ -761,7 +852,7 @@ impl MdState {
         let mut virial_lr_recip = virial_from_kspace;
 
         // 1–4 Coulomb scaling correction (vacuum correction)
-        for &(i, j) in &self.pairs_14_scaled {
+        for (&(i, j), scale_14) in &self.pairs_14_scaled {
             let diff = self
                 .cell
                 .min_image(self.atoms[i].posit - self.atoms[j].posit);
@@ -781,7 +872,7 @@ impl MdState {
             let inv_r2 = inv_r * inv_r;
             let f_vac = dir * (qi * qj * inv_r2);
 
-            let df = f_vac * (SCALE_COUL_14 - 1.0);
+            let df = f_vac * (scale_14.coulomb - 1.0);
 
             self.atoms[i].force += df;
             self.atoms[j].force -= df;
@@ -884,13 +975,15 @@ impl MdState {
 /// to zero.
 ///
 /// Returns `(force, energy, dH/dlambda)` for
-/// `V_sc(r, lambda) = (1 - lambda) * V_LJ(r_sc)`.
+/// `V_sc(r, lambda) = (1 - lambda) * V_LJ(r_sc)`. The LJ modifier applies at `r_sc`; with a modifier,
+/// the interaction is zero once `r_sc` reaches the cutoff.
 pub(crate) fn alchemical_lj_soft_core_decouple(
     dir: Vec3,
     dist_sq: f32,
     sigma: f32,
     eps: f32,
     lambda: f32,
+    lj_mod: &LjModCoeffs,
 ) -> (Vec3, f32, f32) {
     if eps == 0.0 || !eps.is_finite() || !sigma.is_finite() || dist_sq < 0.0 {
         return (Vec3::new_zero(), 0.0, 0.0);
@@ -904,7 +997,7 @@ pub(crate) fn alchemical_lj_soft_core_decouple(
         if dist <= 0.0 {
             return (Vec3::new_zero(), 0.0, 0.0);
         }
-        let (force, energy) = force_e_lj(dir, 1.0 / dist, sigma, eps);
+        let (force, energy) = force_e_lj_mod(dir, dist, 1.0 / dist, sigma, eps, lj_mod);
         return (force * scale, energy * scale, -energy);
     }
 
@@ -919,12 +1012,23 @@ pub(crate) fn alchemical_lj_soft_core_decouple(
     }
 
     let r_sc = r_sc6.powf(1.0 / 6.0);
+    if lj_mod.enabled && r_sc >= lj_mod.cutoff {
+        return (Vec3::new_zero(), 0.0, 0.0);
+    }
+
     let inv_r_sc = 1.0 / r_sc;
     let sr = sigma * inv_r_sc;
     let sr6 = sr.powi(6);
     let sr12 = sr6 * sr6;
-    let hard_force_mag = 24.0 * eps * 2.0f32.mul_add(sr12, -sr6) * inv_r_sc;
-    let hard_energy = 4.0 * eps * (sr12 - sr6);
+    let mut hard_force_mag = 24.0 * eps * 2.0f32.mul_add(sr12, -sr6) * inv_r_sc;
+    let mut hard_energy = 4.0 * eps * (sr12 - sr6);
+
+    if lj_mod.enabled {
+        let (f_corr, e_corr) = lj_mod.correction(r_sc, sigma, eps);
+        hard_force_mag += f_corr;
+        hard_energy -= e_corr;
+    }
+
     let hard_force = dir * hard_force_mag;
 
     let dist = dist_sq.sqrt();
@@ -949,7 +1053,7 @@ pub(crate) fn alchemical_lj_soft_core_decouple(
 /// Lennard Jones and (short-range) Coulomb forces. Used by solvent and non-solvent.
 /// We run long-range SPME Coulomb force separately.
 ///
-/// We use a hard distance cutoff for Vdw, enabled by its ^-7 falloff.
+/// We use a distance cutoff for Vdw, enabled by its ^-7 falloff, with the configured modifier.
 /// Returns force, potential energy, and this pair's alchemical dH/dlambda
 /// contribution. The derivative is zero for ordinary pairs.
 pub fn f_nonbonded_cpu(
@@ -957,7 +1061,7 @@ pub fn f_nonbonded_cpu(
     tgt: &AtomDynamics,
     src: &AtomDynamics,
     cell: &SimBox,
-    scale14: bool, // See notes earlier in this module.
+    scale_14: Option<Scale14>, // Present for 1-4 pairs.
     lj_indices: &LjTableIndices,
     lj_tables: &LjTables,
     // These flags are for use with forces on solvent.
@@ -966,7 +1070,7 @@ pub fn f_nonbonded_cpu(
     overrides: &MdOverrides,
     spme_alpha: f32,
     coulomb_cutoff: f32,
-    lj_cutoff: f32,
+    lj_mod: &LjModCoeffs,
     alchemical_lambda: Option<f32>,
 ) -> (Vec3, f32, f32) {
     let diff = cell.min_image(tgt.posit - src.posit);
@@ -983,14 +1087,20 @@ pub fn f_nonbonded_cpu(
         {
             let schedule = staged_decoupling_schedule(lambda as f64);
             let (σ, ε) = lj_tables.lookup(lj_indices);
-            let (mut f, mut e, mut dh_dl) =
-                alchemical_lj_soft_core_decouple(Vec3::new_zero(), 0.0, σ, ε, schedule.lj_lambda);
+            let (mut f, mut e, mut dh_dl) = alchemical_lj_soft_core_decouple(
+                Vec3::new_zero(),
+                0.0,
+                σ,
+                ε,
+                schedule.lj_lambda,
+                lj_mod,
+            );
             dh_dl *= schedule.lj_dlambda_dlambda;
 
-            if scale14 {
-                f *= SCALE_LJ_14;
-                e *= SCALE_LJ_14;
-                dh_dl *= SCALE_LJ_14;
+            if let Some(s) = scale_14 {
+                f *= s.lj;
+                e *= s.lj;
+                dh_dl *= s.lj;
             }
             return (f, e, dh_dl);
         }
@@ -1003,23 +1113,23 @@ pub fn f_nonbonded_cpu(
 
     let schedule = alchemical_lambda.map(|lambda| staged_decoupling_schedule(lambda as f64));
 
-    let (f_lj, energy_lj, dh_dl_lj) = if !calc_lj || dist > lj_cutoff || overrides.lj_disabled {
+    let (f_lj, energy_lj, dh_dl_lj) = if !calc_lj || dist > lj_mod.cutoff || overrides.lj_disabled {
         (Vec3::new_zero(), 0., 0.)
     } else {
         let (σ, ε) = lj_tables.lookup(lj_indices);
 
         let (mut f, mut e, mut dh_dl) = if let Some(schedule) = schedule {
             let (f, e, dh_dl) =
-                alchemical_lj_soft_core_decouple(dir, dist_sq, σ, ε, schedule.lj_lambda);
+                alchemical_lj_soft_core_decouple(dir, dist_sq, σ, ε, schedule.lj_lambda, lj_mod);
             (f, e, dh_dl * schedule.lj_dlambda_dlambda)
         } else {
-            let (f, e) = force_e_lj(dir, inv_dist, σ, ε);
+            let (f, e) = force_e_lj_mod(dir, dist, inv_dist, σ, ε, lj_mod);
             (f, e, 0.)
         };
-        if scale14 {
-            f *= SCALE_LJ_14;
-            e *= SCALE_LJ_14;
-            dh_dl *= SCALE_LJ_14;
+        if let Some(s) = scale_14 {
+            f *= s.lj;
+            e *= s.lj;
+            dh_dl *= s.lj;
         }
         (f, e, dh_dl)
     };
@@ -1040,10 +1150,9 @@ pub fn f_nonbonded_cpu(
         )
     };
 
-    // See Amber RM, section 15, "1-4 Non-Bonded Interaction Scaling"
-    if scale14 {
-        f_coulomb *= SCALE_COUL_14;
-        energy_coulomb *= SCALE_COUL_14;
+    if let Some(s) = scale_14 {
+        f_coulomb *= s.coulomb;
+        energy_coulomb *= s.coulomb;
     }
 
     let (force, energy, dh_dl) = if let Some(schedule) = schedule {
@@ -1078,14 +1187,4 @@ fn atom_to_mol_indices(n_atoms: usize, mol_start_indices: &[usize]) -> Vec<usize
     }
 
     atom_to_mol
-}
-
-/// Helper. Returns σ, ε between an atom pair. Atom order passed as params doesn't matter.
-/// Note that this uses the traditional algorithm; not the Amber-specific version: We pre-set
-/// atom-specific σ and ε to traditional versions on ingest, and when building solvent.
-fn combine_lj_params(atom_0: &AtomDynamics, atom_1: &AtomDynamics) -> (f32, f32) {
-    let σ = 0.5 * (atom_0.lj_sigma + atom_1.lj_sigma);
-    let ε = (atom_0.lj_eps * atom_1.lj_eps).sqrt();
-
-    (σ, ε)
 }

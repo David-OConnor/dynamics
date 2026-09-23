@@ -111,7 +111,7 @@ mod tests;
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     error::Error,
     fmt,
     fmt::{Display, Formatter},
@@ -151,9 +151,11 @@ use lin_alg::{
 };
 use na_seq::Element;
 use neighbors::NeighborsNb;
+pub use non_bonded::{LjCombiningRule, LjModifier, Scale14};
+pub use params::{ForceFieldFamily, SmallMolTyper};
 pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{
-    ForcesOnWaterMol, Solvent, WaterMolOpc,
+    ForcesOnWaterMol, Ion, IonParams, Solvent, WaterModel, WaterMolOpc,
     init::{
         OCTANOL_WATER_TEMPLATE, SolventTemplateType, WATER_TEMPLATE_60A, WaterInitTemplate,
         water_mols_from_template, water_mols_from_template_in_region,
@@ -171,7 +173,6 @@ use crate::{
     alchemical::StateAlchemical,
     barostat::Barostat,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
-    param_inference::update_small_mol_params,
     params::FfParamSet,
     snapshot::Snapshot,
     solvent::{
@@ -609,6 +610,8 @@ pub struct MdState {
     // todo: Update how we handle mode A/R.
     // todo: You need to rework this state in light of arbitrary mol count.
     pub cfg: MdConfig,
+    /// The water model in use: `MdConfig::water_model` if set, or the force field family's.
+    pub water_model: WaterModel,
     pub atoms: Vec<AtomDynamics>,
     #[allow(unused)]
     #[cfg(target_arch = "x86_64")]
@@ -644,8 +647,9 @@ pub struct MdState {
     /// called 'prmtop', which I can't find. Fishy, but we're going with it.
     pairs_excluded_12_13: HashSet<(usize, usize)>,
     /// See Amber RM, sectcion 15, "1-4 Non-Bonded Interaction Scaling"
-    /// These are indices of atoms separated by three consecutive bonds
-    pairs_14_scaled: HashSet<(usize, usize)>,
+    /// These are indices of atoms separated by three consecutive bonds, and the scale factors
+    /// of the force field they're from.
+    pairs_14_scaled: HashMap<(usize, usize), Scale14>,
     lj_tables: LjTables,
     // todo: Hmm... Is this DRY with forces_on_water? Investigate.
     pub water_pme_sites_forces: Vec<[Vec3F64; 3]>, // todo: A/R
@@ -712,6 +716,25 @@ impl MdState {
         mols: &[MolDynamics],
         param_set: &FfParamSet,
     ) -> Result<(Self, Vec<MolDynamics>), ParamError> {
+        if cfg.ff_family != param_set.family {
+            return Err(ParamError::new(&format!(
+                "The MD config's force field family ({:?}) doesn't match the parameter set's ({:?}).",
+                cfg.ff_family, param_set.family
+            )));
+        }
+
+        let water_model = cfg.water_model.unwrap_or(param_set.default_water);
+
+        if let LjModifier::ForceSwitch { r_switch } = cfg.lj_modifier
+            && !(r_switch >= 0. && r_switch < cfg.lj_cutoff)
+        {
+            return Err(ParamError::new(&format!(
+                "LJ force-switch distance ({r_switch} Å) must be at least 0, and less than the \
+                 LJ cutoff ({} Å).",
+                cfg.lj_cutoff
+            )));
+        }
+
         // We combine all molecule general and specific params into this set, then
         // create Indexed params from it.
         let mut params = ForceFieldParams::default();
@@ -796,6 +819,8 @@ impl MdState {
         let mut atoms_md = Vec::new();
         let mut adjacency_list = Vec::new();
         let mut solute_atom_count = 0;
+        // The 1-4 scale factors of each atom's force field. Shares indices with `atoms_md`.
+        let mut atom_scale_14 = Vec::new();
 
         for (mol_i, mol) in all_mols.iter().enumerate() {
             if !mol.atoms.is_empty() {
@@ -825,15 +850,17 @@ impl MdState {
                 if needs_ff_type_or_q {
                     // Note: This invalidates any passed by the user.
                     mol_specific_params = Some(
-                        update_small_mol_params(
-                            &mut atoms,
-                            &mol.bonds,
-                            Some(&adjacency_list),
-                            param_set.small_mol.as_ref().unwrap(),
-                        )
-                        .map_err(|_| ParamError {
-                            descrip: "Problem inferring params".to_string(),
-                        })?,
+                        param_set
+                            .small_mol_typer
+                            .assign(
+                                &mut atoms,
+                                &mol.bonds,
+                                Some(&adjacency_list),
+                                param_set.small_mol.as_ref().unwrap(),
+                            )
+                            .map_err(|_| ParamError {
+                                descrip: "Problem inferring params".to_string(),
+                            })?,
                     );
                 }
             }
@@ -915,6 +942,10 @@ impl MdState {
             }
 
             atom_ct_prior_to_this_mol += atoms.len();
+            atom_scale_14.extend(std::iter::repeat_n(
+                param_set.nonbonded_rules.scale_14.get(mol.ff_mol_type),
+                atoms.len(),
+            ));
 
             if mol_i + 1 == mols.len() {
                 solute_atom_count = atoms_md.len();
@@ -945,11 +976,12 @@ impl MdState {
 
         let mut result = Self {
             cfg: cfg.clone(),
+            water_model,
             atoms: atoms_md,
             adjacency_list: adjacency_list.to_vec(),
             cell,
             pairs_excluded_12_13: HashSet::new(),
-            pairs_14_scaled: HashSet::new(),
+            pairs_14_scaled: HashMap::new(),
             force_field_params,
             mass_accel_factor,
             // _num_static_atoms: num_static_atoms,
@@ -976,7 +1008,8 @@ impl MdState {
 
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
-        result.lj_tables = LjTables::new(&result.atoms);
+        let lj_combining = param_set.nonbonded_rules.lj_combining;
+        result.lj_tables = LjTables::new(&result.atoms, &water_model, lj_combining);
         result.neighbors_nb = NeighborsNb::new(result.cfg.neighbor_skin, result.cfg.coulomb_cutoff);
 
         // Custom solvent molecules were pre-packed and added to `all_mols` before the atom-
@@ -999,6 +1032,7 @@ impl MdState {
                     count,
                     &cfg.solvent_template_type,
                     cfg.skip_water_pbc_filter,
+                    &water_model,
                 )
             }
             Solvent::WaterOpcCustomRegions(regions) => {
@@ -1023,6 +1057,7 @@ impl MdState {
                         None,
                         &cfg.solvent_template_type,
                         cfg.skip_water_pbc_filter,
+                        &water_model,
                     )?;
                     water_mols.extend(region_water);
                 }
@@ -1036,7 +1071,7 @@ impl MdState {
                     ));
                 };
 
-                water_mols_from_gro(gro)?
+                water_mols_from_gro(gro, &water_model)?
             }
             Solvent::Custom(_) => Vec::new(), // todo: ?
         };
@@ -1049,7 +1084,7 @@ impl MdState {
 
         // Rebuild the LJ table to include any ions that were appended after the initial build.
         if n_ions > 0 {
-            result.lj_tables = LjTables::new(&result.atoms);
+            result.lj_tables = LjTables::new(&result.atoms, &water_model, lj_combining);
         }
 
         // Calc DOF only after all atoms and solvent are initialized.
@@ -1057,7 +1092,7 @@ impl MdState {
 
         result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
 
-        result.setup_nonbonded_exclusion_scale_flags();
+        result.setup_nonbonded_exclusion_scale_flags(&atom_scale_14);
 
         result.build_all_neighbors(dev);
 
@@ -1443,7 +1478,10 @@ pub fn compute_energy_snapshot(
     Ok(md_state.snapshots[0].clone())
 }
 
-fn water_mols_from_gro(gro: &Gro) -> Result<Vec<WaterMolOpc>, ParamError> {
+fn water_mols_from_gro(
+    gro: &Gro,
+    water_model: &WaterModel,
+) -> Result<Vec<WaterMolOpc>, ParamError> {
     const NM_TO_ANGSTROM: f32 = 10.0;
 
     #[derive(Default)]
@@ -1501,14 +1539,14 @@ fn water_mols_from_gro(gro: &Gro) -> Result<Vec<WaterMolOpc>, ParamError> {
             )));
         };
 
-        let mut mol = WaterMolOpc::new(o_posit, o_vel, Quaternion::new_identity());
+        let mut mol = WaterMolOpc::new(o_posit, o_vel, Quaternion::new_identity(), water_model);
         mol.o.posit = o_posit;
         mol.o.vel = o_vel;
         mol.h0.posit = h0_posit;
         mol.h0.vel = h0_vel;
         mol.h1.posit = h1_posit;
         mol.h1.vel = h1_vel;
-        mol.update_virtual_site();
+        mol.update_virtual_site(water_model);
 
         water.push(mol);
     }
@@ -1564,31 +1602,24 @@ pub(crate) fn validate_mol_start_indices(
 }
 
 fn add_ions(state: &mut MdState, net_q_e: f32, n_ions: usize) {
-    // Add counter-ions to neutralize any net charge.
-    // Joung–Cheatham parameters tuned for OPC water (Amber frcmod.ionsjc_opc).
-    // sigma = 2 * R_MIN_HALF / 2^(1/6)
+    // Add counter-ions to neutralize any net charge. We use ion parameters tuned for the water model.
     if n_ions > 0 && !state.water.is_empty() {
-        // Positive net → add Cl⁻;  negative net → add Na⁺.
-        let (ff_type, elem, mass, q_scaled, sigma, eps): (&str, Element, f32, f32, f32, f32) =
-            if net_q_e > 0.0 {
-                (
-                    "Cl-",
-                    Element::Chlorine,
-                    35.45,
-                    -CHARGE_UNIT_SCALER,
-                    4.478,
-                    0.0073,
-                )
-            } else {
-                (
-                    "Na+",
-                    Element::Sodium,
-                    22.99,
-                    CHARGE_UNIT_SCALER,
-                    2.439,
-                    0.1065,
-                )
-            };
+        // Positive net → add the anion;  negative net → add the cation.
+        let ion_params = if net_q_e > 0.0 {
+            state.water_model.anion
+        } else {
+            state.water_model.cation
+        };
+
+        let ion = ion_params.ion;
+        let (ff_type, elem, mass, sigma, eps) = (
+            ion.ff_type(),
+            ion.element(),
+            ion_params.mass,
+            ion_params.lj_sigma,
+            ion_params.lj_eps,
+        );
+        let q_scaled = ion.charge() * CHARGE_UNIT_SCALER;
 
         let stride = (state.water.len() / n_ions).max(1);
         let mut water_to_remove: Vec<usize> = (0..n_ions)

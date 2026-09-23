@@ -20,7 +20,7 @@ use bio_files::{
 use lin_alg::f32::Vec3;
 use na_seq::Element;
 
-use crate::{AtomDynamics, MdState, barostat::SimBox, solvent::MASS_WATER_MOL};
+use crate::{AtomDynamics, MdState, barostat::SimBox};
 
 // Append to any snapshot-saving files every this number of snapshots. E.g.
 // DCD, TRR, XTC. We want this to be such that we don't experience too much memory use.
@@ -186,7 +186,7 @@ impl Snapshot {
         for atom in &state.atoms {
             mass += atom.mass as f64;
         }
-        mass += MASS_WATER_MOL as f64 * state.water.len() as f64;
+        mass += state.water_model.mass() as f64 * state.water.len() as f64;
 
         let volume = state.cell.volume();
         let density = mass as f32 / volume;
@@ -737,12 +737,8 @@ impl Snapshot {
 
         Ok(MmCif {
             ident: "MD run".to_string(),
-            metadata: HashMap::new(),
             atoms,
-            chains: Vec::new(),
-            residues: Vec::new(),
-            secondary_structure: Vec::new(),
-            experimental_method: None,
+            ..Default::default()
         })
     }
 }
