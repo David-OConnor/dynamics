@@ -498,6 +498,24 @@ impl WaterMolOpc {
         }
     }
 
+    pub(crate) fn site(&self, site: WaterSite) -> &AtomDynamics {
+        match site {
+            WaterSite::O => &self.o,
+            WaterSite::M => &self.m,
+            WaterSite::H0 => &self.h0,
+            WaterSite::H1 => &self.h1,
+        }
+    }
+
+    pub(crate) fn site_mut(&mut self, site: WaterSite) -> &mut AtomDynamics {
+        match site {
+            WaterSite::O => &mut self.o,
+            WaterSite::M => &mut self.m,
+            WaterSite::H0 => &mut self.h0,
+            WaterSite::H1 => &mut self.h1,
+        }
+    }
+
     /// Run this after updating force on the M/EP site; converts its force to the O and H sites,
     /// and leaves it at 0.
     pub(crate) fn project_ep_force(&mut self, model: &WaterModel) {

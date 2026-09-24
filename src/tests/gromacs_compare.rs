@@ -6,7 +6,7 @@
 //! force-field discrepancy.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -88,15 +88,15 @@ struct GmxMolecule {
     dihedrals: Vec<GmxDihedral>,
 }
 
-struct GmxReference {
-    forces: Vec<Vec3>,
-    potential_energy_kcal: f32,
+pub(super) struct GmxReference {
+    pub(super) forces: Vec<Vec3>,
+    pub(super) potential_energy_kcal: f32,
 }
 
-struct ScratchDir(PathBuf);
+pub(super) struct ScratchDir(PathBuf);
 
 impl ScratchDir {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let sequence = SCRATCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "dynamics_gromacs_compare_{}_{}_{}",
@@ -108,7 +108,7 @@ impl ScratchDir {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -140,7 +140,7 @@ fn assert_vec_close(got: Vec3, expected: Vec3, rel_tol: f32, abs_tol: f32, label
     }
 }
 
-fn assert_system_close(
+pub(super) fn assert_system_close(
     dynamics_forces: &[Vec3],
     dynamics_energy: f32,
     gromacs: &GmxReference,
@@ -169,7 +169,7 @@ fn assert_system_close(
     );
 }
 
-fn reference_mdp(coulomb: CoulombType, vdw_modifier: VdwModifier) -> MdpParams {
+pub(super) fn reference_mdp(coulomb: CoulombType, vdw_modifier: VdwModifier) -> MdpParams {
     MdpParams {
         integrator: GmxIntegrator::Md,
         nsteps: 0,
@@ -204,7 +204,7 @@ fn reference_mdp(coulomb: CoulombType, vdw_modifier: VdwModifier) -> MdpParams {
     }
 }
 
-fn pme_coulomb() -> CoulombType {
+pub(super) fn pme_coulomb() -> CoulombType {
     CoulombType::Pme(PmeConfig {
         fourierspacing: PME_SPACING_A * 0.1,
         order: 4,
@@ -340,6 +340,35 @@ fn make_topology(molecules: &[GmxMolecule]) -> String {
                 ));
             }
             text.push('\n');
+
+            // 1-4 pairs, which `gen-pairs` scales by fudgeLJ and fudgeQQ. As in Amber, a dihedral's
+            // end atoms aren't a 1-4 pair if they're also 1-2 or 1-3, e.g. in 5-membered rings.
+            let canonical = |i: usize, j: usize| (i.min(j), i.max(j));
+            let excluded: BTreeSet<_> = molecule
+                .bonds
+                .iter()
+                .map(|b| canonical(b.atoms.0, b.atoms.1))
+                .chain(
+                    molecule
+                        .angles
+                        .iter()
+                        .map(|a| canonical(a.atoms.0, a.atoms.2)),
+                )
+                .collect();
+            let pairs: BTreeSet<_> = molecule
+                .dihedrals
+                .iter()
+                .map(|d| canonical(d.atoms.0, d.atoms.3))
+                .filter(|pair| !excluded.contains(pair))
+                .collect();
+
+            if !pairs.is_empty() {
+                text.push_str("[ pairs ]\n; ai aj funct\n");
+                for (i, j) in pairs {
+                    text.push_str(&format!("{i} {j} 1\n"));
+                }
+                text.push('\n');
+            }
         }
     }
 
@@ -356,12 +385,29 @@ fn run_reference(
     molecules: &[GmxMolecule],
     mdp: MdpParams,
 ) -> GmxReference {
+    let molecule_sizes: Vec<_> = molecules.iter().map(|m| m.atoms.len()).collect();
+    run_reference_files(
+        label,
+        &[
+            ("conf.gro", &make_gro(posits, &molecule_sizes)),
+            ("topol.top", &make_topology(molecules)),
+        ],
+        mdp,
+    )
+}
+
+/// Runs GROMACS on the given files, which must include `conf.gro` and `topol.top`.
+pub(super) fn run_reference_files(
+    label: &str,
+    files: &[(&str, &str)],
+    mdp: MdpParams,
+) -> GmxReference {
     let scratch = ScratchDir::new(label);
     let dir = scratch.path();
-    let molecule_sizes: Vec<_> = molecules.iter().map(|m| m.atoms.len()).collect();
 
-    fs::write(dir.join("conf.gro"), make_gro(posits, &molecule_sizes)).unwrap();
-    fs::write(dir.join("topol.top"), make_topology(molecules)).unwrap();
+    for (name, text) in files {
+        fs::write(dir.join(name), text).unwrap();
+    }
     fs::write(dir.join("reference.mdp"), mdp.to_mdp_str()).unwrap();
 
     run_gmx(
@@ -408,7 +454,6 @@ fn run_reference(
     )
     .unwrap();
     let frame = frames.first().expect("GROMACS must write a force frame");
-    assert_eq!(frame.atom_forces.len(), posits.len());
     let forces = frame
         .atom_forces
         .iter()
@@ -709,7 +754,7 @@ fn dynamics_atom(serial_number: u32, posit: Vec3, partial_charge: f32) -> AtomGe
     }
 }
 
-fn dynamics_config(overrides: MdOverrides) -> MdConfig {
+pub(super) fn dynamics_config(overrides: MdOverrides) -> MdConfig {
     MdConfig {
         integrator: Integrator::VerletVelocity { thermostat: None },
         sim_box: SimBoxInit::Fixed((Vec3::new_zero(), Vec3::splat(BOX_LEN_A))),
@@ -917,5 +962,117 @@ fn gromacs_combined_bonded_lj_and_spme_matches_dynamics() {
         0.015,
         5e-3,
         "combined",
+    );
+}
+
+/// A charged 4-atom chain, with all bonded terms: Its 1-2 and 1-3 pairs are excluded, and its 1-4
+/// pair is scaled, in both real and reciprocal space.
+#[test]
+fn gromacs_charged_chain_exclusions_and_14_match_dynamics() {
+    let c = BOX_LEN_A / 2.0;
+    let posits = [
+        Vec3::new(c - 1.9, c - 0.6, c + 0.3),
+        Vec3::new(c - 0.7, c + 0.1, c),
+        Vec3::new(c + 0.7, c - 0.1, c),
+        Vec3::new(c + 1.5, c + 1.0, c + 0.6),
+    ];
+    let charges = [0.4, -0.3, 0.2, -0.3];
+
+    let mol = MolDynamics {
+        ff_mol_type: FfMolType::SmallOrganic,
+        atoms: posits
+            .iter()
+            .zip(charges)
+            .enumerate()
+            .map(|(i, (p, q))| dynamics_atom(i as u32 + 1, *p, q))
+            .collect(),
+        bonds: (1..4)
+            .map(|sn| BondGeneric {
+                atom_0_sn: sn,
+                atom_1_sn: sn + 1,
+                bond_type: BondType::Aromatic,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let params = FfParamSet::new_amber().unwrap();
+    let (mut state, _) = MdState::new(
+        &ComputationDevice::Cpu,
+        &dynamics_config(MdOverrides::default()),
+        &[mol],
+        &params,
+    )
+    .unwrap();
+    state.reset_f_acc_pe_virial();
+    state.apply_all_forces(&ComputationDevice::Cpu, &None);
+
+    let ff = &state.force_field_params;
+    let bonds = [(0, 1), (1, 2), (2, 3)]
+        .map(|(i, j)| {
+            let p = &ff.bond_stretching[&(i, j)];
+            GmxBond {
+                atoms: (i + 1, j + 1),
+                r0_a: p.r_0,
+                k_amber: p.k_b,
+            }
+        })
+        .to_vec();
+    let angles = [(0, 1, 2), (1, 2, 3)]
+        .map(|(i, j, k)| {
+            let p = &ff.angle[&(i, j, k)];
+            GmxAngle {
+                atoms: (i + 1, j + 1, k + 1),
+                theta0_rad: p.theta_0,
+                k_amber: p.k,
+            }
+        })
+        .to_vec();
+    assert_eq!(ff.dihedral.len(), 1);
+    let (&(i0, i1, i2, i3), dihedral_params) = ff.dihedral.iter().next().unwrap();
+    let dihedrals = dihedral_params
+        .iter()
+        .map(|p| GmxDihedral {
+            atoms: (i0 + 1, i1 + 1, i2 + 1, i3 + 1),
+            phase_rad: p.phase,
+            // Indexed params have already divided this by the Amber divider.
+            barrier_kcal: p.barrier_height,
+            periodicity: p.periodicity,
+        })
+        .collect();
+
+    let molecule = GmxMolecule {
+        name: "CHAIN",
+        atoms: state
+            .atoms
+            .iter()
+            .map(|atom| GmxAtom {
+                atom_type: "XCH",
+                charge_e: atom.partial_charge / CHARGE_UNIT_SCALER,
+                mass_amu: atom.mass,
+                sigma_a: atom.lj_sigma,
+                epsilon_kcal: atom.lj_eps,
+            })
+            .collect(),
+        bonds,
+        angles,
+        dihedrals,
+    };
+    let reference = run_reference(
+        "charged_chain",
+        &posits,
+        &[molecule],
+        reference_mdp(pme_coulomb(), VdwModifier::None),
+    );
+    let forces: Vec<_> = state.atoms.iter().map(|atom| atom.force).collect();
+
+    assert_system_close(
+        &forces,
+        state.potential_energy as f32,
+        &reference,
+        0.015,
+        5e-3,
+        0.015,
+        5e-3,
+        "charged chain",
     );
 }

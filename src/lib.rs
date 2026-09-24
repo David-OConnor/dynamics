@@ -83,6 +83,7 @@ mod bonded;
 mod bonded_forces;
 mod config;
 mod forces;
+pub mod import;
 pub mod integrate;
 mod neighbors;
 mod non_bonded;
@@ -141,6 +142,7 @@ use cudarc::{
     nvrtc::Ptx,
 };
 use ewald::PmeRecip;
+pub use import::{ExplicitParams, ImportedSystem};
 pub use integrate::Integrator;
 #[allow(unused)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -153,6 +155,7 @@ use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use non_bonded::{LjCombiningRule, LjModifier, Scale14};
 pub use params::{ForceFieldFamily, SmallMolTyper};
+use prep::merge_indexed_params;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{
     ForcesOnWaterMol, Ion, IonParams, Solvent, WaterModel, WaterMolOpc,
@@ -290,6 +293,10 @@ pub struct MolDynamics {
     /// If true, this atom exerts and experiences non-bonded forces only.
     /// This may be useful for protein atoms that aren't near a docking site.
     pub bonded_only: bool,
+    /// If present, this molecule's parameters per atom and per term, e.g. from a topology file.
+    /// We use these instead of assigning parameters by force field type, and ignore `ff_mol_type`
+    /// and `mol_specific_params`. See `import`.
+    pub explicit_params: Option<ExplicitParams>,
 }
 
 /// This is mainly for overriding, while specifying atoms, bonds, posits, and mol type explicitly.
@@ -305,6 +312,7 @@ impl Default for MolDynamics {
             static_: false,
             mol_specific_params: None,
             bonded_only: false,
+            explicit_params: None,
         }
     }
 }
@@ -329,6 +337,7 @@ impl MolDynamics {
             static_: false,
             mol_specific_params,
             bonded_only: false,
+            explicit_params: None,
         }
     }
 
@@ -350,6 +359,7 @@ impl MolDynamics {
             static_: false,
             mol_specific_params,
             bonded_only: false,
+            explicit_params: None,
         }
     }
 
@@ -375,6 +385,7 @@ impl MolDynamics {
             static_: false,
             mol_specific_params: Some(params),
             bonded_only: false,
+            explicit_params: None,
         })
     }
 }
@@ -821,24 +832,41 @@ impl MdState {
         let mut solute_atom_count = 0;
         // The 1-4 scale factors of each atom's force field. Shares indices with `atoms_md`.
         let mut atom_scale_14 = Vec::new();
+        // Per molecule: (first atom index, atom count, adjacency list with local indices,
+        // explicit parameters). We index parameters per molecule.
+        let mut mol_ranges = Vec::new();
 
         for (mol_i, mol) in all_mols.iter().enumerate() {
             if !mol.atoms.is_empty() {
                 mol_start_indices.push(atoms_md.len());
             }
 
+            let explicit = mol.explicit_params.as_ref();
+
+            if let Some(p) = explicit
+                && p.lj_combining != param_set.nonbonded_rules.lj_combining
+            {
+                return Err(ParamError::new(&format!(
+                    "A molecule's LJ parameters are for the {:?} combining rule, but the \
+                     parameter set uses {:?}",
+                    p.lj_combining, param_set.nonbonded_rules.lj_combining
+                )));
+            }
+
             // Filter out hetero atoms in proteins. These are often example ligands that we do
             // not wish to model.
             // We must perform this filter prior to most of the other steps in this function.
             let mut atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
-                FfMolType::Peptide => mol.atoms.iter().filter(|a| !a.hetero).cloned().collect(),
+                FfMolType::Peptide if explicit.is_none() => {
+                    mol.atoms.iter().filter(|a| !a.hetero).cloned().collect()
+                }
                 _ => mol.atoms.to_vec(),
             };
 
             let mut mol_specific_params = mol.mol_specific_params.clone();
 
             // Update partial charge, FF names, and param overrides A/R.
-            if mol.ff_mol_type == FfMolType::SmallOrganic {
+            if mol.ff_mol_type == FfMolType::SmallOrganic && explicit.is_none() {
                 let mut needs_ff_type_or_q = false;
                 for atom in &atoms {
                     if atom.force_field_type.is_none() || atom.partial_charge.is_none() {
@@ -877,7 +905,7 @@ impl MdState {
                 ));
             }
 
-            {
+            if explicit.is_none() {
                 let params_general = match mol.ff_mol_type {
                     FfMolType::Peptide => &param_set.peptide,
                     FfMolType::SmallOrganic => &param_set.small_mol,
@@ -931,6 +959,13 @@ impl MdState {
                 None => &build_adjacency_list(&atoms, &mol.bonds)?,
             };
 
+            mol_ranges.push((
+                atom_ct_prior_to_this_mol,
+                atoms.len(),
+                adjacency_list_.clone(),
+                explicit,
+            ));
+
             // Update indices based on atoms from previously added molecules.
             for aj in adjacency_list_ {
                 let mut updated = aj.clone();
@@ -958,9 +993,23 @@ impl MdState {
         let n_ions = net_q_e.abs().round() as usize;
 
         let h_constrained = !matches!(cfg.hydrogen_constraint, HydrogenConstraint::Flexible);
-        let force_field_params =
-            ForceFieldParamsIndexed::new(&params, &atoms_md, &adjacency_list, h_constrained)
-                .map_err(|e| ParamError::new(&e.to_string()))?;
+
+        // Index parameters per molecule: By force field type using the combined parameters, or
+        // from the molecule's explicit parameters.
+        let mut force_field_params = ForceFieldParamsIndexed::default();
+        for (start, len, adjacency, explicit) in &mol_ranges {
+            let atoms = &atoms_md[*start..*start + *len];
+            let indexed = match explicit {
+                Some(p) => p.to_indexed(atoms, h_constrained)?,
+                None => ForceFieldParamsIndexed::new(&params, atoms, adjacency, h_constrained)
+                    .map_err(|e| ParamError::new(&e.to_string()))?,
+            };
+            merge_indexed_params(&mut force_field_params, indexed, *start);
+        }
+        let explicit_mols: Vec<(usize, &ExplicitParams)> = mol_ranges
+            .iter()
+            .filter_map(|(start, _, _, explicit)| explicit.map(|p| (*start, p)))
+            .collect();
 
         let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());
 
@@ -1092,7 +1141,7 @@ impl MdState {
 
         result.water_pme_sites_forces = vec![[Vec3F64::new_zero(); 3]; result.water.len()];
 
-        result.setup_nonbonded_exclusion_scale_flags(&atom_scale_14);
+        result.setup_nonbonded_exclusion_scale_flags(&atom_scale_14, &explicit_mols);
 
         result.build_all_neighbors(dev);
 
@@ -1371,6 +1420,9 @@ impl MdState {
                     }
                 }
             }
+
+            // Positions have changed since any cached reciprocal forces, so we correct every step.
+            self.apply_ewald_exclusion_corrections();
         }
 
         if let Some(f_ext) = external_force {

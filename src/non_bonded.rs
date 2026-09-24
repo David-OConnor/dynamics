@@ -1,6 +1,6 @@
 //! For VDW and Coulomb forces
 
-use std::ops::AddAssign;
+use std::{f64::consts::PI, ops::AddAssign};
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
@@ -10,6 +10,7 @@ use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
+use statrs::function::erf::erf;
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::force_nonbonded_gpu;
@@ -293,12 +294,7 @@ impl BodyRef {
     ) -> &'a AtomDynamics {
         match *self {
             BodyRef::NonWater(i) => &non_waters[i],
-            BodyRef::Water { mol, site } => match site {
-                WaterSite::O => &waters[mol].o,
-                WaterSite::M => &waters[mol].m,
-                WaterSite::H0 => &waters[mol].h0,
-                WaterSite::H1 => &waters[mol].h1,
-            },
+            BodyRef::Water { mol, site } => waters[mol].site(site),
         }
     }
 }
@@ -849,40 +845,81 @@ impl MdState {
 
         // Apply forces; virial comes from the analytical k-space formula, not r·F.
         self.unpack_apply_pme_forces(&f_recip);
-        let mut virial_lr_recip = virial_from_kspace;
+        self.barostat.virial.nonbonded_long_range += virial_from_kspace;
 
-        // 1–4 Coulomb scaling correction (vacuum correction)
-        for (&(i, j), scale_14) in &self.pairs_14_scaled {
+        (f_recip, e_recip as f64, virial_from_kspace)
+    }
+
+    /// The reciprocal-space (SPME) sum includes every pair of charges. Correct it for pairs we treat
+    /// differently in real space: Remove the interaction of excluded pairs (bonded 1-2 and 1-3
+    /// pairs, and the sites within each rigid water molecule), and scale it for 1-4 pairs.
+    /// See `coulomb_recip_pair`.
+    ///
+    /// These pairs are few and close together, so this is cheap. We run it every step, including
+    /// steps that reuse cached reciprocal forces.
+    pub(crate) fn apply_ewald_exclusion_corrections(&mut self) {
+        let alpha = self.cfg.spme_alpha;
+        let mut energy = 0.0;
+        let mut virial = 0.0;
+
+        // (pair, change to the pair's interaction). -1 removes it.
+        let excluded = self.pairs_excluded_12_13.iter().map(|&pair| (pair, -1.0));
+        let scaled_14 = self
+            .pairs_14_scaled
+            .iter()
+            .map(|(&pair, scale)| (pair, scale.coulomb - 1.0));
+
+        for ((i, j), change) in excluded.chain(scaled_14) {
             let diff = self
                 .cell
                 .min_image(self.atoms[i].posit - self.atoms[j].posit);
+            let q_0 = self.atoms[i].partial_charge;
+            let q_1 = self.atoms[j].partial_charge;
 
-            let r = diff.magnitude();
-            if r.abs() < 1e-6 {
+            let Some((f, e)) = coulomb_recip_pair(diff, q_0, q_1, alpha) else {
                 continue;
-            }
+            };
+            let f = f * change;
 
-            let dir = diff / r;
-
-            let qi = self.atoms[i].partial_charge;
-            let qj = self.atoms[j].partial_charge;
-
-            // Vacuum Coulomb force (K=1 if charges are Amber-scaled)
-            let inv_r = 1.0 / r;
-            let inv_r2 = inv_r * inv_r;
-            let f_vac = dir * (qi * qj * inv_r2);
-
-            let df = f_vac * (scale_14.coulomb - 1.0);
-
-            self.atoms[i].force += df;
-            self.atoms[j].force -= df;
-
-            virial_lr_recip += (dir * r).dot(df) as f64; // r·F
+            self.atoms[i].force += f;
+            self.atoms[j].force -= f;
+            energy += e * change as f64;
+            virial += diff.dot(f) as f64;
         }
 
-        self.barostat.virial.nonbonded_long_range += virial_lr_recip;
+        // O carries no charge; M, H0, and H1 do.
+        const WATER_PAIRS: [(WaterSite, WaterSite); 3] = [
+            (WaterSite::M, WaterSite::H0),
+            (WaterSite::M, WaterSite::H1),
+            (WaterSite::H0, WaterSite::H1),
+        ];
 
-        (f_recip, e_recip as f64, virial_lr_recip)
+        for w in &mut self.water {
+            for (site_0, site_1) in WATER_PAIRS {
+                let (posit_0, q_0) = {
+                    let a = w.site(site_0);
+                    (a.posit, a.partial_charge)
+                };
+                let (posit_1, q_1) = {
+                    let a = w.site(site_1);
+                    (a.posit, a.partial_charge)
+                };
+                let diff = self.cell.min_image(posit_0 - posit_1);
+
+                let Some((f, e)) = coulomb_recip_pair(diff, q_0, q_1, alpha) else {
+                    continue;
+                };
+
+                w.site_mut(site_0).force -= f;
+                w.site_mut(site_1).force += f;
+                energy -= e;
+                virial -= diff.dot(f) as f64;
+            }
+        }
+
+        self.potential_energy += energy;
+        self.potential_energy_nonbonded += energy;
+        self.barostat.virial.nonbonded_long_range += virial;
     }
 
     /// Gather all particles that contribute to PME (non-solvent atoms, solvent sites).
@@ -1168,6 +1205,33 @@ pub fn f_nonbonded_cpu(
     *virial_w += diff.dot(force) as f64;
 
     (force, energy, dh_dl)
+}
+
+/// The reciprocal-space (SPME) share of a pair's Coulomb interaction: q_0 q_1 erf(αr)/r. The
+/// real-space share, q_0 q_1 erfc(αr)/r, is the rest. `diff` is posit_0 - posit_1, and charges are
+/// in our internal units. Returns (force on 0, energy), or None if there's no interaction.
+pub(crate) fn coulomb_recip_pair(
+    diff: Vec3,
+    q_0: f32,
+    q_1: f32,
+    alpha: f32,
+) -> Option<(Vec3, f64)> {
+    let r = diff.magnitude() as f64;
+    if r < 1e-6 || q_0 == 0. || q_1 == 0. {
+        return None;
+    }
+
+    // f64, as the two force terms nearly cancel at the short distances we use this for.
+    let alpha = alpha as f64;
+    let qq = q_0 as f64 * q_1 as f64;
+    let ar = alpha * r;
+    let erf_ar = erf(ar);
+
+    let energy = qq * erf_ar / r;
+    // -dE/dr
+    let f_mag = qq * (erf_ar / (r * r) - 2. * alpha / PI.sqrt() * (-ar * ar).exp() / r);
+
+    Some((diff * (f_mag / r) as f32, energy))
 }
 
 fn atom_to_mol_indices(n_atoms: usize, mol_start_indices: &[usize]) -> Vec<usize> {

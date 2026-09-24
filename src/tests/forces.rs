@@ -10,7 +10,9 @@ use crate::{
     SimBoxInit, Solvent,
     alchemical::{SOFT_CORE_ALPHA, SOFT_CORE_SIGMA_MIN},
     forces::{LjModCoeffs, force_e_lj, force_e_lj_mod},
-    non_bonded::{CHARGE_UNIT_SCALER, LjModifier, alchemical_lj_soft_core_decouple},
+    non_bonded::{
+        CHARGE_UNIT_SCALER, LjModifier, alchemical_lj_soft_core_decouple, coulomb_recip_pair,
+    },
     params::FfParamSet,
 };
 
@@ -506,6 +508,33 @@ fn test_alchemical_lj_soft_core_with_modifier() {
         (0., 0., 0.),
         "soft-core LJ beyond the cutoff"
     );
+}
+
+/// The reciprocal-space share of a pair's Coulomb interaction: force = −dE/dr, including at the
+/// short distances of excluded pairs.
+#[test]
+fn test_coulomb_recip_pair_force_matches_energy_gradient() {
+    let (q_0, q_1) = (0.6 * CHARGE_UNIT_SCALER, -0.4 * CHARGE_UNIT_SCALER);
+    let alpha = 0.26;
+    let delta = 1e-3_f32;
+
+    let energy = |r: f32| {
+        coulomb_recip_pair(Vec3::new(r, 0., 0.), q_0, q_1, alpha)
+            .unwrap()
+            .1
+    };
+
+    for r in [0.8_f32, 1.5, 2.5, 4.0] {
+        let (force, _) = coulomb_recip_pair(Vec3::new(r, 0., 0.), q_0, q_1, alpha).unwrap();
+        let numerical = -(energy(r + delta) - energy(r - delta)) / (2.0 * delta as f64);
+
+        assert_close_f32(
+            force.x,
+            numerical as f32,
+            1e-3,
+            &format!("F = −dE/dr at r={r}Å"),
+        );
+    }
 }
 
 // ── Coulomb short-range ───────────────────────────────────────────────────────

@@ -27,10 +27,10 @@ use std::{collections::HashSet, fmt};
 use bincode::{Decode, Encode};
 use bio_files::{
     gromacs::mdp::{ConstraintAlgorithm, Constraints},
-    md_params::ForceFieldParams,
+    md_params::{ForceFieldParams, ForceFieldParamsIndexed},
 };
 
-use crate::{MdState, non_bonded::Scale14};
+use crate::{ExplicitParams, MdState, non_bonded::Scale14};
 
 /// Add items from one parameter set to the other. If there are duplicates, the second set's overrides
 /// the baseline.
@@ -46,6 +46,47 @@ pub fn merge_params(baseline: &ForceFieldParams, add_this: &ForceFieldParams) ->
     merged.improper.extend(add_this.improper.clone());
 
     merged
+}
+
+/// Add one molecule's indexed parameters to the system's, offsetting its atom indices by the
+/// index of its first atom.
+pub(crate) fn merge_indexed_params(
+    dest: &mut ForceFieldParamsIndexed,
+    src: ForceFieldParamsIndexed,
+    offset: usize,
+) {
+    let o = offset;
+    dest.mass
+        .extend(src.mass.into_iter().map(|(i, v)| (i + o, v)));
+    dest.lennard_jones
+        .extend(src.lennard_jones.into_iter().map(|(i, v)| (i + o, v)));
+    dest.bond_stretching.extend(
+        src.bond_stretching
+            .into_iter()
+            .map(|((i, j), v)| ((i + o, j + o), v)),
+    );
+    dest.bond_rigid_constraints.extend(
+        src.bond_rigid_constraints
+            .into_iter()
+            .map(|((i, j), v)| ((i + o, j + o), v)),
+    );
+    dest.angle.extend(
+        src.angle
+            .into_iter()
+            .map(|((i, j, k), v)| ((i + o, j + o, k + o), v)),
+    );
+    dest.dihedral.extend(
+        src.dihedral
+            .into_iter()
+            .map(|((i, j, k, l), v)| ((i + o, j + o, k + o, l + o), v)),
+    );
+    dest.improper.extend(
+        src.improper
+            .into_iter()
+            .map(|((i, j, k, l), v)| ((i + o, j + o, k + o, l + o), v)),
+    );
+    dest.bonds_topology
+        .extend(src.bonds_topology.into_iter().map(|(i, j)| (i + o, j + o)));
 }
 
 /// We use this variant in the configuration API. Deferrs to `HydrogenConstraintInner` for holding
@@ -112,9 +153,30 @@ impl MdState {
     /// with sections were we skip coulomb and Vdw interactions for atoms separated by 1 or 2 bonds. `scaled14` applies a force
     /// scaler for these interactions, when separated by 3 bonds.
     ///
+    /// In small rings, a pair can be both: In a 5-membered ring, each 1-3 pair is also the end pair
+    /// of the dihedral going the other way around the ring. As in Amber, exclusion takes precedence.
+    ///
     /// `atom_scale_14` holds the 1-4 scale factors of each atom's force field, indexed by atom. The
     /// atoms of a dihedral always share a molecule, so we take the factors from its first atom.
-    pub(crate) fn setup_nonbonded_exclusion_scale_flags(&mut self, atom_scale_14: &[Scale14]) {
+    ///
+    /// Molecules with explicit parameters, given as (index of first atom, parameters), list their
+    /// exclusions and 1-4 pairs; we use those instead.
+    pub(crate) fn setup_nonbonded_exclusion_scale_flags(
+        &mut self,
+        atom_scale_14: &[Scale14],
+        explicit_mols: &[(usize, &ExplicitParams)],
+    ) {
+        let mut is_explicit = vec![false; self.atoms.len()];
+        for (start, params) in explicit_mols {
+            for flag in is_explicit
+                .iter_mut()
+                .skip(*start)
+                .take(params.masses.len())
+            {
+                *flag = true;
+            }
+        }
+
         // Helper to store pairs in canonical (low,high) order
         let canonical = |i: usize, j: usize| if i < j { (i, j) } else { (j, i) };
         let push = |set: &mut HashSet<(usize, usize)>, i: usize, j: usize| {
@@ -123,23 +185,39 @@ impl MdState {
 
         // 1-2
         for indices in &self.force_field_params.bonds_topology {
-            push(&mut self.pairs_excluded_12_13, indices.0, indices.1);
+            if !is_explicit[indices.0] {
+                push(&mut self.pairs_excluded_12_13, indices.0, indices.1);
+            }
         }
 
         // 1-3
         for indices in self.force_field_params.angle.keys() {
-            push(&mut self.pairs_excluded_12_13, indices.0, indices.2);
+            if !is_explicit[indices.0] {
+                push(&mut self.pairs_excluded_12_13, indices.0, indices.2);
+            }
+        }
+
+        for (start, params) in explicit_mols {
+            for &(i, j) in &params.exclusions {
+                push(&mut self.pairs_excluded_12_13, start + i, start + j);
+            }
         }
 
         // 1-4. We do not count improper dihedrals here.
         for indices in self.force_field_params.dihedral.keys() {
-            self.pairs_14_scaled
-                .insert(canonical(indices.0, indices.3), atom_scale_14[indices.0]);
+            let pair = canonical(indices.0, indices.3);
+            if !is_explicit[indices.0] && !self.pairs_excluded_12_13.contains(&pair) {
+                self.pairs_14_scaled.insert(pair, atom_scale_14[indices.0]);
+            }
         }
 
-        // Make sure no 1-4 pair is also in the excluded set
-        for p in self.pairs_14_scaled.keys() {
-            self.pairs_excluded_12_13.remove(p);
+        for (start, params) in explicit_mols {
+            for &((i, j), scale) in &params.pairs_14 {
+                let pair = canonical(start + i, start + j);
+                if !self.pairs_excluded_12_13.contains(&pair) {
+                    self.pairs_14_scaled.insert(pair, scale);
+                }
+            }
         }
     }
 }

@@ -363,6 +363,195 @@ fn cpu_spme_pair_has_correct_total_coulomb_force_and_energy() {
     );
 }
 
+/// Coulomb forces and energy only (real space, reciprocal, and corrections), on the CPU.
+fn evaluate_coulomb(mols: &[MolDynamics], solvent: Solvent) -> MdState {
+    let overrides = MdOverrides {
+        bonded_disabled: true,
+        lj_disabled: true,
+        skip_water_relaxation: true,
+        ..Default::default()
+    };
+    let cfg = MdConfig {
+        solvent,
+        ..base_config(overrides)
+    };
+    let dev = ComputationDevice::Cpu;
+    let params = FfParamSet::new_amber().unwrap();
+    let (mut state, _) = MdState::new(&dev, &cfg, mols, &params).unwrap();
+    state.reset_f_acc_pe_virial();
+    state.apply_all_forces(&dev, &None);
+    state
+}
+
+/// Atoms bonded in sequence, optionally closing the ring.
+fn bonded_chain(posits: &[Vec3], charges: &[f32], closed: bool) -> MolDynamics {
+    let n = posits.len() as u32;
+    let mut bonds: Vec<_> = (1..n)
+        .map(|sn| BondGeneric {
+            atom_0_sn: sn,
+            atom_1_sn: sn + 1,
+            bond_type: BondType::Aromatic,
+        })
+        .collect();
+    if closed {
+        bonds.push(BondGeneric {
+            atom_0_sn: n,
+            atom_1_sn: 1,
+            bond_type: BondType::Aromatic,
+        });
+    }
+
+    MolDynamics {
+        ff_mol_type: FfMolType::SmallOrganic,
+        atoms: posits
+            .iter()
+            .zip(charges)
+            .enumerate()
+            .map(|(i, (p, q))| atom(i as u32 + 1, *p, *q))
+            .collect(),
+        bonds,
+        ..Default::default()
+    }
+}
+
+/// A regular polygon, centered in the box.
+fn ring_posits(n: usize, bond_len: f32) -> Vec<Vec3> {
+    let c = BOX_LEN / 2.0;
+    let radius = bond_len / (2.0 * (std::f32::consts::PI / n as f32).sin());
+    (0..n)
+        .map(|i| {
+            let θ = 2.0 * std::f32::consts::PI * i as f32 / n as f32;
+            Vec3::new(c + radius * θ.cos(), c + radius * θ.sin(), c)
+        })
+        .collect()
+}
+
+/// Excluded (bonded) pairs have no Coulomb interaction, including in reciprocal space. What
+/// remains is the pair's interaction with periodic images, which is negligible in this box.
+#[test]
+fn spme_excluded_pair_has_no_coulomb_interaction() {
+    let c = BOX_LEN / 2.0;
+    let mol = bonded_chain(
+        &[Vec3::new(c - 0.7, c, c), Vec3::new(c + 0.7, c, c)],
+        &[0.5, -0.5],
+        false,
+    );
+    let state = evaluate_coulomb(&[mol], Solvent::None);
+
+    for i in 0..2 {
+        assert_vec_close(
+            state.atoms[i].force,
+            Vec3::new_zero(),
+            0.,
+            0.02,
+            &format!("excluded pair force on atom {i}"),
+        );
+    }
+    assert_close(
+        state.potential_energy_nonbonded as f32,
+        0.,
+        0.,
+        0.02,
+        "excluded pair energy",
+    );
+}
+
+/// A 1-4 pair's total Coulomb interaction is the scaled vacuum interaction.
+#[test]
+fn spme_14_pair_has_scaled_coulomb_interaction() {
+    let c = BOX_LEN / 2.0;
+    let posits = [
+        Vec3::new(c - 1.75, c, c),
+        Vec3::new(c - 0.35, c, c),
+        Vec3::new(c + 0.35, c + 1.21, c),
+        Vec3::new(c + 1.75, c + 1.21, c),
+    ];
+    let (q_0, q_3) = (0.5, -0.5);
+    let mol = bonded_chain(&posits, &[q_0, 0., 0., q_3], false);
+    let state = evaluate_coulomb(&[mol], Solvent::None);
+
+    let k_elec = crate::non_bonded::CHARGE_UNIT_SCALER.powi(2);
+    let scale = crate::Scale14::AMBER.coulomb;
+    let diff = posits[0] - posits[3];
+    let r = diff.magnitude();
+    let expected_energy = scale * k_elec * q_0 * q_3 / r;
+    let expected_force = diff * (scale * k_elec * q_0 * q_3 / r.powi(3));
+
+    assert_close(
+        state.potential_energy_nonbonded as f32,
+        expected_energy,
+        0.01,
+        0.02,
+        "1-4 pair energy",
+    );
+    assert_vec_close(
+        state.atoms[0].force,
+        expected_force,
+        0.01,
+        0.02,
+        "1-4 pair force",
+    );
+    assert_vec_close(
+        state.atoms[3].force,
+        -expected_force,
+        0.01,
+        0.02,
+        "1-4 pair reaction",
+    );
+}
+
+/// A lone rigid water molecule has no Coulomb interaction with itself.
+#[test]
+fn spme_water_has_no_intramolecular_coulomb_interaction() {
+    let c = BOX_LEN / 2.0;
+    // An uncharged solute; the placement API requires one.
+    let solute = bonded_chain(&[Vec3::new(c, c, c)], &[0.], false);
+    let state = evaluate_coulomb(&[solute], Solvent::WaterOpcSpecifyMolCount(1));
+
+    assert_eq!(state.water.len(), 1);
+    let w = &state.water[0];
+    // Without the correction, the sites feel intramolecular forces of ~3 kcal/mol/Å. The tolerance
+    // allows for PME's interpolation error in cancelling those.
+    for (label, site) in [("O", &w.o), ("M", &w.m), ("H0", &w.h0), ("H1", &w.h1)] {
+        assert_vec_close(
+            site.force,
+            Vec3::new_zero(),
+            0.,
+            0.1,
+            &format!("water {label} force"),
+        );
+    }
+    assert_close(
+        state.potential_energy_nonbonded as f32,
+        0.,
+        0.,
+        0.05,
+        "water intramolecular energy",
+    );
+}
+
+/// In a 5-membered ring, every pair is 1-2 or 1-3, so all are excluded and none are 1-4, even
+/// though each 1-3 pair ends a dihedral going the other way around. In a 6-membered ring, the three
+/// para pairs are 1-4.
+#[test]
+fn ring_exclusions_take_precedence_over_14() {
+    for (n, n_14) in [(5, 0), (6, 3)] {
+        let posits = ring_posits(n, 1.4);
+        let mol = bonded_chain(&posits, &vec![0.; n], true);
+        let state = evaluate_coulomb(&[mol], Solvent::None);
+
+        assert_eq!(
+            state.pairs_excluded_12_13.len(),
+            2 * n,
+            "{n}-ring excluded pairs"
+        );
+        assert_eq!(state.pairs_14_scaled.len(), n_14, "{n}-ring 1-4 pairs");
+        for pair in state.pairs_14_scaled.keys() {
+            assert!(!state.pairs_excluded_12_13.contains(pair));
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ForceSelection {
     Bonded,

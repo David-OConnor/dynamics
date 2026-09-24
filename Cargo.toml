@@ -40,6 +40,8 @@ lin_alg = { version = "1.4.3", features = ["encode", "random"] }
 na_seq = "0.3.15"
 bio_files = "0.5.3"
 ewald = { version = "0.1.15" }
+# For erf, in Ewald exclusion corrections. `ewald` already depends on this.
+statrs = "0.18.0"
 bio_apis = "0.3.0"
 #mol_defs = { path = "../mol_defs" }  # e.g. Dihedral and a few auxillary types.
 

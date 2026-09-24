@@ -43,6 +43,7 @@ pub fn build_dynamics(
             static_: false,
             mol_specific_params: None,
             bonded_only: false,
+            explicit_params: None,
             // Or: ..Default::default()
         });
     }
