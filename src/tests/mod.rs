@@ -9,6 +9,7 @@ use crate::{
     partial_charge_inference::files::{GEOSTD_PATH, find_mol2_paths},
 };
 
+mod charmm;
 mod force_components;
 mod forces;
 mod gromacs_compare;

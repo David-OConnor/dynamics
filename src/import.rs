@@ -4,10 +4,12 @@
 //! we don't assign force field types to these molecules.
 //!
 //! We support Amber-style functional forms: Harmonic bonds and angles, periodic proper and
-//! improper dihedrals, LJ with a combining rule, and 1-4 pairs with scaled Coulomb and LJ. This
-//! covers Amber force fields without CMAP, GAFF, OPLS, and OpenFF. Other terms, e.g. CHARMM's
-//! Urey-Bradley terms, harmonic impropers, CMAP, and pair-specific LJ (NBFIX), cause an error
-//! that lists them.
+//! improper dihedrals, LJ with a combining rule, and 1-4 pairs with scaled Coulomb and LJ, or
+//! their own LJ parameters. This covers Amber force fields without CMAP, GAFF, OPLS, and OpenFF.
+//! From GROMACS topologies, we also support CHARMM's Urey-Bradley terms, harmonic impropers, and
+//! pair-specific LJ (NBFIX, `[ nonbond_params ]`), e.g. as CHARMM-GUI writes them for CGenFF
+//! ligands. Other terms, e.g. CMAP, cause an error that lists them. (`ExplicitParams` can hold
+//! CMAP; we build it for CHARMM peptides. See `charmm`)
 //!
 //! Water: This library simulates water as rigid bodies, placed by `MdConfig::solvent`. We build a
 //! `WaterModel` from the file's water (and ions, if present); use it with `MdConfig::water_model`,
@@ -38,7 +40,8 @@ use na_seq::Element;
 
 use crate::{
     AtomDynamics, FfMolType, MolDynamics, ParamError, SimBoxInit,
-    non_bonded::{LjCombiningRule, Scale14},
+    cmap::CmapGrid,
+    non_bonded::{LjCombiningRule, NbFix, Pair14, Scale14},
     params::FfParamSet,
     solvent::{Ion, IonParams, WaterModel},
 };
@@ -63,10 +66,23 @@ pub struct ExplicitParams {
     /// Pairs with no non-bonded interaction: 1-2 and 1-3 pairs, and any others the source
     /// specifies. Not 1-4 pairs.
     pub exclusions: Vec<(usize, usize)>,
-    /// 1-4 pairs, and their scale factors.
-    pub pairs_14: Vec<((usize, usize), Scale14)>,
+    /// 1-4 pairs, their scale factors, and LJ parameters if they differ from the atoms'.
+    pub pairs_14: Vec<((usize, usize), Pair14)>,
     /// The combining rule these LJ parameters are for. It must match the rest of the system.
     pub lj_combining: LjCombiningRule,
+    /// Urey-Bradley terms, between the outer atoms of angles: (k kcal/mol/Å², r_0 Å), with
+    /// energy k (r − r_0)².
+    pub urey_bradley: Vec<((usize, usize), (f32, f32))>,
+    /// Harmonic impropers, e.g. CHARMM's: (k kcal/mol/rad², ψ_0 radians), with energy
+    /// k (ψ − ψ_0)². The first atom is the central one.
+    pub harmonic_impropers: Vec<((usize, usize, usize, usize), (f32, f32))>,
+    /// CMAP terms: The atoms of φ, then ψ, and an index into `cmap_grids`.
+    pub cmaps: Vec<([usize; 8], usize)>,
+    pub cmap_grids: Vec<CmapGrid>,
+    /// Pair-specific LJ parameters by force field type, (σ Å, ε kcal/mol), which override the
+    /// combining rule. These apply to pairs across the system, e.g. between an ion and a
+    /// protein; `MdState::new` combines them with the parameter set's.
+    pub nbfix: NbFix,
 }
 
 impl ExplicitParams {
@@ -183,7 +199,7 @@ impl ImportedSystem {
     pub fn param_set(&self) -> FfParamSet {
         let mut result = FfParamSet::default();
         result.nonbonded_rules.lj_combining = self.lj_combining;
-        if let Some(w) = self.water_model {
+        if let Some(w) = self.water_model.clone() {
             result.default_water = w;
         }
         result
@@ -335,7 +351,7 @@ impl ImportedSystem {
                 ));
             }
 
-            let mut pairs_14: Vec<((usize, usize), Scale14)> = Vec::new();
+            let mut pairs_14: Vec<((usize, usize), Pair14)> = Vec::new();
             for d in prmtop
                 .dihedrals
                 .iter()
@@ -366,7 +382,8 @@ impl ImportedSystem {
                             Scale14 {
                                 lj: 1. / d.scnb,
                                 coulomb: 1. / d.scee,
-                            },
+                            }
+                            .into(),
                         ));
                     }
                 }
@@ -394,7 +411,13 @@ impl ImportedSystem {
         let ions_found: Vec<_> = ions
             .iter()
             .filter_map(|&i| {
-                ion_params(elements[i], prmtop.charges[i], prmtop.masses[i], atom_lj(i))
+                ion_params(
+                    elements[i],
+                    &prmtop.atom_types[i],
+                    prmtop.charges[i],
+                    prmtop.masses[i],
+                    atom_lj(i),
+                )
             })
             .collect();
 
@@ -474,12 +497,17 @@ impl ImportedSystem {
             .filter_map(|(name, _)| top.molecule_type(name))
             .flat_map(|m| m.atoms.iter().map(|a| a.atom_type.as_str()))
             .collect();
-        if top
-            .nonbond_param_types
-            .iter()
-            .any(|(a, b)| used_types.contains(a.as_str()) && used_types.contains(b.as_str()))
-        {
-            unsupported.push("Pair-specific LJ parameters (NBFIX)".to_owned());
+        let mut nbfix = NbFix::new();
+        for ((a, b), p) in top.nonbond_param_types.iter().zip(&top.nonbond_params) {
+            if !(used_types.contains(a.as_str()) && used_types.contains(b.as_str())) {
+                continue;
+            }
+            if p.funct != 1 || p.params.len() < 2 {
+                unsupported.push(format!("Pair-specific non-bonded function {}", p.funct));
+                continue;
+            }
+            let (sigma, eps) = gmx_sigma_eps(p.params[0], p.params[1], defaults.comb_rule);
+            nbfix.insert((a.clone(), b.clone()), (sigma as f32, eps as f32));
         }
 
         let expected: usize = top
@@ -546,12 +574,33 @@ impl ImportedSystem {
                 let a = &mol.atoms[0];
                 if let Some(ion) = ion_params(
                     a.element,
+                    a.force_field_type.as_deref().unwrap_or_default(),
                     a.partial_charge.unwrap_or_default(),
                     params.masses[0],
                     params.lj[0],
                 ) {
                     ions_found.push(ion);
                 }
+            }
+        }
+
+        // We apply pair-specific LJ by type to atoms other than rigid water.
+        let water_types: BTreeSet<&str> = top
+            .molecules
+            .iter()
+            .filter(|(name, _)| matches!(converted[name.as_str()], Converted::Water(_)))
+            .filter_map(|(name, _)| top.molecule_type(name))
+            .flat_map(|m| m.atoms.iter().map(|a| a.atom_type.as_str()))
+            .collect();
+        if nbfix
+            .keys()
+            .any(|(a, b)| water_types.contains(a.as_str()) || water_types.contains(b.as_str()))
+        {
+            unsupported.push("Pair-specific LJ parameters (NBFIX) for water".to_owned());
+        }
+        for mol in &mut mols {
+            if let Some(p) = &mut mol.explicit_params {
+                p.nbfix = nbfix.clone();
             }
         }
 
@@ -728,15 +777,26 @@ fn water_sites(atoms: &[usize], elements: &[Element], masses: &[f32]) -> Option<
 }
 
 /// If this single atom is a monovalent ion we use for neutralizing, its parameters.
-fn ion_params(element: Element, charge: f32, mass: f32, lj: (f32, f32)) -> Option<IonParams> {
+fn ion_params(
+    element: Element,
+    ff_type: &str,
+    charge: f32,
+    mass: f32,
+    lj: (f32, f32),
+) -> Option<IonParams> {
     let ion = match element {
         Element::Sodium => Ion::Sodium,
         Element::Potassium => Ion::Potassium,
         Element::Chlorine => Ion::Chloride,
         _ => return None,
     };
-    ((charge - ion.charge()).abs() < 0.01).then_some(IonParams {
+    ((charge - ion.charge()).abs() < 0.01).then(|| IonParams {
         ion,
+        ff_type: if ff_type.is_empty() {
+            ion.ff_type().into()
+        } else {
+            ff_type.to_owned().into()
+        },
         mass,
         lj_sigma: lj.0,
         lj_eps: lj.1,
@@ -756,11 +816,6 @@ fn water_model(
     ions: &[IonParams],
 ) -> Result<WaterModel, ParamError> {
     let (q_o, q_h0, q_h1, q_m) = charges;
-    if lj_h.1.abs() > 1e-6 {
-        return Err(ParamError::new(
-            "LJ on water hydrogens (e.g. CHARMM's TIP3P) isn't supported yet",
-        ));
-    }
     if (q_h0 - q_h1).abs() > 1e-4 || (q_o + q_h0 + q_h1 + q_m).abs() > 1e-3 {
         return Err(ParamError::new(
             "Unsupported water charges: They must be symmetric and neutral",
@@ -776,12 +831,12 @@ fn water_model(
     let cation = ions
         .iter()
         .find(|i| i.ion.charge() > 0.)
-        .copied()
+        .cloned()
         .unwrap_or(base.cation);
     let anion = ions
         .iter()
         .find(|i| i.ion.charge() < 0.)
-        .copied()
+        .cloned()
         .unwrap_or(base.anion);
 
     Ok(WaterModel {
@@ -793,6 +848,8 @@ fn water_model(
         q_h: q_h0 as f32,
         lj_sigma_o: lj_o.0 as f32,
         lj_eps_o: lj_o.1 as f32,
+        lj_sigma_h: lj_h.0 as f32,
+        lj_eps_h: lj_h.1 as f32,
         cation,
         anion,
     })
@@ -993,7 +1050,24 @@ fn convert_gmx_molecule(
                     comment: None,
                 },
             )),
-            5 => unsupported.push("Urey-Bradley angle terms".to_owned()),
+            // Also, V = ½ k_UB (r_13 − r_13,0)², kJ/mol/nm², r in nm.
+            5 if a.params.len() >= 4 => {
+                params.angles.push((
+                    (i, ctr, k),
+                    AngleBendingParams {
+                        atom_types: (type_name(i), type_name(ctr), type_name(k)),
+                        k: (a.params[1] * 0.5 * KJ_TO_KCAL) as f32,
+                        theta_0: a.params[0].to_radians() as f32,
+                        comment: None,
+                    },
+                ));
+                let k_ub = a.params[3] * 0.5 * KJ_TO_KCAL / NM_TO_ANGSTROM.powi(2);
+                if k_ub != 0. {
+                    params
+                        .urey_bradley
+                        .push(((i, k), (k_ub as f32, (a.params[2] * NM_TO_ANGSTROM) as f32)));
+                }
+            }
             f => unsupported.push(format!("Angle function {f}")),
         }
     }
@@ -1011,7 +1085,14 @@ fn convert_gmx_molecule(
         match d.funct {
             1 | 9 => params.dihedrals.push(((a, b, c, e), periodic())),
             4 => params.impropers.push(((a, b, c, e), periodic())),
-            2 => unsupported.push("Harmonic impropers".to_owned()),
+            // V = ½ k (ξ − ξ0)², kJ/mol/rad², ξ0 in degrees
+            2 => params.harmonic_impropers.push((
+                (a, b, c, e),
+                (
+                    (d.params[1] * 0.5 * KJ_TO_KCAL) as f32,
+                    d.params[0].to_radians() as f32,
+                ),
+            )),
             3 => unsupported.push("Ryckaert-Bellemans dihedrals".to_owned()),
             f => unsupported.push(format!("Dihedral function {f}")),
         }
@@ -1042,7 +1123,8 @@ fn convert_gmx_molecule(
     }
     excluded.extend(mt.exclusions.iter().copied());
 
-    // 1-4 pairs. We express each as a scale on the normal interaction, so its LJ σ must match.
+    // 1-4 pairs. We express each as a scale on the normal interaction where its LJ σ matches,
+    // and otherwise, with its own LJ parameters. (e.g. CHARMM's)
     let normal_lj = |i: usize, j: usize| -> (f64, f64) {
         let (ti, tj) = (atom_type(i).unwrap(), atom_type(j).unwrap());
         let (v, w) = combine(comb, ti.v, ti.w, tj.v, tj.w);
@@ -1061,26 +1143,29 @@ fn convert_gmx_molecule(
 
         let (s14, e14) = gmx_sigma_eps(p.params[0], p.params[1], comb);
         let (s, e) = normal_lj(i, j);
-        let lj_scale = if e < 1e-12 {
-            if e14 > 1e-12 {
-                unsupported.push("Separate 1-4 LJ parameters".to_owned());
+        let coulomb = top.defaults.fudge_qq as f32;
+        let pair_14 = if e14 < 1e-12 {
+            Pair14 {
+                scale: Scale14 { lj: 0., coulomb },
+                lj: None,
             }
-            top.defaults.fudge_lj
+        } else if e > 1e-12 && (s14 - s).abs() <= 1e-4 * s.max(1e-6) {
+            Pair14 {
+                scale: Scale14 {
+                    lj: (e14 / e) as f32,
+                    coulomb,
+                },
+                lj: None,
+            }
         } else {
-            if (s14 - s).abs() > 1e-4 * s.max(1e-6) {
-                unsupported.push("Separate 1-4 LJ parameters (e.g. CHARMM)".to_owned());
+            Pair14 {
+                scale: Scale14 { lj: 1., coulomb },
+                lj: Some((s14 as f32, e14 as f32)),
             }
-            e14 / e
         };
 
         excluded.remove(&(i, j));
-        params.pairs_14.push((
-            (i, j),
-            Scale14 {
-                lj: lj_scale as f32,
-                coulomb: top.defaults.fudge_qq as f32,
-            },
-        ));
+        params.pairs_14.push(((i, j), pair_14));
     }
     params.exclusions = excluded.into_iter().collect();
 

@@ -66,7 +66,12 @@ fn prmtop_import_matches_openmm() {
     assert!(imported.water_model.is_none());
     let params = imported.mols[0].explicit_params.as_ref().unwrap();
     // Amber's defaults, for a file without per-dihedral scale factors.
-    assert!(params.pairs_14.iter().all(|(_, s)| *s == Scale14::AMBER));
+    assert!(
+        params
+            .pairs_14
+            .iter()
+            .all(|(_, p)| p.scale == Scale14::AMBER && p.lj.is_none())
+    );
 
     let mut lines = OPENMM_REFERENCE.lines();
     let energy: f32 = lines.next().unwrap().parse().unwrap();
@@ -292,6 +297,56 @@ fn gromacs_topology_import_matches_gromacs() {
     );
 }
 
+/// CHARMM's terms in a GROMACS topology: A Urey-Bradley angle, and a harmonic improper.
+#[test]
+fn gromacs_charmm_terms_match_gromacs() {
+    let top = GMX_TOP
+        .replace("1 2 3 1\n", "1 2 3 5 108.0 400.0 0.23 20000.0\n")
+        .replace("2 5 1 6 4\n", "2 5 1 6 2 5.0 300.0\n");
+    let gro = gmx_gro();
+
+    let dir = ScratchDir::new("import_charmm_inputs");
+    fs::write(dir.path().join("ff.itp"), GMX_FF_ITP).unwrap();
+    fs::write(dir.path().join("topol.top"), &top).unwrap();
+    fs::write(dir.path().join("conf.gro"), &gro).unwrap();
+
+    let imported = ImportedSystem::from_gromacs_files(
+        &dir.path().join("topol.top"),
+        &dir.path().join("conf.gro"),
+        &[],
+    )
+    .unwrap();
+
+    let lig = imported.mols[0].explicit_params.as_ref().unwrap();
+    assert_eq!(lig.urey_bradley.len(), 1);
+    assert_eq!(lig.harmonic_impropers.len(), 1);
+    assert!(lig.impropers.is_empty());
+
+    let reference = run_reference_files(
+        "import_charmm",
+        &[
+            ("ff.itp", GMX_FF_ITP),
+            ("topol.top", &top),
+            ("conf.gro", &gro),
+        ],
+        reference_mdp(pme_coulomb(), VdwModifier::None),
+    );
+
+    let state = evaluate(&imported);
+    let forces: Vec<_> = state.atoms.iter().map(|a| a.force).collect();
+
+    assert_system_close(
+        &forces,
+        state.potential_energy as f32,
+        &reference,
+        0.015,
+        5e-3,
+        0.015,
+        5e-3,
+        "GROMACS topology with CHARMM terms",
+    );
+}
+
 /// Water models from GROMACS topologies: 3-site with SETTLE, and 4-site with a virtual site.
 #[test]
 fn gromacs_water_models() {
@@ -360,7 +415,7 @@ SOL 1
 /// Terms we can't compute yet are reported, rather than dropped.
 #[test]
 fn gromacs_unsupported_terms_are_errors() {
-    let top = GMX_TOP.replace("5 1 2 1\n", "5 1 2 5 108.0 527.184 0.25 20000\n");
+    let top = GMX_TOP.replace("1 2 3 4 9\n", "1 2 3 4 3 1 2 3 4 5 6\n");
     let dir = ScratchDir::new("import_unsupported");
     fs::write(dir.path().join("ff.itp"), GMX_FF_ITP).unwrap();
     fs::write(dir.path().join("topol.top"), top).unwrap();
@@ -372,5 +427,9 @@ fn gromacs_unsupported_terms_are_errors() {
         &[],
     )
     .unwrap_err();
-    assert!(err.descrip.contains("Urey-Bradley"), "{}", err.descrip);
+    assert!(
+        err.descrip.contains("Ryckaert-Bellemans"),
+        "{}",
+        err.descrip
+    );
 }

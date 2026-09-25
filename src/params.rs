@@ -18,8 +18,10 @@ use bio_files::{
 use na_seq::{AminoAcid, AminoAcidGeneral, AminoAcidProtenationVariant, AtomTypeInRes, Element};
 
 use crate::{
-    Dihedral, FfMolType, ParamError, merge_params,
-    non_bonded::{LjCombiningRule, Scale14},
+    Dihedral, FfMolType, ParamError,
+    charmm::CharmmSet,
+    merge_params,
+    non_bonded::{LjCombiningRule, NbFix, Scale14},
     param_inference::update_small_mol_params,
     populate_hydrogens_dihedrals,
     solvent::WaterModel,
@@ -67,6 +69,12 @@ pub enum ForceFieldFamily {
     /// OPC water. Amber's recommendations as of Sept 2025.
     #[default]
     Amber,
+    /// CHARMM36m for proteins, with CHARMM's TIP3P water (with LJ on H), and SOD and CLA ions.
+    /// Includes Urey-Bradley terms, harmonic impropers, CMAP, special 1-4 LJ parameters, and
+    /// NBFIX. We build proteins from CHARMM's residue topologies; they need
+    /// `MolDynamics::residues`. Other molecule types need explicit parameters. (e.g. imported;
+    /// see `import`) Use `MdConfig::for_family` for CHARMM's cutoffs and LJ force switch.
+    Charmm36,
 }
 
 /// How we assign force field types, partial charges, and missing bonded parameters to small
@@ -87,8 +95,14 @@ impl SmallMolTyper {
         atoms: &mut [AtomGeneric],
         bonds: &[BondGeneric],
         adjacency_list: Option<&[Vec<usize>]>,
-        general_params: &ForceFieldParams,
+        general_params: Option<&ForceFieldParams>,
     ) -> io::Result<ForceFieldParams> {
+        let Some(general_params) = general_params else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "The parameter set has no small-molecule parameters to type this molecule with.                  Pass explicit parameters, e.g. from a topology file.",
+            ));
+        };
         match self {
             Self::Gaff2 => update_small_mol_params(atoms, bonds, adjacency_list, general_params),
         }
@@ -122,11 +136,14 @@ impl Scale14ByMolType {
 
 /// Non-bonded conventions that are part of a force field's definition, rather than of individual
 /// atom types. These must match the parameters they're used with.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct NonBondedRules {
     /// Applies to all pairs in the system, so all molecules' parameters must use the same rule.
     pub lj_combining: LjCombiningRule,
     pub scale_14: Scale14ByMolType,
+    /// Pair-specific LJ parameters by force field type, which override the combining rule. (e.g.
+    /// CHARMM's NBFIX)
+    pub nbfix: NbFix,
 }
 
 #[derive(Default, Debug)]
@@ -158,6 +175,9 @@ pub struct FfParamSet {
     /// overrides this.
     pub default_water: WaterModel,
     pub small_mol_typer: SmallMolTyper,
+    /// CHARMM's topology and parameters. If present, we build peptides from these, instead of
+    /// assigning parameters by type from `peptide`.
+    pub charmm: Option<CharmmSet>,
 }
 
 /// Paths for to general parameter files. Used to create a FfParamSet.
@@ -191,7 +211,44 @@ impl FfParamSet {
     pub fn from_family(family: ForceFieldFamily) -> io::Result<Self> {
         match family {
             ForceFieldFamily::Amber => Self::new_amber(),
+            ForceFieldFamily::Charmm36 => Self::new_charmm(),
         }
+    }
+
+    /// CHARMM36m for proteins, with CHARMM's TIP3P water and ions, using files included with this
+    /// library. (toppar_c36_jul24) See `ForceFieldFamily::Charmm36`.
+    ///
+    /// To add hydrogens to proteins, use the Amber set's `peptide_ff_q_map`, e.g. with
+    /// `prepare_peptide`; `MdState::new` then assigns CHARMM types and charges.
+    pub fn new_charmm() -> io::Result<Self> {
+        let charmm = CharmmSet::new_c36m()?;
+
+        let scale_14 = Scale14 {
+            lj: 1.,
+            coulomb: 1.,
+        };
+
+        Ok(Self {
+            family: ForceFieldFamily::Charmm36,
+            nonbonded_rules: NonBondedRules {
+                lj_combining: LjCombiningRule::LorentzBerthelot,
+                // CHARMM's e14fac is 1. Special 1-4 LJ parameters are per pair.
+                scale_14: Scale14ByMolType {
+                    peptide: scale_14,
+                    small_organic: scale_14,
+                    dna: scale_14,
+                    rna: scale_14,
+                    lipid: scale_14,
+                    carbohydrate: scale_14,
+                },
+                nbfix: charmm.nbfix(),
+            },
+            default_water: WaterModel::TIP3P_CHARMM,
+            // No CGenFF yet; small molecules need explicit parameters.
+            small_mol_typer: SmallMolTyper::Gaff2,
+            charmm: Some(charmm),
+            ..Default::default()
+        })
     }
 
     /// Load general parameter files for the most common classes of organic molecules.
@@ -324,6 +381,7 @@ impl FfParamSet {
                     // todo: include its parameters yet. We use this for all molecules, as before.
                     carbohydrate: Scale14::AMBER,
                 },
+                nbfix: Default::default(),
             },
             default_water: WaterModel::OPC,
             small_mol_typer: SmallMolTyper::Gaff2,

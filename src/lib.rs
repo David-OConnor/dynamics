@@ -81,6 +81,8 @@ mod add_hydrogens;
 mod barostat;
 mod bonded;
 mod bonded_forces;
+pub mod charmm;
+pub mod cmap;
 mod config;
 mod forces;
 pub mod import;
@@ -112,6 +114,7 @@ mod tests;
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     error::Error,
     fmt,
@@ -129,7 +132,7 @@ pub use barostat::SimBox;
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use bio_files::{
-    AtomGeneric, BondGeneric, Sdf,
+    AtomGeneric, BondGeneric, ResidueGeneric, Sdf,
     gromacs::gro::Gro,
     md_params::{ForceFieldParams, ForceFieldParamsIndexed, LjParams, MassParams},
     mol2::Mol2,
@@ -153,7 +156,7 @@ use lin_alg::{
 };
 use na_seq::Element;
 use neighbors::NeighborsNb;
-pub use non_bonded::{LjCombiningRule, LjModifier, Scale14};
+pub use non_bonded::{LjCombiningRule, LjModifier, NbFix, Pair14, Scale14};
 pub use params::{ForceFieldFamily, SmallMolTyper};
 use prep::merge_indexed_params;
 pub use prep::{HydrogenConstraint, merge_params};
@@ -175,6 +178,7 @@ use crate::gpu_interface::{ForcesPositsGpu, GpuKernels, PerNeighborGpu};
 use crate::{
     alchemical::StateAlchemical,
     barostat::Barostat,
+    bonded::ExtraBondedTerms,
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     params::FfParamSet,
     snapshot::Snapshot,
@@ -297,6 +301,9 @@ pub struct MolDynamics {
     /// We use these instead of assigning parameters by force field type, and ignore `ff_mol_type`
     /// and `mol_specific_params`. See `import`.
     pub explicit_params: Option<ExplicitParams>,
+    /// The residues of a peptide, referring to atoms by serial number. Force fields that build
+    /// proteins from residue topologies (e.g. CHARMM) need these.
+    pub residues: Option<Vec<ResidueGeneric>>,
 }
 
 /// This is mainly for overriding, while specifying atoms, bonds, posits, and mol type explicitly.
@@ -313,6 +320,7 @@ impl Default for MolDynamics {
             mol_specific_params: None,
             bonded_only: false,
             explicit_params: None,
+            residues: None,
         }
     }
 }
@@ -338,6 +346,7 @@ impl MolDynamics {
             mol_specific_params,
             bonded_only: false,
             explicit_params: None,
+            residues: None,
         }
     }
 
@@ -360,6 +369,7 @@ impl MolDynamics {
             mol_specific_params,
             bonded_only: false,
             explicit_params: None,
+            residues: None,
         }
     }
 
@@ -386,6 +396,7 @@ impl MolDynamics {
             mol_specific_params: Some(params),
             bonded_only: false,
             explicit_params: None,
+            residues: None,
         })
     }
 }
@@ -660,8 +671,10 @@ pub struct MdState {
     /// See Amber RM, sectcion 15, "1-4 Non-Bonded Interaction Scaling"
     /// These are indices of atoms separated by three consecutive bonds, and the scale factors
     /// of the force field they're from.
-    pairs_14_scaled: HashMap<(usize, usize), Scale14>,
+    pairs_14_scaled: HashMap<(usize, usize), Pair14>,
     lj_tables: LjTables,
+    /// Urey-Bradley terms, harmonic impropers, and CMAP, e.g. from CHARMM.
+    extra_bonded: ExtraBondedTerms,
     // todo: Hmm... Is this DRY with forces_on_water? Investigate.
     pub water_pme_sites_forces: Vec<[Vec3F64; 3]>, // todo: A/R
     pme_recip: Option<PmeRecip>,
@@ -734,7 +747,10 @@ impl MdState {
             )));
         }
 
-        let water_model = cfg.water_model.unwrap_or(param_set.default_water);
+        let water_model = cfg
+            .water_model
+            .clone()
+            .unwrap_or_else(|| param_set.default_water.clone());
 
         if let LjModifier::ForceSwitch { r_switch } = cfg.lj_modifier
             && !(r_switch >= 0. && r_switch < cfg.lj_cutoff)
@@ -841,9 +857,36 @@ impl MdState {
                 mol_start_indices.push(atoms_md.len());
             }
 
-            let explicit = mol.explicit_params.as_ref();
+            // Filter out hetero atoms in proteins. These are often example ligands that we do
+            // not wish to model.
+            // We must perform this filter prior to most of the other steps in this function.
+            let mut atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
+                FfMolType::Peptide if mol.explicit_params.is_none() => {
+                    mol.atoms.iter().filter(|a| !a.hetero).cloned().collect()
+                }
+                _ => mol.atoms.to_vec(),
+            };
 
-            if let Some(p) = explicit
+            // Explicit parameters: The molecule's own, or for sets that build peptides from
+            // residue topologies (CHARMM), built here. This sets the atoms' types and charges.
+            let explicit: Option<Cow<ExplicitParams>> =
+                match (&mol.explicit_params, &param_set.charmm) {
+                    (Some(p), _) => Some(Cow::Borrowed(p)),
+                    (None, Some(charmm_set)) if mol.ff_mol_type == FfMolType::Peptide => {
+                        let Some(residues) = &mol.residues else {
+                            return Err(ParamError::new(
+                                "To build a peptide with CHARMM parameters, we need its residues; \
+                                 set `MolDynamics::residues`.",
+                            ));
+                        };
+                        Some(Cow::Owned(charmm::build_peptide(
+                            &mut atoms, &mol.bonds, residues, charmm_set,
+                        )?))
+                    }
+                    _ => None,
+                };
+
+            if let Some(p) = &explicit
                 && p.lj_combining != param_set.nonbonded_rules.lj_combining
             {
                 return Err(ParamError::new(&format!(
@@ -852,16 +895,6 @@ impl MdState {
                     p.lj_combining, param_set.nonbonded_rules.lj_combining
                 )));
             }
-
-            // Filter out hetero atoms in proteins. These are often example ligands that we do
-            // not wish to model.
-            // We must perform this filter prior to most of the other steps in this function.
-            let mut atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
-                FfMolType::Peptide if explicit.is_none() => {
-                    mol.atoms.iter().filter(|a| !a.hetero).cloned().collect()
-                }
-                _ => mol.atoms.to_vec(),
-            };
 
             let mut mol_specific_params = mol.mol_specific_params.clone();
 
@@ -884,10 +917,10 @@ impl MdState {
                                 &mut atoms,
                                 &mol.bonds,
                                 Some(&adjacency_list),
-                                param_set.small_mol.as_ref().unwrap(),
+                                param_set.small_mol.as_ref(),
                             )
-                            .map_err(|_| ParamError {
-                                descrip: "Problem inferring params".to_string(),
+                            .map_err(|e| ParamError {
+                                descrip: format!("Problem inferring params: {e}"),
                             })?,
                     );
                 }
@@ -934,7 +967,8 @@ impl MdState {
 
             let atom_posits: Vec<Vec3> = match &mol.atom_posits {
                 Some(a) => a.iter().map(|p| (*p).into()).collect(),
-                None => mol.atoms.iter().map(|a| a.posit.into()).collect(),
+                // `atoms`, vice `mol.atoms`: We may have filtered out hetero atoms.
+                None => atoms.iter().map(|a| a.posit.into()).collect(),
             };
 
             for (i, atom) in atoms.iter().enumerate() {
@@ -1008,8 +1042,38 @@ impl MdState {
         }
         let explicit_mols: Vec<(usize, &ExplicitParams)> = mol_ranges
             .iter()
-            .filter_map(|(start, _, _, explicit)| explicit.map(|p| (*start, p)))
+            .filter_map(|(start, _, _, explicit)| explicit.as_deref().map(|p| (*start, p)))
             .collect();
+
+        let mut extra_bonded = ExtraBondedTerms::default();
+        for (start, params) in &explicit_mols {
+            extra_bonded.extend_from(params, *start);
+        }
+
+        // Pair-specific LJ: The parameter set's, and any from molecules' explicit parameters.
+        let mut nbfix = param_set.nonbonded_rules.nbfix.clone();
+        for (_, params) in &explicit_mols {
+            for ((t0, t1), &(sigma, eps)) in &params.nbfix {
+                let existing = nbfix
+                    .get(&(t0.clone(), t1.clone()))
+                    .or_else(|| nbfix.get(&(t1.clone(), t0.clone())));
+                match existing {
+                    Some(&(s, e))
+                        if (s - sigma).abs() > 1e-4 * s.max(1.)
+                            || (e - eps).abs() > 1e-4 * e.max(1e-3) =>
+                    {
+                        return Err(ParamError::new(&format!(
+                            "Conflicting pair-specific LJ parameters for types {t0} and {t1}: \
+                             (σ {s}, ε {e}) and (σ {sigma}, ε {eps})"
+                        )));
+                    }
+                    Some(_) => (),
+                    None => {
+                        nbfix.insert((t0.clone(), t1.clone()), (sigma, eps));
+                    }
+                }
+            }
+        }
 
         let mut mass_accel_factor = Vec::with_capacity(atoms_md.len());
 
@@ -1025,12 +1089,13 @@ impl MdState {
 
         let mut result = Self {
             cfg: cfg.clone(),
-            water_model,
+            water_model: water_model.clone(),
             atoms: atoms_md,
             adjacency_list: adjacency_list.to_vec(),
             cell,
             pairs_excluded_12_13: HashSet::new(),
             pairs_14_scaled: HashMap::new(),
+            extra_bonded,
             force_field_params,
             mass_accel_factor,
             // _num_static_atoms: num_static_atoms,
@@ -1058,7 +1123,7 @@ impl MdState {
         // Set up our LJ cache. Do this prior to building neighbors for the first time,
         // as that also sets up the GPU-struct LJ data.
         let lj_combining = param_set.nonbonded_rules.lj_combining;
-        result.lj_tables = LjTables::new(&result.atoms, &water_model, lj_combining);
+        result.lj_tables = LjTables::new(&result.atoms, &water_model, lj_combining, &nbfix);
         result.neighbors_nb = NeighborsNb::new(result.cfg.neighbor_skin, result.cfg.coulomb_cutoff);
 
         // Custom solvent molecules were pre-packed and added to `all_mols` before the atom-
@@ -1133,7 +1198,7 @@ impl MdState {
 
         // Rebuild the LJ table to include any ions that were appended after the initial build.
         if n_ions > 0 {
-            result.lj_tables = LjTables::new(&result.atoms, &water_model, lj_combining);
+            result.lj_tables = LjTables::new(&result.atoms, &water_model, lj_combining, &nbfix);
         }
 
         // Calc DOF only after all atoms and solvent are initialized.
@@ -1658,14 +1723,14 @@ fn add_ions(state: &mut MdState, net_q_e: f32, n_ions: usize) {
     if n_ions > 0 && !state.water.is_empty() {
         // Positive net → add the anion;  negative net → add the cation.
         let ion_params = if net_q_e > 0.0 {
-            state.water_model.anion
+            state.water_model.anion.clone()
         } else {
-            state.water_model.cation
+            state.water_model.cation.clone()
         };
 
         let ion = ion_params.ion;
         let (ff_type, elem, mass, sigma, eps) = (
-            ion.ff_type(),
+            ion_params.ff_type,
             ion.element(),
             ion_params.mass,
             ion_params.lj_sigma,

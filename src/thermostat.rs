@@ -99,7 +99,7 @@ impl MdState {
         }
 
         let k_t = KB_A2_PS2_PER_K_PER_AMU * target_k;
-        let water_model = self.water_model;
+        let water_model = self.water_model.clone();
 
         for atom in &mut self.atoms {
             if atom.static_ || !atom.mass.is_finite() || atom.mass <= f32::EPSILON {

@@ -25,6 +25,7 @@
 //! Note: H bond average maintenance time: 1-20ps: Use this to validate your solvent model
 
 use std::{
+    borrow::Cow,
     fmt,
     fmt::{Display, Formatter},
 };
@@ -55,14 +56,14 @@ pub(crate) mod template_creation;
 const SIGMA_FACTOR: f32 = 2. / 1.122_462_048_309_373;
 
 /// Parameters for a rigid water model: O, two H, and a massless charge site M (also called EP) on
-/// the H-O-H bisector. O carries no charge; M carries -2 × the H charge. Only O has LJ parameters.
-/// A 3-site model such as TIP3P is represented with `o_m_dist = 0`, so M coincides with O and
-/// carries its charge.
+/// the H-O-H bisector. O carries no charge; M carries -2 × the H charge. O has LJ parameters, and
+/// H may too. (e.g. CHARMM's TIP3P) A 3-site model such as TIP3P is represented with
+/// `o_m_dist = 0`, so M coincides with O and carries its charge.
 ///
 /// Note: Molecules placed from a template keep the template's geometry until `reset_angle` runs,
 /// so templates should match the model's geometry.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WaterModel {
     /// amu
     pub mass_o: f32,
@@ -80,6 +81,10 @@ pub struct WaterModel {
     pub lj_sigma_o: f32,
     /// kcal/mol
     pub lj_eps_o: f32,
+    /// Å. Unused if `lj_eps_h` is 0.
+    pub lj_sigma_h: f32,
+    /// kcal/mol. 0 for most models.
+    pub lj_eps_h: f32,
     /// We add these counter-ions to neutralize the system. Ion parameters are generally tuned for
     /// a specific water model.
     pub cation: IonParams,
@@ -100,17 +105,51 @@ impl WaterModel {
         q_h: 0.6791,
         lj_sigma_o: 1.777_167_268 * SIGMA_FACTOR,
         lj_eps_o: 0.212_800_813_0,
+        lj_sigma_h: 0.,
+        lj_eps_h: 0.,
         cation: IonParams {
             ion: Ion::Sodium,
+            ff_type: Cow::Borrowed("Na+"),
             mass: 22.99,
             lj_sigma: 2.439,
             lj_eps: 0.1065,
         },
         anion: IonParams {
             ion: Ion::Chloride,
+            ff_type: Cow::Borrowed("Cl-"),
             mass: 35.45,
             lj_sigma: 4.478,
             lj_eps: 0.0073,
+        },
+    };
+
+    /// CHARMM's modified TIP3P, with LJ on H (the TIPS3P form), as in `toppar_water_ions.str`.
+    /// Ions are CHARMM's SOD and CLA; their NBFIX entries (e.g. with carboxylate O) come from
+    /// the force field. sigma = 2 * R_MIN_HALF / 2^(1/6).
+    pub const TIP3P_CHARMM: Self = Self {
+        mass_o: 15.9994,
+        mass_h: 1.008,
+        o_h_dist: 0.9572,
+        o_m_dist: 0.,
+        h_o_h_angle: 1.824_218_134_6, // 104.52°
+        q_h: 0.417,
+        lj_sigma_o: 1.7682 * SIGMA_FACTOR,
+        lj_eps_o: 0.1521,
+        lj_sigma_h: 0.2245 * SIGMA_FACTOR,
+        lj_eps_h: 0.046,
+        cation: IonParams {
+            ion: Ion::Sodium,
+            ff_type: Cow::Borrowed("SOD"),
+            mass: 22.989_77,
+            lj_sigma: 1.410_75 * SIGMA_FACTOR,
+            lj_eps: 0.0469,
+        },
+        anion: IonParams {
+            ion: Ion::Chloride,
+            ff_type: Cow::Borrowed("CLA"),
+            mass: 35.45,
+            lj_sigma: 2.27 * SIGMA_FACTOR,
+            lj_eps: 0.150,
         },
     };
 
@@ -179,10 +218,14 @@ impl Ion {
     }
 }
 
-#[cfg_attr(feature = "encode", derive(Encode, Decode))]
-#[derive(Clone, Copy, Debug, PartialEq)]
+// Decode is implemented manually below; the derive can't decode a `Cow<'static, str>`.
+#[cfg_attr(feature = "encode", derive(Encode))]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IonParams {
     pub ion: Ion,
+    /// The force field type, e.g. "Na+" in Amber, and "SOD" in CHARMM. Pair-specific LJ
+    /// parameters (NBFIX) match on it.
+    pub ff_type: Cow<'static, str>,
     /// amu
     pub mass: f32,
     /// Å
@@ -190,6 +233,24 @@ pub struct IonParams {
     /// kcal/mol
     pub lj_eps: f32,
 }
+
+#[cfg(feature = "encode")]
+impl<Context> Decode<Context> for IonParams {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            ion: Decode::decode(decoder)?,
+            ff_type: Cow::Owned(String::decode(decoder)?),
+            mass: Decode::decode(decoder)?,
+            lj_sigma: Decode::decode(decoder)?,
+            lj_eps: Decode::decode(decoder)?,
+        })
+    }
+}
+
+#[cfg(feature = "encode")]
+bincode::impl_borrow_decode!(IonParams);
 
 /// Used when configuring a MD Sim. We use OPC (rigid) water as a default, but can
 /// use custom solvents as well, from arbitrary molecules using standard MD forcefields.
@@ -466,6 +527,8 @@ impl WaterMolOpc {
             // This is actually force for our purposes, in the context of solvent molecules.
             mass: model.mass_h,
             partial_charge: q_h,
+            lj_sigma: model.lj_sigma_h,
+            lj_eps: model.lj_eps_h,
             ..Default::default()
         };
 
@@ -492,6 +555,8 @@ impl WaterMolOpc {
                 element: Element::Potassium, // Placeholder
                 mass: 0.,
                 partial_charge: -2. * q_h,
+                lj_sigma: 0.,
+                lj_eps: 0.,
                 ..h0.clone()
             },
             h0,

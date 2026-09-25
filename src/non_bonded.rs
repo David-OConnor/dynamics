@@ -1,6 +1,6 @@
 //! For VDW and Coulomb forces
 
-use std::{f64::consts::PI, ops::AddAssign};
+use std::{collections::HashMap, f64::consts::PI, ops::AddAssign};
 
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
@@ -87,6 +87,26 @@ impl Default for Scale14 {
     }
 }
 
+/// The non-bonded interaction of a 1-4 pair: Its scale factors, and optionally LJ parameters
+/// that replace the pair's normal ones, e.g. CHARMM's special 1-4 parameters.
+#[cfg_attr(feature = "encode", derive(Encode, Decode))]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pair14 {
+    pub scale: Scale14,
+    /// (σ Å, ε kcal/mol), before scaling.
+    pub lj: Option<(f32, f32)>,
+}
+
+impl From<Scale14> for Pair14 {
+    fn from(scale: Scale14) -> Self {
+        Self { scale, lj: None }
+    }
+}
+
+/// Pair-specific LJ parameters (σ Å, ε kcal/mol) by force field type, which override the
+/// combining rule. (CHARMM's NBFIX) Keys may be in either order.
+pub type NbFix = HashMap<(String, String), (f32, f32)>;
+
 /// How we combine per-atom LJ parameters into pair parameters. This is part of a force field's
 /// definition.
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
@@ -143,25 +163,33 @@ pub const CHARGE_UNIT_SCALER: f32 = 18.2223;
 pub enum LjTableIndices {
     /// (tgt, src)
     StdStd((usize, usize)),
-    /// (dyn tgt or src))
+    /// (dyn tgt or src)), with water O.
     StdWater(usize),
+    /// (dyn tgt or src)), with water H.
+    StdWaterH(usize),
     /// One value, stored as a constant (Water O -> Water O)
     WaterWater,
+    WaterWaterOH,
+    WaterWaterHH,
 }
 
 /// We cache σ and ε on the first step, then use it on the others. This increases
 /// memory use, and reduces CPU use. We use indices, as they're faster than HashMaps.
 /// The indices are flattened, of each interaction pair. Values are (σ, ε).
 ///
-/// Water-water is a single parameter pair, since only water O carries LJ.
+/// Water sites have one set of parameters each, so water-water pairs have one per site pair.
 #[derive(Default)]
 pub struct LjTables {
     /// Non-solvent, non-solvent interactions. Upper triangle.
     pub std: Vec<(f32, f32)>,
-    /// Water, non-solvent interactions.
+    /// Water O, non-solvent interactions.
     pub water_std: Vec<(f32, f32)>,
+    /// Water H, non-solvent interactions. Only used by water models with LJ on H.
+    pub water_std_h: Vec<(f32, f32)>,
     /// Water O, water O. Combining identical atoms yields their own parameters under any rule.
     pub water_water: (f32, f32),
+    pub water_water_oh: (f32, f32),
+    pub water_water_hh: (f32, f32),
     pub n_std: usize,
 }
 
@@ -190,18 +218,50 @@ pub struct LjTablesx16 {
 // todo note: On large systems, this can have very high memory use. Consider
 // todo setting up your table by atom type, instead of by atom, if that proves to be a problem.
 impl LjTables {
-    /// Create an indexed table, flattened.
-    pub fn new(atoms: &[AtomDynamics], water_model: &WaterModel, rule: LjCombiningRule) -> Self {
+    /// Create an indexed table, flattened. `nbfix` overrides the combining rule for pairs of
+    /// non-solvent atoms, by their force field types.
+    pub fn new(
+        atoms: &[AtomDynamics],
+        water_model: &WaterModel,
+        rule: LjCombiningRule,
+        nbfix: &NbFix,
+    ) -> Self {
         let n_std = atoms.len();
-        let water_water = (water_model.lj_sigma_o, water_model.lj_eps_o);
+        let (s_o, e_o) = (water_model.lj_sigma_o, water_model.lj_eps_o);
+        let (s_h, e_h) = (water_model.lj_sigma_h, water_model.lj_eps_h);
+        let water_water = (s_o, e_o);
+        let water_water_oh = rule.combine(s_o, e_o, s_h, e_h);
+        let water_water_hh = (s_h, e_h);
 
         if n_std == 0 {
             // Otherwise, we will get an out-of-bounds error when subtracting.
             return Self {
                 water_water,
+                water_water_oh,
+                water_water_hh,
                 ..Default::default()
             };
         }
+
+        // NBFIX by small type indices, for speed: Only types that appear in NBFIX entries.
+        let mut type_ids: HashMap<&str, usize> = HashMap::new();
+        for (t0, t1) in nbfix.keys() {
+            for t in [t0, t1] {
+                let n = type_ids.len();
+                type_ids.entry(t.as_str()).or_insert(n);
+            }
+        }
+        let n_types = type_ids.len();
+        let mut nbfix_table = vec![None; n_types * n_types];
+        for ((t0, t1), v) in nbfix {
+            let (a, b) = (type_ids[t0.as_str()], type_ids[t1.as_str()]);
+            nbfix_table[a * n_types + b] = Some(*v);
+            nbfix_table[b * n_types + a] = Some(*v);
+        }
+        let atom_type_ids: Vec<Option<usize>> = atoms
+            .iter()
+            .map(|a| type_ids.get(a.force_field_type.as_str()).copied())
+            .collect();
 
         // Construct an upper triangle table, excluding reverse order, and self interactions.
         let mut std = Vec::with_capacity(n_std * (n_std - 1) / 2);
@@ -209,6 +269,12 @@ impl LjTables {
         for (i_0, atom_0) in atoms.iter().enumerate() {
             for (i_1, atom_1) in atoms.iter().enumerate() {
                 if i_1 <= i_0 {
+                    continue;
+                }
+                if let (Some(a), Some(b)) = (atom_type_ids[i_0], atom_type_ids[i_1])
+                    && let Some(v) = nbfix_table[a * n_types + b]
+                {
+                    std.push(v);
                     continue;
                 }
                 std.push(rule.combine(
@@ -220,21 +286,21 @@ impl LjTables {
             }
         }
 
-        // One LJ pair per dynamic atom vs solvent O:
+        // One LJ pair per dynamic atom vs solvent O, and vs solvent H.
         let mut water_std = Vec::with_capacity(n_std);
+        let mut water_std_h = Vec::with_capacity(n_std);
         for atom in atoms {
-            water_std.push(rule.combine(
-                atom.lj_sigma,
-                atom.lj_eps,
-                water_model.lj_sigma_o,
-                water_model.lj_eps_o,
-            ));
+            water_std.push(rule.combine(atom.lj_sigma, atom.lj_eps, s_o, e_o));
+            water_std_h.push(rule.combine(atom.lj_sigma, atom.lj_eps, s_h, e_h));
         }
 
         Self {
             std,
             water_std,
+            water_std_h,
             water_water,
+            water_water_oh,
+            water_water_hh,
             n_std,
         }
     }
@@ -265,7 +331,10 @@ impl LjTables {
                 self.std[idx]
             }
             LjTableIndices::StdWater(ix) => self.water_std[*ix],
+            LjTableIndices::StdWaterH(ix) => self.water_std_h[*ix],
             LjTableIndices::WaterWater => self.water_water,
+            LjTableIndices::WaterWaterOH => self.water_water_oh,
+            LjTableIndices::WaterWaterHH => self.water_water_hh,
         }
     }
 }
@@ -303,7 +372,7 @@ pub struct NonBondedPair {
     pub tgt: BodyRef,
     pub src: BodyRef,
     /// Present if this is a 1-4 pair.
-    pub scale_14: Option<Scale14>,
+    pub pair_14: Option<Pair14>,
     pub lj_indices: LjTableIndices,
     pub calc_lj: bool,
     pub calc_coulomb: bool,
@@ -397,7 +466,7 @@ fn calc_force_cpu(
                     a_t,
                     a_s,
                     cell,
-                    p.scale_14,
+                    p.pair_14,
                     &p.lj_indices,
                     lj_tables,
                     p.calc_lj,
@@ -633,6 +702,8 @@ impl MdState {
         let atom_to_mol = atom_to_mol.as_slice();
 
         let alch_mol_idx = self.alchemical.mol_idx;
+        // CHARMM's TIP3P, for example, has LJ on H.
+        let water_h_lj = self.water_model.lj_eps_h > 0.;
 
         let sites = [WaterSite::O, WaterSite::M, WaterSite::H0, WaterSite::H1];
 
@@ -664,7 +735,7 @@ impl MdState {
                         if exclusions.contains(&key) {
                             return None;
                         }
-                        let scale_14 = scaled_set.get(&key).copied();
+                        let pair_14 = scaled_set.get(&key).copied();
                         let alch_interaction = alch_mol_idx.is_some_and(|m_alch| {
                             let tgt_is_alch = atom_to_mol[i_tgt] == m_alch;
                             let src_is_alch = atom_to_mol[i_src] == m_alch;
@@ -674,7 +745,7 @@ impl MdState {
                         Some(NonBondedPair {
                             tgt: BodyRef::NonWater(i_tgt),
                             src: BodyRef::NonWater(i_src),
-                            scale_14,
+                            pair_14,
                             lj_indices: LjTableIndices::StdStd(key),
                             calc_lj: true,
                             calc_coulomb: true,
@@ -700,9 +771,13 @@ impl MdState {
                         sites.into_iter().map(move |site| NonBondedPair {
                             tgt: BodyRef::NonWater(i_std),
                             src: BodyRef::Water { mol: i_water, site },
-                            scale_14: None,
-                            lj_indices: LjTableIndices::StdWater(i_std),
-                            calc_lj: site == WaterSite::O,
+                            pair_14: None,
+                            lj_indices: if site == WaterSite::O {
+                                LjTableIndices::StdWater(i_std)
+                            } else {
+                                LjTableIndices::StdWaterH(i_std)
+                            },
+                            calc_lj: site == WaterSite::O || (water_h_lj && site != WaterSite::M),
                             calc_coulomb: site != WaterSite::O,
                             symmetric: true,
                             alch_interaction,
@@ -722,8 +797,18 @@ impl MdState {
 
                 for &site_0 in &sites {
                     for &site_1 in &sites {
-                        let calc_lj = site_0 == WaterSite::O && site_1 == WaterSite::O;
+                        let is_o = |s: WaterSite| s == WaterSite::O;
+                        let is_h = |s: WaterSite| s == WaterSite::H0 || s == WaterSite::H1;
+                        let calc_lj = (is_o(site_0) && is_o(site_1))
+                            || (water_h_lj
+                                && (is_o(site_0) || is_h(site_0))
+                                && (is_o(site_1) || is_h(site_1)));
                         let calc_coulomb = site_0 != WaterSite::O && site_1 != WaterSite::O;
+                        let lj_indices = match (is_o(site_0), is_o(site_1)) {
+                            (true, true) => LjTableIndices::WaterWater,
+                            (true, false) | (false, true) => LjTableIndices::WaterWaterOH,
+                            _ => LjTableIndices::WaterWaterHH,
+                        };
 
                         if !(calc_lj || calc_coulomb) {
                             continue;
@@ -738,8 +823,8 @@ impl MdState {
                                 mol: i_1,
                                 site: site_1,
                             },
-                            scale_14: None,
-                            lj_indices: LjTableIndices::WaterWater,
+                            pair_14: None,
+                            lj_indices,
                             calc_lj,
                             calc_coulomb,
                             symmetric: true,
@@ -867,7 +952,7 @@ impl MdState {
         let scaled_14 = self
             .pairs_14_scaled
             .iter()
-            .map(|(&pair, scale)| (pair, scale.coulomb - 1.0));
+            .map(|(&pair, p)| (pair, p.scale.coulomb - 1.0));
 
         for ((i, j), change) in excluded.chain(scaled_14) {
             let diff = self
@@ -1098,7 +1183,7 @@ pub fn f_nonbonded_cpu(
     tgt: &AtomDynamics,
     src: &AtomDynamics,
     cell: &SimBox,
-    scale_14: Option<Scale14>, // Present for 1-4 pairs.
+    pair_14: Option<Pair14>, // Present for 1-4 pairs.
     lj_indices: &LjTableIndices,
     lj_tables: &LjTables,
     // These flags are for use with forces on solvent.
@@ -1123,7 +1208,9 @@ pub fn f_nonbonded_cpu(
             && !overrides.lj_disabled
         {
             let schedule = staged_decoupling_schedule(lambda as f64);
-            let (σ, ε) = lj_tables.lookup(lj_indices);
+            let (σ, ε) = pair_14
+                .and_then(|p| p.lj)
+                .unwrap_or_else(|| lj_tables.lookup(lj_indices));
             let (mut f, mut e, mut dh_dl) = alchemical_lj_soft_core_decouple(
                 Vec3::new_zero(),
                 0.0,
@@ -1134,10 +1221,10 @@ pub fn f_nonbonded_cpu(
             );
             dh_dl *= schedule.lj_dlambda_dlambda;
 
-            if let Some(s) = scale_14 {
-                f *= s.lj;
-                e *= s.lj;
-                dh_dl *= s.lj;
+            if let Some(p) = pair_14 {
+                f *= p.scale.lj;
+                e *= p.scale.lj;
+                dh_dl *= p.scale.lj;
             }
             return (f, e, dh_dl);
         }
@@ -1153,7 +1240,9 @@ pub fn f_nonbonded_cpu(
     let (f_lj, energy_lj, dh_dl_lj) = if !calc_lj || dist > lj_mod.cutoff || overrides.lj_disabled {
         (Vec3::new_zero(), 0., 0.)
     } else {
-        let (σ, ε) = lj_tables.lookup(lj_indices);
+        let (σ, ε) = pair_14
+            .and_then(|p| p.lj)
+            .unwrap_or_else(|| lj_tables.lookup(lj_indices));
 
         let (mut f, mut e, mut dh_dl) = if let Some(schedule) = schedule {
             let (f, e, dh_dl) =
@@ -1163,10 +1252,10 @@ pub fn f_nonbonded_cpu(
             let (f, e) = force_e_lj_mod(dir, dist, inv_dist, σ, ε, lj_mod);
             (f, e, 0.)
         };
-        if let Some(s) = scale_14 {
-            f *= s.lj;
-            e *= s.lj;
-            dh_dl *= s.lj;
+        if let Some(p) = pair_14 {
+            f *= p.scale.lj;
+            e *= p.scale.lj;
+            dh_dl *= p.scale.lj;
         }
         (f, e, dh_dl)
     };
@@ -1187,9 +1276,9 @@ pub fn f_nonbonded_cpu(
         )
     };
 
-    if let Some(s) = scale_14 {
-        f_coulomb *= s.coulomb;
-        energy_coulomb *= s.coulomb;
+    if let Some(p) = pair_14 {
+        f_coulomb *= p.scale.coulomb;
+        energy_coulomb *= p.scale.coulomb;
     }
 
     let (force, energy, dh_dl) = if let Some(schedule) = schedule {

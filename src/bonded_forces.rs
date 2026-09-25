@@ -176,3 +176,49 @@ pub fn f_dihedral(
 
     ((f_0, f_1, f_2, f_3), energy)
 }
+
+/// A dihedral angle in the IUPAC convention, as CHARMM, GROMACS, and OpenMM use (trans = ±π), and
+/// its gradient with respect to each atom's position. Radians, and radians/Å. Returns None for
+/// collinear atoms, where the angle is undefined.
+///
+/// See GROMACS' `do_dih_fup`: With r_ij = x_i − x_j, r_kj = x_k − x_j, r_kl = x_k − x_l,
+/// m = r_ij × r_kj, and n = r_kj × r_kl.
+pub fn dihedral_angle_grad(
+    posit_0: Vec3,
+    posit_1: Vec3,
+    posit_2: Vec3,
+    posit_3: Vec3,
+    cell: &SimBox,
+) -> Option<(f32, [Vec3; 4])> {
+    let r_ij = cell.min_image(posit_0 - posit_1);
+    let r_kj = cell.min_image(posit_2 - posit_1);
+    let r_kl = cell.min_image(posit_2 - posit_3);
+
+    let m = r_ij.cross(r_kj);
+    let n = r_kj.cross(r_kl);
+    let iprm = m.dot(m);
+    let iprn = n.dot(n);
+    let nrkj2 = r_kj.dot(r_kj);
+    if iprm < EPS || iprn < EPS || nrkj2 < EPS {
+        return None;
+    }
+    let nrkj = nrkj2.sqrt();
+
+    let angle = m.cross(n).magnitude().atan2(m.dot(n));
+    let phi = if r_ij.dot(n) < 0. { -angle } else { angle };
+
+    let grad_0 = m * (nrkj / iprm);
+    let grad_3 = n * (-nrkj / iprn);
+    let p = r_ij.dot(r_kj) / nrkj2;
+    let q = r_kl.dot(r_kj) / nrkj2;
+    let grad_1 = grad_0 * (p - 1.) - grad_3 * q;
+    let grad_2 = grad_3 * (q - 1.) - grad_0 * p;
+
+    Some((phi, [grad_0, grad_1, grad_2, grad_3]))
+}
+
+/// The difference between two angles, wrapped to [−π, π]. Radians.
+pub fn angle_diff(a: f32, b: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    (a - b + PI).rem_euclid(TAU) - PI
+}

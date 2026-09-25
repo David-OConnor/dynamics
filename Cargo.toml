@@ -67,7 +67,7 @@ lazy_static = "1.5.0"
 # a binary built with the `cuda` feature still starts where no NVIDIA driver is installed. Cargo
 # unions features across the tree, and cudarc's build script rejects `dynamic-loading` and
 # `dynamic-linking` being active together, so `ewald` and any consuming binary must match this.
-cudarc = { version = "0.19.9", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13000"], optional = true }
+cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-13000"], optional = true }
 
 
 [build-dependencies]
@@ -75,8 +75,8 @@ cuda_setup = { version = "0.1.10", optional = true }
 
 
 [patch.crates-io]
-#ewald = { path = "../ewald" }
-#bio_files = { path = "../bio_files" }
+ewald = { path = "../ewald" }
+bio_files = { path = "../bio_files" }
 
 
 [features]

@@ -1,4 +1,5 @@
-"""Regenerate the checked-in Amber oracle fixtures using an existing Amber build.
+"""
+Regenerate the checked-in Amber oracle fixtures using an existing Amber build.
 
 No RDKit is needed: the TSV contains the explicit-hydrogen molecular graphs.
 Run this under Linux/WSL (or another environment where the Amber binaries run):

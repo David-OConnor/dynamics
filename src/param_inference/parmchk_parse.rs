@@ -16,6 +16,7 @@ pub(super) struct Parm {
     pub equivalent_type: i32,
     pub replacements: HashMap<String, Replacement>,
 }
+
 #[derive(Debug)]
 pub(super) struct Replacement {
     pub equivalent: bool,
@@ -24,6 +25,7 @@ pub(super) struct Replacement {
     /// outer torsion, general similarity (also used for improper torsions).
     values: [f32; 9],
 }
+
 #[derive(Clone, Copy)]
 pub(super) enum Position {
     Bond,
@@ -39,6 +41,7 @@ pub(super) struct ParmChk {
     pub parms: HashMap<String, Parm>,
     settings: HashMap<String, f32>,
 }
+
 impl ParmChk {
     pub fn parse(text: &str) -> io::Result<Self> {
         let mut result = Self {
@@ -46,17 +49,20 @@ impl ParmChk {
             settings: HashMap::new(),
         };
         let mut current = None;
+
         for line in text.lines() {
             let cols: Vec<_> = line.split_whitespace().collect();
             let Some(&tag) = cols.first() else {
                 continue;
             };
+
             let invalid = || {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Invalid PARMCHK record: {line}"),
                 )
             };
+
             match tag {
                 "PARM" => {
                     if cols.len() < 7 {
@@ -74,6 +80,7 @@ impl ParmChk {
                     );
                     current = Some(cols[1].to_owned());
                 }
+
                 "EQUA" | "CORR" => {
                     if cols.len() < 2 {
                         return Err(invalid());
@@ -113,6 +120,7 @@ impl ParmChk {
                 _ => {}
             }
         }
+
         for name in [
             "WEIGHT_BL",
             "WEIGHT_BLF",
@@ -145,9 +153,11 @@ impl ParmChk {
         }
         Ok(result)
     }
+
     pub fn weight(&self, key: &str) -> f32 {
         self.settings[key]
     }
+
     pub fn improper(&self, name: &str) -> bool {
         self.parms.get(name).is_some_and(|p| p.improper)
     }
@@ -182,12 +192,14 @@ impl ParmChk {
             "DEFAULT_TOR_CTR",
             "DEFAULT_TOR",
         ];
+
         let mut v = replacement.values;
         for (i, key) in defaults.iter().enumerate() {
             if v[i] < 0. {
                 v[i] = self.settings[*key];
             }
         }
+
         // Amber blends the central torsion score with overall similarity for
         // all CORR records, after replacing missing (-1) values with defaults.
         v[6] = v[6] * self.weight("DEFAULT_FRACT1") + v[8] * self.weight("DEFAULT_FRACT2");
@@ -206,6 +218,7 @@ impl ParmChk {
         };
         Some((false, score))
     }
+
     pub fn group_penalty(&self, types: &[&str]) -> f32 {
         let groups: Vec<_> = types
             .iter()
@@ -218,6 +231,7 @@ impl ParmChk {
             0.
         }
     }
+
     pub fn pair_penalty(&self, from: [&str; 2], to: [&str; 2]) -> f32 {
         let flag = |ty| self.parms.get(ty).map_or(0, |p| p.equivalent_type);
         let (a, b, c, d) = (flag(from[0]), flag(from[1]), flag(to[0]), flag(to[1]));

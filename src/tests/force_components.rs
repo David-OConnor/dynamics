@@ -648,7 +648,7 @@ fn cpu_all_force_components_equal_sum_of_individual_components() {
 }
 
 #[cfg(feature = "cuda")]
-fn cuda_device() -> Option<ComputationDevice> {
+pub(super) fn cuda_device() -> Option<ComputationDevice> {
     use cudarc::driver::CudaContext;
 
     let context = match CudaContext::new(0) {
@@ -825,7 +825,7 @@ fn water_model_resolves_from_family_or_override() {
         ..WaterModel::OPC
     };
     let cfg = MdConfig {
-        water_model: Some(override_),
+        water_model: Some(override_.clone()),
         ..cfg
     };
     let (state, _) = MdState::new(&ComputationDevice::Cpu, &cfg, &mols, &params).unwrap();

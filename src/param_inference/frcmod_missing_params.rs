@@ -23,6 +23,7 @@ impl MissingParams {
         if adj.len() != atoms.len() {
             return Err(invalid("Adjacency length differs from atom count"));
         }
+
         let types = atoms
             .iter()
             .map(|a| {
@@ -37,6 +38,7 @@ impl MissingParams {
                     })
             })
             .collect::<io::Result<Vec<_>>>()?;
+
         for (i, neighbors) in adj.iter().enumerate() {
             let unique: BTreeSet<_> = neighbors.iter().copied().collect();
             if unique.len() != neighbors.len()
@@ -49,7 +51,9 @@ impl MissingParams {
                 ));
             }
         }
+
         let mut result = Self::default();
+
         for (i, neighbors) in adj.iter().enumerate() {
             for &j in neighbors {
                 if i >= j {
@@ -86,6 +90,7 @@ impl MissingParams {
                     }
                 }
             }
+
             for a in 0..neighbors.len() {
                 for b in a + 1..neighbors.len() {
                     let (a, b) = (types[neighbors[a]], types[neighbors[b]]);
@@ -95,6 +100,7 @@ impl MissingParams {
                     }
                 }
             }
+
             if neighbors.len() == 3 && PARAMETERS.improper(types[i]) {
                 let mut outer = [
                     types[neighbors[0]],
@@ -113,6 +119,7 @@ impl MissingParams {
                 result.improper.insert(key);
             }
         }
+
         Ok(result)
     }
 }

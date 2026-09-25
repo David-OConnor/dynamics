@@ -332,7 +332,10 @@ impl PerNeighborGpu {
             }
             .partial_charge;
 
-            let (σ, ε) = lj_tables.lookup(&pair.lj_indices);
+            let (σ, ε) = pair
+                .pair_14
+                .and_then(|p| p.lj)
+                .unwrap_or_else(|| lj_tables.lookup(&pair.lj_indices));
 
             sigmas.push(σ);
             epss.push(ε);
@@ -340,7 +343,7 @@ impl PerNeighborGpu {
             qs_tgt.push(q_tgt);
             qs_src.push(q_src);
 
-            scale_14s.push(match pair.scale_14 {
+            scale_14s.push(match pair.pair_14.map(|p| p.scale) {
                 None => 0,
                 Some(s) => {
                     let i = match scale_14_table.iter().skip(1).position(|v| *v == s) {

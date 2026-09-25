@@ -207,15 +207,16 @@ impl MdState {
         for indices in self.force_field_params.dihedral.keys() {
             let pair = canonical(indices.0, indices.3);
             if !is_explicit[indices.0] && !self.pairs_excluded_12_13.contains(&pair) {
-                self.pairs_14_scaled.insert(pair, atom_scale_14[indices.0]);
+                self.pairs_14_scaled
+                    .insert(pair, atom_scale_14[indices.0].into());
             }
         }
 
         for (start, params) in explicit_mols {
-            for &((i, j), scale) in &params.pairs_14 {
+            for &((i, j), pair_14) in &params.pairs_14 {
                 let pair = canonical(start + i, start + j);
                 if !self.pairs_excluded_12_13.contains(&pair) {
-                    self.pairs_14_scaled.insert(pair, scale);
+                    self.pairs_14_scaled.insert(pair, pair_14);
                 }
             }
         }

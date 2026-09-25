@@ -88,6 +88,7 @@ static PROPERTIES: LazyLock<HashMap<&'static str, Properties>> = LazyLock::new(|
         })
         .collect()
 });
+
 static ENVIRONMENTS: LazyLock<HashMap<&'static str, ChemEnvPattern>> = LazyLock::new(|| {
     DEFAULT_DEFS
         .gff2
@@ -127,6 +128,7 @@ struct CompiledDef<'a> {
     properties: Cow<'static, Properties>,
     environment: Cow<'static, ChemEnvPattern>,
 }
+
 impl<'a> CompiledDef<'a> {
     fn new(def: &'a AtomTypeDef) -> io::Result<Self> {
         let prop_text = def.atomic_property.as_deref().unwrap_or("*");
@@ -151,6 +153,7 @@ impl<'a> CompiledDef<'a> {
             ))),
         }
     }
+
     fn matches(
         &self,
         idx: usize,
@@ -283,15 +286,18 @@ pub fn update_small_mol_params(
         }
         atom.force_field_type = Some(ty);
     }
+
     let params = assign_missing_params(&staged, &topology.adj, gaff2)?;
     // The charge model uses endpoint - 1 internally; normalize only its copy.
     let charge = infer_charge(&staged, &topology.normalized_bonds).map_err(io::Error::other)?;
     if charge.len() != atoms.len() || charge.iter().any(|v| !v.is_finite()) {
         return Err(io::Error::other("Invalid inferred charge vector"));
     }
+
     for ((atom, staged), charge) in atoms.iter_mut().zip(staged).zip(charge) {
         atom.force_field_type = staged.force_field_type;
         atom.partial_charge = Some(charge);
     }
+
     Ok(params)
 }

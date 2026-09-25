@@ -1,0 +1,11 @@
+#include "forcefield.itp"
+#include "pacp.itp"
+#include "ions.itp"
+
+[ system ]
+Paracetamol, with Na+ and Cl-
+
+[ molecules ]
+PACP 1
+SOD 1
+CLA 1

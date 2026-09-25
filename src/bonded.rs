@@ -5,7 +5,13 @@
 
 use lin_alg::f32::Vec3;
 
-use crate::{MdState, bonded_forces, split2_mut, split3_mut, split4_mut};
+use crate::{
+    MdState, bonded_forces,
+    bonded_forces::{angle_diff, dihedral_angle_grad},
+    cmap::CmapGrid,
+    import::ExplicitParams,
+    split2_mut, split3_mut, split4_mut,
+};
 
 const EPS_SHAKE_RATTLE: f32 = 1.0e-8;
 
@@ -19,12 +25,126 @@ pub const LINCS_ORDER_DEFAULT: u8 = 4;
 pub const LINCS_ITER_DEFAULT: u8 = 1;
 pub const SHAKE_TOL_DEFAULT: f32 = 0.0001;
 
+/// Bonded terms beyond Amber's functional forms, e.g. from CHARMM. Atom indices are into the
+/// system's atoms.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ExtraBondedTerms {
+    /// (k kcal/mol/Å², r0 Å). E = k (r − r0)².
+    pub urey_bradley: Vec<((usize, usize), (f32, f32))>,
+    /// (k kcal/mol/rad², ψ0 rad). E = k (ψ − ψ0)².
+    pub harmonic_impropers: Vec<([usize; 4], (f32, f32))>,
+    /// The atoms of φ, then ψ, and an index into `cmap_grids`.
+    pub cmaps: Vec<([usize; 8], usize)>,
+    pub cmap_grids: Vec<CmapGrid>,
+}
+
+impl ExtraBondedTerms {
+    /// Add a molecule's terms. `offset` is the index of its first atom.
+    pub fn extend_from(&mut self, params: &ExplicitParams, offset: usize) {
+        let o = offset;
+        self.urey_bradley.extend(
+            params
+                .urey_bradley
+                .iter()
+                .map(|&((i, j), p)| ((i + o, j + o), p)),
+        );
+        self.harmonic_impropers.extend(
+            params
+                .harmonic_impropers
+                .iter()
+                .map(|&((a, b, c, d), p)| ([a + o, b + o, c + o, d + o], p)),
+        );
+        let grid_offset = self.cmap_grids.len();
+        self.cmaps.extend(
+            params
+                .cmaps
+                .iter()
+                .map(|&(atoms, grid)| (atoms.map(|i| i + o), grid + grid_offset)),
+        );
+        self.cmap_grids.extend(params.cmap_grids.iter().cloned());
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.urey_bradley.is_empty() && self.harmonic_impropers.is_empty() && self.cmaps.is_empty()
+    }
+}
+
 impl MdState {
     pub(crate) fn apply_bonded_forces(&mut self) {
         self.apply_bond_stretching_forces();
         self.apply_angle_bending_forces();
         self.apply_dihedral_forces(false);
         self.apply_dihedral_forces(true);
+
+        if !self.extra_bonded.is_empty() {
+            self.apply_extra_bonded_forces();
+        }
+    }
+
+    /// Urey-Bradley terms, harmonic impropers, and CMAP.
+    pub(crate) fn apply_extra_bonded_forces(&mut self) {
+        let mut energy = 0.;
+        let mut virial = 0.;
+        let cell = self.cell;
+
+        for &((i, j), (k, r0)) in &self.extra_bonded.urey_bradley {
+            let diff = cell.min_image(self.atoms[i].posit - self.atoms[j].posit);
+            let r = diff.magnitude();
+            if r < 1e-6 {
+                continue;
+            }
+            let dr = r - r0;
+            // Force on i.
+            let f = diff * (-2. * k * dr / r);
+            self.atoms[i].force += f;
+            self.atoms[j].force -= f;
+            energy += (k * dr * dr) as f64;
+            virial += diff.dot(f) as f64;
+        }
+
+        for &(atoms, (k, psi0)) in &self.extra_bonded.harmonic_impropers {
+            let p = atoms.map(|i| self.atoms[i].posit);
+            let Some((psi, grad)) = dihedral_angle_grad(p[0], p[1], p[2], p[3], &cell) else {
+                continue;
+            };
+            let d = angle_diff(psi, psi0);
+            let de_dpsi = 2. * k * d;
+            energy += (k * d * d) as f64;
+
+            for (a, g) in atoms.iter().zip(grad) {
+                let f = g * -de_dpsi;
+                self.atoms[*a].force += f;
+                virial += cell.min_image(self.atoms[*a].posit - p[0]).dot(f) as f64;
+            }
+        }
+
+        for &(atoms, grid_i) in &self.extra_bonded.cmaps {
+            let p = atoms.map(|i| self.atoms[i].posit);
+            let (Some((phi, grad_phi)), Some((psi, grad_psi))) = (
+                dihedral_angle_grad(p[0], p[1], p[2], p[3], &cell),
+                dihedral_angle_grad(p[4], p[5], p[6], p[7], &cell),
+            ) else {
+                continue;
+            };
+            let (e, de_dphi, de_dpsi) =
+                self.extra_bonded.cmap_grids[grid_i].eval(phi as f64, psi as f64);
+            energy += e;
+
+            for (k, (a, g)) in atoms
+                .iter()
+                .zip(grad_phi.into_iter().chain(grad_psi))
+                .enumerate()
+            {
+                let de = if k < 4 { de_dphi } else { de_dpsi };
+                let f = g * -(de as f32);
+                self.atoms[*a].force += f;
+                virial += cell.min_image(self.atoms[*a].posit - p[0]).dot(f) as f64;
+            }
+        }
+
+        self.potential_energy += energy;
+        self.potential_energy_bonded += energy;
+        self.barostat.virial.bonded += virial;
     }
 
     pub(crate) fn apply_bond_stretching_forces(&mut self) {

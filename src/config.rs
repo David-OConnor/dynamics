@@ -153,6 +153,27 @@ impl Default for MdConfig {
 }
 
 impl MdConfig {
+    /// The default config, with a force field family, and the non-bonded cutoffs and LJ modifier
+    /// its parameters were developed with.
+    pub fn for_family(ff_family: ForceFieldFamily) -> Self {
+        let mut result = Self {
+            ff_family,
+            ..Default::default()
+        };
+
+        match ff_family {
+            ForceFieldFamily::Amber => (),
+            ForceFieldFamily::Charmm36 => {
+                // LJ force switched from 10 to 12 Å, and PME with a 12 Å real-space cutoff.
+                result.lj_cutoff = 12.;
+                result.coulomb_cutoff = 12.;
+                result.lj_modifier = LjModifier::ForceSwitch { r_switch: 10. };
+            }
+        }
+
+        result
+    }
+
     /// Creates a similar config for use with GROMACS. Attempts to replicate this library's
     /// settings where we don't have an applicable MdConfig field.
     ///

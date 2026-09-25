@@ -1,0 +1,14 @@
+[ moleculetype ]
+; name nrexcl
+SOD 1
+
+[ atoms ]
+1 SOD 1 SOD SOD 1 1.000 22.98977
+
+[ moleculetype ]
+; name nrexcl
+CLA 1
+
+[ atoms ]
+1 CLA 1 CLA CLA 1 -1.000 35.45000
+
