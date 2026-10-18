@@ -36,8 +36,8 @@ pub type NucleicAcidFfChargeMap = HashMap<NucleotideTemplate, Vec<ChargeParams>>
 const PARM_19: &str = include_str!("../param_data/parm19.dat"); // Bonded, and LJ
 const FRCMOD_FF19SB: &str = include_str!("../param_data/frcmod.ff19SB"); // Bonded, and LJ: overrides and new types
 pub const AMINO_19: &str = include_str!("../param_data/amino19.lib"); // Charge; internal residues
-const AMINO_NT12: &str = include_str!("../param_data/aminont12.lib"); // Charge; protonated N-terminus residues
-const AMINO_CT12: &str = include_str!("../param_data/aminoct12.lib"); // Charge; protonated C-terminus residues
+pub const AMINO_NT12: &str = include_str!("../param_data/aminont12.lib"); // Charge; protonated N-terminus residues
+pub const AMINO_CT12: &str = include_str!("../param_data/aminoct12.lib"); // Charge; protonated C-terminus residues
 
 // Ligands/small organic molecules: *General Amber Force Fields*.
 const GAFF2: &str = include_str!("../param_data/gaff2.dat");
@@ -417,6 +417,12 @@ pub fn populate_peptide_ff_and_q(
     }
 
     for res in residues {
+        // e.g. solvent, other hetero atoms, or nucleic acids in a mixed polymer; skip. We check
+        // this before requiring an atom type in residue, as non-peptide atoms may not have one.
+        let ResidueType::AminoAcid(aa) = &res.res_type else {
+            continue;
+        };
+
         for sn in &res.atom_sns {
             let atom = match atoms.get_mut(index_map[sn]) {
                 Some(a) => a,
@@ -435,11 +441,6 @@ pub fn populate_peptide_ff_and_q(
                 return Err(ParamError::new(&format!(
                     "MD failure: Missing type in residue for atom: {atom}"
                 )));
-            };
-
-            let ResidueType::AminoAcid(aa) = &res.res_type else {
-                // e.g. solvent or other hetero atoms; skip.
-                continue;
             };
 
             // todo: Eventually, determine how to load non-standard AA variants from files; set up your
