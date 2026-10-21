@@ -932,6 +932,28 @@ fn gmx_sigma_eps(v: f64, w: f64, comb_rule: u8) -> (f64, f64) {
     (sigma_nm * NM_TO_ANGSTROM, eps_kj * KJ_TO_KCAL)
 }
 
+/// Resolve a single molecule using the same conversion as imported topologies.
+pub(crate) fn gromacs_molecule_params(
+    mt: &TopMoleculeType,
+    top: &GromacsTopology,
+) -> Result<ExplicitParams, ParamError> {
+    let mut unsupported = Vec::new();
+    let rule = match top.defaults.comb_rule {
+        2 => LjCombiningRule::LorentzBerthelot,
+        _ => LjCombiningRule::Geometric,
+    };
+    let converted = convert_gmx_molecule(mt, top, rule, &mut unsupported)?;
+    if !unsupported.is_empty() {
+        return Err(unsupported_error(&unsupported));
+    }
+    match converted {
+        Converted::Mol(mol) => mol
+            .explicit_params
+            .ok_or_else(|| ParamError::new("Missing converted parameters")),
+        Converted::Water(_) => Err(ParamError::new("Expected solute, got water")),
+    }
+}
+
 fn convert_gmx_molecule(
     mt: &TopMoleculeType,
     top: &GromacsTopology,
@@ -1093,7 +1115,43 @@ fn convert_gmx_molecule(
                     d.params[0].to_radians() as f32,
                 ),
             )),
-            3 => unsupported.push("Ryckaert-Bellemans dihedrals".to_owned()),
+            3 => {
+                // GROMACS RB uses psi = phi - pi. Expand powers of cos(psi)
+                // into Fourier terms, retaining the constant energy offset.
+                let c = &d.params;
+                let coefficients = [
+                    c[0] + c[2] / 2. + 3. * c[4] / 8.,
+                    -c[1] - 3. * c[3] / 4. - 5. * c[5] / 8.,
+                    c[2] / 2. + c[4] / 2.,
+                    -c[3] / 4. - 5. * c[5] / 16.,
+                    c[4] / 8.,
+                    -c[5] / 16.,
+                ];
+                let constant = (coefficients[0] - coefficients[1..].iter().sum::<f64>()) / 2.;
+                for (periodicity, height) in std::iter::once((0, constant))
+                    .chain(coefficients.iter().copied().enumerate().skip(1))
+                {
+                    if height.abs() < 1e-12 {
+                        continue;
+                    }
+                    params.dihedrals.push((
+                        (a, b, d.atoms[2], e),
+                        DihedralParams {
+                            atom_types: (
+                                type_name(a),
+                                type_name(b),
+                                type_name(d.atoms[2]),
+                                type_name(e),
+                            ),
+                            divider: 1,
+                            barrier_height: (height * KJ_TO_KCAL) as f32,
+                            phase: 0.,
+                            periodicity: periodicity as u8,
+                            comment: None,
+                        },
+                    ));
+                }
+            }
             f => unsupported.push(format!("Dihedral function {f}")),
         }
     }

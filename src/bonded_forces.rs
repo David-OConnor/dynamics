@@ -1,5 +1,5 @@
 use bio_files::md_params::{AngleBendingParams, BondStretchingParams, DihedralParams};
-use lin_alg::f32::{Vec3, calc_dihedral_angle_v2};
+use lin_alg::f32::Vec3;
 
 use crate::barostat::SimBox;
 
@@ -117,21 +117,15 @@ pub fn f_dihedral(
         );
     }
 
-    // Reconstruct PBC-consistent positions from the already-wrapped bond vectors,
-    // so the measured angle is correct even if atoms straddle a periodic boundary.
-    let p1 = posit_0 + b1;
-    let p2 = p1 + b2;
-    let p3 = p2 + b3;
-    // `lin_alg` measures this signed rotation in the opposite direction from
-    // the Amber/GROMACS proper-dihedral convention. Keep the raw angle for
-    // the Cartesian gradient below, but reverse it when evaluating the
-    // potential.
-    let dihe_raw = calc_dihedral_angle_v2(&(posit_0, p1, p2, p3));
-    let dihe_measured = std::f32::consts::TAU - dihe_raw;
+    // Use the signed Amber/GROMACS angle directly from the wrapped bond
+    // normals. atan2 stays accurate at planar conformations; normalizing and
+    // using acos can round outside [-1, 1] and mistake a trans torsion for cis.
+    let angle = n1.cross(n2).magnitude().atan2(n1.dot(n2));
+    let dihe_measured = if b1.dot(n2) < 0. { -angle } else { angle };
 
     let mut energy = 0.;
-    // Derivative with respect to `dihe_raw` (not `dihe_measured`).
-    let mut dV_dφ = 0.; // Scalar torque magnitude
+    // -dV/dphi; the projection below accounts for the bond-vector signs.
+    let mut torque = 0.; // Scalar torque magnitude
 
     for param in params {
         // Note: We have already divided barrier height by the integer divisor when setting up
@@ -140,7 +134,7 @@ pub fn f_dihedral(
         let per = param.periodicity as f32;
 
         let dφ = per * dihe_measured - param.phase;
-        dV_dφ += k * per * dφ.sin();
+        torque += k * per * dφ.sin();
         energy += k * (1.0 + dφ.cos());
     }
 
@@ -150,8 +144,8 @@ pub fn f_dihedral(
     // Gradient terms for the outer atoms
     // F0 acts along n1 (perpendicular to bond b1 and b2)
     // F3 acts along n2 (perpendicular to bond b2 and b3)
-    let f0_factor = -dV_dφ * b2_len / n1_sq;
-    let f3_factor = dV_dφ * b2_len / n2_sq; // Note the sign flip relative to f0
+    let f0_factor = -torque * b2_len / n1_sq;
+    let f3_factor = torque * b2_len / n2_sq; // Note the sign flip relative to f0
 
     let f_0 = n1 * f0_factor;
     let f_3 = n2 * f3_factor;

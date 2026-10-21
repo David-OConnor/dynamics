@@ -675,6 +675,19 @@ pub(crate) fn water_mols_from_template_in_region_avoiding(
         mol.h0.posit = candidate.h0_posit;
         mol.h1.posit = candidate.h1_posit;
 
+        // The bundled packing template has OPC geometry. Preserve its oxygen
+        // positions and water orientations while fitting the selected model.
+        // SETTLE must start from the same geometry as its constraint lengths.
+        let h0 = (mol.h0.posit - mol.o.posit).to_normalized();
+        let h1 = (mol.h1.posit - mol.o.posit).to_normalized();
+        let bisector = (h0 + h1).to_normalized();
+        let transverse = (h0 - h1).to_normalized();
+        let half = water_model.h_o_h_angle / 2.;
+        mol.h0.posit =
+            mol.o.posit + (bisector * half.cos() + transverse * half.sin()) * water_model.o_h_dist;
+        mol.h1.posit =
+            mol.o.posit + (bisector * half.cos() - transverse * half.sin()) * water_model.o_h_dist;
+
         mol.o.vel = candidate.o_velocity;
         mol.h0.vel = candidate.h0_velocity;
         mol.h1.vel = candidate.h1_velocity;

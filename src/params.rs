@@ -1,5 +1,5 @@
-//! Data functionality for Forcefield params. Includes Amber parameters built in to binaries
-//! which use this library, and can load params for other sets as required.
+//! Force-field parameter sets. Amber, CHARMM36m and OPLS-AA/L data are bundled
+//! into binaries that use this library. Explicit topologies can supply other sets.
 //!
 //! Uses `bio_files` for the base data structures.
 
@@ -22,6 +22,7 @@ use crate::{
     charmm::CharmmSet,
     merge_params,
     non_bonded::{LjCombiningRule, NbFix, Scale14},
+    opls::OplsSet,
     param_inference::update_small_mol_params,
     populate_hydrogens_dihedrals,
     solvent::WaterModel,
@@ -75,6 +76,13 @@ pub enum ForceFieldFamily {
     /// `MolDynamics::residues`. Other molecule types need explicit parameters. (e.g. imported;
     /// see `import`) Use `MdConfig::for_family` for CHARMM's cutoffs and LJ force switch.
     Charmm36,
+    /// OPLS-AA/L proteins (Kaminski et al., 2001), with TIP4P water and
+    /// OPLS ions. Uses geometric LJ mixing and 0.5 scaling for both 1-4 terms.
+    /// Proteins require `MolDynamics::residues` and explicit hydrogens.
+    /// Hydrogenated ligands use Foyer's bundled OPLS-AA SMARTS rules, charges
+    /// and bonded tables. Unsupported chemistry and other molecule classes
+    /// require explicit OPLS parameters; GAFF2 is not used with this family.
+    Opls,
 }
 
 /// How we assign force field types, partial charges, and missing bonded parameters to small
@@ -178,6 +186,8 @@ pub struct FfParamSet {
     /// CHARMM's topology and parameters. If present, we build peptides from these, instead of
     /// assigning parameters by type from `peptide`.
     pub charmm: Option<CharmmSet>,
+    /// OPLS-AA/L protein templates and OPLS-AA ligand typing/parameter tables.
+    pub opls: Option<OplsSet>,
 }
 
 /// Paths for to general parameter files. Used to create a FfParamSet.
@@ -212,7 +222,30 @@ impl FfParamSet {
         match family {
             ForceFieldFamily::Amber => Self::new_amber(),
             ForceFieldFamily::Charmm36 => Self::new_charmm(),
+            ForceFieldFamily::Opls => Self::new_opls(),
         }
+    }
+
+    /// Load the bundled OPLS protein/ligand parameters and family conventions.
+    pub fn new_opls() -> io::Result<Self> {
+        Ok(Self {
+            family: ForceFieldFamily::Opls,
+            nonbonded_rules: NonBondedRules {
+                lj_combining: LjCombiningRule::Geometric,
+                scale_14: Scale14ByMolType {
+                    peptide: Scale14::OPLS,
+                    small_organic: Scale14::OPLS,
+                    dna: Scale14::OPLS,
+                    rna: Scale14::OPLS,
+                    lipid: Scale14::OPLS,
+                    carbohydrate: Scale14::OPLS,
+                },
+                nbfix: Default::default(),
+            },
+            default_water: WaterModel::TIP4P_OPLS,
+            opls: Some(OplsSet::new()?),
+            ..Default::default()
+        })
     }
 
     /// CHARMM36m for proteins, with CHARMM's TIP3P water and ions, using files included with this

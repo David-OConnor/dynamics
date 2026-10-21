@@ -85,10 +85,12 @@ pub mod charmm;
 pub mod cmap;
 mod config;
 mod forces;
+pub mod gromacs;
 pub mod import;
 pub mod integrate;
 mod neighbors;
 mod non_bonded;
+pub mod opls;
 pub mod params;
 pub mod partial_charge_inference;
 mod prep;
@@ -747,6 +749,14 @@ impl MdState {
             )));
         }
 
+        if param_set.family != ForceFieldFamily::Amber
+            && matches!(cfg.solvent, Solvent::OctanolWithWater)
+        {
+            return Err(ParamError::new(
+                "The built-in octanol solvent uses Amber parameters; provide a custom solvent parameterized for the selected family",
+            ));
+        }
+
         let water_model = cfg
             .water_model
             .clone()
@@ -885,6 +895,25 @@ impl MdState {
                     }
                     _ => None,
                 };
+
+            let explicit = match (explicit, &param_set.opls, mol.ff_mol_type) {
+                (None, Some(opls), FfMolType::Peptide) => {
+                    let residues = mol.residues.as_deref().ok_or_else(|| {
+                        ParamError::new(
+                            "OPLS proteins require MolDynamics::residues and explicit hydrogens",
+                        )
+                    })?;
+                    Some(Cow::Owned(opls.build_peptide(
+                        &mut atoms,
+                        &mol.bonds,
+                        residues,
+                    )?))
+                }
+                (None, Some(opls), FfMolType::SmallOrganic) => {
+                    Some(Cow::Owned(opls.build_small_molecule(&mut atoms, &mol.bonds)?))
+                }
+                (explicit, _, _) => explicit,
+            };
 
             if let Some(p) = &explicit
                 && p.lj_combining != param_set.nonbonded_rules.lj_combining
@@ -1236,13 +1265,17 @@ impl MdState {
                 result.cfg.spme_alpha,
             ));
 
-            result.per_neighbor_gpu = Some(PerNeighborGpu::new(
-                stream,
-                &result.nb_pairs,
-                &result.atoms,
-                &result.water,
-                &result.lj_tables,
-            ));
+            result.per_neighbor_gpu = if result.nb_pairs.is_empty() {
+                None
+            } else {
+                Some(PerNeighborGpu::new(
+                    stream,
+                    &result.nb_pairs,
+                    &result.atoms,
+                    &result.water,
+                    &result.lj_tables,
+                ))
+            };
         }
 
         // todo: Move this AR
@@ -1577,7 +1610,7 @@ pub fn compute_energy_snapshot(
         hydrogen_constraint: HydrogenConstraint::Flexible,
         max_init_relaxation_iters: None,
         solvent: Solvent::None,
-        ..Default::default()
+        ..MdConfig::for_family(param_set.family)
     };
 
     let (mut md_state, _) = MdState::new(dev, &cfg, mols, param_set)?;

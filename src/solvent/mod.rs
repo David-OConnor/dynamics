@@ -153,6 +153,36 @@ impl WaterModel {
         },
     };
 
+    /// Original TIP4P, as distributed with OPLS-AA/L in GROMACS 2026.4.
+    /// Ion parameters are OPLS opls_407 (Na+) and opls_401 (Cl-).
+    /// Their LJ parameters, like the solute's, use geometric mixing.
+    pub const TIP4P_OPLS: Self = Self {
+        mass_o: 15.9994,
+        mass_h: 1.008,
+        o_h_dist: 0.9572,
+        o_m_dist: 0.15,
+        h_o_h_angle: 1.824_218_134_6,
+        q_h: 0.52,
+        lj_sigma_o: 3.15365,
+        lj_eps_o: 0.64852 / 4.184,
+        lj_sigma_h: 0.,
+        lj_eps_h: 0.,
+        cation: IonParams {
+            ion: Ion::Sodium,
+            ff_type: Cow::Borrowed("opls_407"),
+            mass: 22.98977,
+            lj_sigma: 3.33045,
+            lj_eps: 0.011598 / 4.184,
+        },
+        anion: IonParams {
+            ion: Ion::Chloride,
+            ff_type: Cow::Borrowed("opls_401"),
+            mass: 35.453,
+            lj_sigma: 4.41724,
+            lj_eps: 0.492833 / 4.184,
+        },
+    };
+
     /// amu
     pub fn mass(&self) -> f32 {
         self.mass_o + 2.0 * self.mass_h

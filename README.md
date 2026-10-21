@@ -65,6 +65,61 @@ above; those are structs of plain data that can be built from from arbitrary inp
 building an application, you might use a more complicated Atom format; you can create a function that converts between
 yours, and `AtomGeneric`.
 
+## Force-field selection
+
+Select the same family for the config and parameters:
+
+```rust
+use dynamics::{ForceFieldFamily, MdConfig, params::FfParamSet};
+
+let cfg = MdConfig::for_family(ForceFieldFamily::Opls);
+let params = FfParamSet::from_family(cfg.ff_family)?;
+```
+
+The bundled families use these conventions:
+
+| Family | Protein parameters | Water | LJ mixing | 1–4 LJ / Coulomb |
+|---|---|---|---|---|
+| Amber | ff19SB | OPC | Lorentz–Berthelot | 0.5 / 1/1.2 |
+| CHARMM36 | CHARMM36m | modified TIP3P | Lorentz–Berthelot, NBFIX | 1 / 1, special LJ |
+| OPLS | OPLS-AA/L (Kaminski 2001) | TIP4P | geometric | 0.5 / 0.5 |
+
+`MdConfig::water_model` overrides the family's water and ions. CHARMM's preset
+includes the 10–12 Å LJ force switch. OPLS uses the same 10 Å hard LJ cutoff and
+PME defaults as the Amber preset. Packing templates are fitted to the selected
+water geometry before dynamics begins.
+
+OPLS proteins require complete, hydrogenated residues in `MolDynamics::residues`.
+The builder selects histidine tautomers and supported side-chain protonation
+states from bonded hydrogens, handles disulfides and charged N/C termini, and
+retains OPLS-AA/L's residue-specific side-chain torsions. Neutral termini, caps,
+and cysteine thiolate are not currently built from residue templates.
+
+Hydrogenated OPLS ligands are typed natively using the bundled Foyer OPLS-AA
+SMARTS rules, charges and bonded tables. No Python installation, GAFF2 cache or
+external parameterization is needed for supported chemistry. A complete
+LigParGen-generated template additionally supports the neutral creatine
+tautomer in PubChem 586; it matches the entire hydrogenated element/bond-order
+graph and maps parameters into the caller's atom ordering. The Foyer
+rule set covers a subset of OPLS-AA: missing or ambiguous atom types, missing
+bonded terms, and non-integral total charge produce an error rather than
+estimated parameters. For example, caffeine and aspirin need explicit matching
+parameters, such as an imported LigParGen/GROMACS topology. Lipids, nucleic acids
+and other molecule classes also require explicit parameters.
+
+Amber/GAFF2 atom types and partial charges are replaced on the simulation-local
+OPLS copy. Native and GROMACS export use the same ligand preparation, geometric
+LJ mixing, 0.5 scaling of both 1–4 terms, and shortest-path exclusions. GROMACS
+Ryckaert–Bellemans torsions are converted to periodic terms with their constant
+energy offsets preserved. The built-in octanol solvent is Amber-specific.
+
+For GROMACS export, `dynamics::gromacs::parameterize` resolves a molecule's native
+parameters, and `make_topology` writes them with exclusions, scaled pairs, and
+the selected water model. It also preserves CHARMM's extra bonded terms and
+NBFIX. Bio Files callers can select `gromacs::forcefield::ForceField` through
+`GromacsInput::topology_config`; selection sets conventions and solvent, while
+callers supply the matching molecule parameters or a complete topology override.
+
 ## Parameters
 
 It integrates the following [Amber parameter sets](https://ambermd.org/AmberModels.php):

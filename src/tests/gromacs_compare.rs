@@ -189,6 +189,7 @@ pub(super) fn reference_mdp(coulomb: CoulombType, vdw_modifier: VdwModifier) -> 
         vdwtype: VdwType::CutOff,
         vdw_modifier,
         rvdw: COULOMB_CUTOFF_A * 0.1,
+        rvdw_switch: None,
         thermostat: Thermostat::No,
         tau_t: vec![1.0],
         ref_t: vec![300.0],

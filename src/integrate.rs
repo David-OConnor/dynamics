@@ -87,12 +87,6 @@ impl MdState {
 
         let dt_half = 0.5 * dt;
 
-        // todo: YOu can remove this once we crush the root cause.
-        if self.nb_pairs.len() == 0 {
-            eprintln!("UHoh. Pairs count is 0. THis likely means the system blew up. :(");
-            return;
-        }
-
         let pressure = match self.cfg.integrator {
             Integrator::LangevinMiddle { gamma } => {
                 if log_time {

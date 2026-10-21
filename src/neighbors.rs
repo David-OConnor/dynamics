@@ -142,13 +142,17 @@ impl MdState {
 
         #[cfg(feature = "cuda")]
         if let ComputationDevice::Gpu(stream) = dev {
-            self.per_neighbor_gpu = Some(PerNeighborGpu::new(
-                stream,
-                &self.nb_pairs,
-                &self.atoms,
-                &self.water,
-                &self.lj_tables,
-            ));
+            self.per_neighbor_gpu = if self.nb_pairs.is_empty() {
+                None
+            } else {
+                Some(PerNeighborGpu::new(
+                    stream,
+                    &self.nb_pairs,
+                    &self.atoms,
+                    &self.water,
+                    &self.lj_tables,
+                ))
+            };
         }
 
         // Refresh refs and reset displacement

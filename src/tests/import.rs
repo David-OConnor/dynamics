@@ -415,7 +415,7 @@ SOL 1
 /// Terms we can't compute yet are reported, rather than dropped.
 #[test]
 fn gromacs_unsupported_terms_are_errors() {
-    let top = GMX_TOP.replace("1 2 3 4 9\n", "1 2 3 4 3 1 2 3 4 5 6\n");
+    let top = GMX_TOP.replace("1 2 3 4 9\n", "1 2 3 4 5 1 2 3 4 5 6\n");
     let dir = ScratchDir::new("import_unsupported");
     fs::write(dir.path().join("ff.itp"), GMX_FF_ITP).unwrap();
     fs::write(dir.path().join("topol.top"), top).unwrap();
@@ -428,7 +428,7 @@ fn gromacs_unsupported_terms_are_errors() {
     )
     .unwrap_err();
     assert!(
-        err.descrip.contains("Ryckaert-Bellemans"),
+        err.descrip.contains("Dihedral function 5"),
         "{}",
         err.descrip
     );

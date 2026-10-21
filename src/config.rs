@@ -162,7 +162,8 @@ impl MdConfig {
         };
 
         match ff_family {
-            ForceFieldFamily::Amber => (),
+            // OPLS uses the same 10 Å hard LJ cutoff and PME configuration.
+            ForceFieldFamily::Amber | ForceFieldFamily::Opls => (),
             ForceFieldFamily::Charmm36 => {
                 // LJ force switched from 10 to 12 Å, and PME with a 12 Å real-space cutoff.
                 result.lj_cutoff = 12.;
@@ -230,18 +231,10 @@ impl MdConfig {
 
         const ANGSTROM_TO_NM: f32 = 0.1;
 
-        // Note: We export `LjModifier::None` as GROMACS' default (Potential-shift), as we did prior to
-        // making the modifier configurable.
         let vdw_modifier = match self.lj_modifier {
-            LjModifier::None => VdwModifier::default(),
+            LjModifier::None => VdwModifier::None,
             LjModifier::PotentialShift => VdwModifier::PotentialShift,
-            LjModifier::ForceSwitch { .. } => {
-                eprintln!(
-                    "Warning: Exporting an LJ force switch to GROMACS without its switch distance; \
-                     set `rvdw-switch` in the MDP manually."
-                );
-                VdwModifier::ForceSwitch
-            }
+            LjModifier::ForceSwitch { .. } => VdwModifier::ForceSwitch,
         };
 
         // Many of these values are the MdpParams defaults, but we specify here
@@ -263,6 +256,10 @@ impl MdConfig {
             vdwtype: VdwType::CutOff,
             vdw_modifier,
             rvdw: self.lj_cutoff * ANGSTROM_TO_NM,
+            rvdw_switch: match self.lj_modifier {
+                LjModifier::ForceSwitch { r_switch } => Some(r_switch * ANGSTROM_TO_NM),
+                _ => None,
+            },
             thermostat,
             // We only have one temperature-coupling group in this lib.
             tau_t: vec![tau_t],
@@ -398,8 +395,13 @@ impl From<MdpParams> for MdConfig {
             spme_alpha,
             coulomb_cutoff: p.rcoulomb * NM_TO_ANGSTROM,
             lj_cutoff: p.rvdw * NM_TO_ANGSTROM,
-            // We don't map GROMACS' modifier here, as its default (Potential-shift) differs from ours.
-            lj_modifier: def.lj_modifier,
+            lj_modifier: match p.vdw_modifier {
+                VdwModifier::PotentialShift => LjModifier::PotentialShift,
+                VdwModifier::ForceSwitch => LjModifier::ForceSwitch {
+                    r_switch: p.rvdw_switch.unwrap_or(0.) * NM_TO_ANGSTROM,
+                },
+                _ => LjModifier::None,
+            },
             recenter_sim_box: def.recenter_sim_box,
         }
     }

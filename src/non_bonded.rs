@@ -74,6 +74,12 @@ impl Scale14 {
         lj: 0.5,
         coulomb: 1.0 / 1.2,
     };
+    /// OPLS-AA scales both LJ and electrostatic 1-4 interactions by one half.
+    pub const OPLS: Self = Self {
+        lj: 0.5,
+        coulomb: 0.5,
+    };
+
     /// GLYCAM carbohydrates leave 1-4 interactions unscaled. (SCNB = SCEE = 1.0)
     pub const GLYCAM: Self = Self {
         lj: 1.0,
@@ -592,6 +598,12 @@ impl MdState {
     /// We use the MD-standard [S]PME approach to handle approximated Coulomb forces. This function
     /// applies forces from non-solvent, and solvent sources.
     pub fn apply_nonbonded_forces(&mut self, dev: &ComputationDevice) {
+        // Small molecules may have only excluded pairs. Bonded and reciprocal
+        // forces still run, but there is no short-range work or CUDA launch.
+        if self.nb_pairs.is_empty() {
+            return;
+        }
+
         let lj_mod = LjModCoeffs::new(self.cfg.lj_modifier, self.cfg.lj_cutoff);
 
         let (f_on_non_water, f_on_water, virial, energy, energy_between_mols, alch_dh_dl) =
