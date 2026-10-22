@@ -18,22 +18,22 @@ license = "MIT"
 #exclude = [".gitignore"]
 
 
+# This is required to package the parameter files on crates.io
+include = [
+    "src/**",
+    "param_data/**",
+    "docs/**",
+    "Cargo.toml",
+    "README.md",
+    "rustfmt.toml",
+]
+
+
 # For training our partial charge inference model.
 [[bin]]
 name = "train"
 path = "src/train_params.rs"
 required-features = ["train-bin"]
-
-# This is required to package the parameter files on crates.io
-include = [
-    "src/**",
-    "param_data/**",
-    "Cargo.toml",
-    "README.md",
-    "README.md",
-    "rustfmt.toml",
-]
-
 
 [dependencies]
 lin_alg = { version = "1.4.3", features = ["encode", "random"] }
@@ -44,6 +44,10 @@ ewald = { version = "0.1.15" }
 statrs = "0.18.0"
 bio_apis = "0.3.0"
 sha2 = "0.10"
+# Optional OPLS generation provider; all bundled parameterization remains offline.
+ureq = { version = "3.4", features = ["json"] }
+serde_json = "1"
+zip = { version = "8", default-features = false, features = ["deflate"] }
 #mol_defs = { path = "../mol_defs" }  # e.g. Dihedral and a few auxillary types.
 
 rand = "0.10.2"
@@ -78,6 +82,7 @@ cuda_setup = { version = "0.1.10", optional = true }
 [patch.crates-io]
 ewald = { path = "../ewald" }
 bio_files = { path = "../bio_files" }
+na_seq = { path = "../na_seq" }
 
 
 [features]
@@ -92,6 +97,6 @@ cufft = ["cuda", "ewald/cufft"]
 vkfft = ["cuda", "ewald/vkfft"]
 
 #encode = ["bincode"]
-encode = []
+encode = ["bio_files/encode"]
 
 train-bin = []

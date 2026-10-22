@@ -10,6 +10,18 @@ use bio_files::{AtomGeneric, BondGeneric};
 
 use crate::{COMPUTATION_TIME_RATIO, ParamError};
 
+pub(crate) fn save_bincode<T: bincode::Encode>(path: &std::path::Path, data: &T) -> io::Result<()> {
+    let encoded =
+        bincode::encode_to_vec(data, bincode::config::standard()).map_err(io::Error::other)?;
+    std::fs::write(path, encoded)
+}
+
+pub(crate) fn load_from_bytes_bincode<T: bincode::Decode<()>>(buffer: &[u8]) -> io::Result<T> {
+    bincode::decode_from_slice(buffer, bincode::config::standard())
+        .map(|(value, _)| value)
+        .map_err(io::Error::other)
+}
+
 /// Build a list of indices that relate atoms that are connected by covalent bonds.
 /// For each outer atom index, the inner values are indices of the atom it's bonded to.
 ///
@@ -19,38 +31,35 @@ pub(crate) fn build_adjacency_list(
     atoms: &[AtomGeneric],
     bonds: &[BondGeneric],
 ) -> Result<Vec<Vec<usize>>, ParamError> {
-    let mut result = vec![Vec::new(); atoms.len()];
-
-    // For each bond, record its atoms as neighbors of each other
-    for bond in bonds {
-        let mut atom_0 = None;
-        let mut atom_1 = None;
-
-        let mut found = false;
-        for (i, atom) in atoms.iter().enumerate() {
-            if atom.serial_number == bond.atom_0_sn {
-                atom_0 = Some(i);
-            }
-            if atom.serial_number == bond.atom_1_sn {
-                atom_1 = Some(i);
-            }
-
-            if let (Some(a0), Some(a1)) = (atom_0, atom_1) {
-                result[a0].push(a1);
-                result[a1].push(a0);
-
-                found = true;
-                break;
-            }
-        }
-
-        if !found {
-            return Err(ParamError::new(
-                "Invalid bond to atom mapping when building adjacency list.",
-            ));
-        }
+    use std::collections::{HashMap, HashSet};
+    let indices: HashMap<_, _> = atoms
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.serial_number, i))
+        .collect();
+    if indices.len() != atoms.len() {
+        return Err(ParamError::new("Duplicate atom serial number"));
     }
-
+    let mut result = vec![Vec::new(); atoms.len()];
+    let mut seen = HashSet::new();
+    for bond in bonds {
+        let Some((&i, &j)) = indices
+            .get(&bond.atom_0_sn)
+            .zip(indices.get(&bond.atom_1_sn))
+        else {
+            return Err(ParamError::new(
+                "Bond refers to an absent atom serial number",
+            ));
+        };
+        if i == j || !seen.insert((i.min(j), i.max(j))) {
+            return Err(ParamError::new("Self bond or duplicate bond"));
+        }
+        result[i].push(j);
+        result[j].push(i);
+    }
+    for neighbors in &mut result {
+        neighbors.sort_unstable();
+    }
     Ok(result)
 }
 

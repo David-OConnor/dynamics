@@ -81,7 +81,6 @@ mod add_hydrogens;
 mod barostat;
 mod bonded;
 mod bonded_forces;
-pub mod charmm;
 mod config;
 mod forces;
 pub mod gromacs;
@@ -89,9 +88,8 @@ pub mod import;
 pub mod integrate;
 mod neighbors;
 mod non_bonded;
-pub mod opls;
 pub mod params;
-pub mod partial_charge_inference;
+pub use params::amber::charges as partial_charge_inference;
 mod prep;
 #[cfg(target_arch = "x86_64")]
 mod simd;
@@ -106,7 +104,7 @@ mod gpu_interface;
 pub mod minimize_energy;
 
 pub mod alchemical;
-pub mod param_inference;
+pub use params::{amber::typing as param_inference, charmm::cmap};
 mod sa_surface;
 
 #[cfg(test)]
@@ -115,7 +113,6 @@ mod tests;
 #[cfg(feature = "cuda")]
 use std::sync::Arc;
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet},
     error::Error,
     fmt,
@@ -146,7 +143,7 @@ use cudarc::{
     nvrtc::Ptx,
 };
 use ewald::PmeRecip;
-pub use import::{ExplicitParams, ImportedSystem};
+pub use import::ImportedSystem;
 pub use integrate::Integrator;
 #[allow(unused)]
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -158,7 +155,7 @@ use lin_alg::{
 use na_seq::Element;
 use neighbors::NeighborsNb;
 pub use non_bonded::{LjCombiningRule, LjModifier, NbFix, Pair14, Scale14};
-pub use params::{ForceFieldFamily, SmallMolTyper};
+pub use params::{ExplicitParams, ForceFieldFamily};
 use prep::merge_indexed_params;
 pub use prep::{HydrogenConstraint, merge_params};
 pub use solvent::{
@@ -771,10 +768,6 @@ impl MdState {
             )));
         }
 
-        // We combine all molecule general and specific params into this set, then
-        // create Indexed params from it.
-        let mut params = ForceFieldParams::default();
-
         // Used for updating indices for tracking purposes.
         let mut atom_ct_prior_to_this_mol = 0;
 
@@ -869,88 +862,12 @@ impl MdState {
             // Filter out hetero atoms in proteins. These are often example ligands that we do
             // not wish to model.
             // We must perform this filter prior to most of the other steps in this function.
-            let mut atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
+            let atoms: Vec<AtomGeneric> = match mol.ff_mol_type {
                 FfMolType::Peptide if mol.explicit_params.is_none() => {
                     mol.atoms.iter().filter(|a| !a.hetero).cloned().collect()
                 }
                 _ => mol.atoms.to_vec(),
             };
-
-            // Explicit parameters: The molecule's own, or for sets that build peptides from
-            // residue topologies (CHARMM), built here. This sets the atoms' types and charges.
-            let explicit: Option<Cow<ExplicitParams>> =
-                match (&mol.explicit_params, &param_set.charmm) {
-                    (Some(p), _) => Some(Cow::Borrowed(p)),
-                    (None, Some(charmm_set)) if mol.ff_mol_type == FfMolType::Peptide => {
-                        let Some(residues) = &mol.residues else {
-                            return Err(ParamError::new(
-                                "To build a peptide with CHARMM parameters, we need its residues; \
-                                 set `MolDynamics::residues`.",
-                            ));
-                        };
-                        Some(Cow::Owned(charmm::build_peptide(
-                            &mut atoms, &mol.bonds, residues, charmm_set,
-                        )?))
-                    }
-                    _ => None,
-                };
-
-            let explicit = match (explicit, &param_set.opls, mol.ff_mol_type) {
-                (None, Some(opls), FfMolType::Peptide) => {
-                    let residues = mol.residues.as_deref().ok_or_else(|| {
-                        ParamError::new(
-                            "OPLS proteins require MolDynamics::residues and explicit hydrogens",
-                        )
-                    })?;
-                    Some(Cow::Owned(
-                        opls.build_peptide(&mut atoms, &mol.bonds, residues)?,
-                    ))
-                }
-                (None, Some(opls), FfMolType::SmallOrganic) => Some(Cow::Owned(
-                    opls.build_small_molecule(&mut atoms, &mol.bonds)?,
-                )),
-                (explicit, _, _) => explicit,
-            };
-
-            if let Some(p) = &explicit
-                && p.lj_combining != param_set.nonbonded_rules.lj_combining
-            {
-                return Err(ParamError::new(&format!(
-                    "A molecule's LJ parameters are for the {:?} combining rule, but the \
-                     parameter set uses {:?}",
-                    p.lj_combining, param_set.nonbonded_rules.lj_combining
-                )));
-            }
-
-            let mut mol_specific_params = mol.mol_specific_params.clone();
-
-            // Update partial charge, FF names, and param overrides A/R.
-            if mol.ff_mol_type == FfMolType::SmallOrganic && explicit.is_none() {
-                let mut needs_ff_type_or_q = false;
-                for atom in &atoms {
-                    if atom.force_field_type.is_none() || atom.partial_charge.is_none() {
-                        needs_ff_type_or_q = true;
-                        break;
-                    }
-                }
-
-                if needs_ff_type_or_q {
-                    // Note: This invalidates any passed by the user.
-                    mol_specific_params = Some(
-                        param_set
-                            .small_mol_typer
-                            .assign(
-                                &mut atoms,
-                                &mol.bonds,
-                                Some(&adjacency_list),
-                                param_set.small_mol.as_ref(),
-                            )
-                            .map_err(|e| ParamError {
-                                descrip: format!("Problem inferring params: {e}"),
-                            })?,
-                    );
-                }
-            }
 
             // If the atoms list isn't already filtered by Hetero, and a manual
             // adjacency list or atom posits is passed, this will get screwed up.
@@ -964,32 +881,16 @@ impl MdState {
                 ));
             }
 
-            if explicit.is_none() {
-                let params_general = match mol.ff_mol_type {
-                    FfMolType::Peptide => &param_set.peptide,
-                    FfMolType::SmallOrganic => &param_set.small_mol,
-                    FfMolType::Dna => &param_set.dna,
-                    FfMolType::Rna => &param_set.rna,
-                    FfMolType::Lipid => &param_set.lipids,
-                    FfMolType::Carbohydrate => &param_set.carbohydrates,
-                };
-
-                let Some(params_general) = params_general else {
-                    return Err(ParamError::new(&format!(
-                        "Missing general parameters for {:?}",
-                        mol.ff_mol_type
-                    )));
-                };
-
-                // todo: If there are multiple molecules of a given type, this is unnecessary.
-                // todo: Make sure overrides from one individual molecule don't affect others, todo,
-                // todo and don't affect general params.
-                params = merge_params(&params, params_general);
-
-                if let Some(p) = &mol_specific_params {
-                    params = merge_params(&params, p);
-                }
-            }
+            // Resolve each molecule independently before flattening. Its overrides cannot
+            // affect another molecule, and native/export use the same parameterization path.
+            let prepared = param_set.parameterize(&MolDynamics {
+                atoms,
+                ..mol.clone()
+            })?;
+            let atoms = prepared.atoms;
+            let explicit = prepared
+                .explicit_params
+                .expect("parameterize returns resolved parameters");
 
             let atom_posits: Vec<Vec3> = match &mol.atom_posits {
                 Some(a) => a.iter().map(|p| (*p).into()).collect(),
@@ -1057,18 +958,14 @@ impl MdState {
         // Index parameters per molecule: By force field type using the combined parameters, or
         // from the molecule's explicit parameters.
         let mut force_field_params = ForceFieldParamsIndexed::default();
-        for (start, len, adjacency, explicit) in &mol_ranges {
+        for (start, len, _adjacency, explicit) in &mol_ranges {
             let atoms = &atoms_md[*start..*start + *len];
-            let indexed = match explicit {
-                Some(p) => p.to_indexed(atoms, h_constrained)?,
-                None => ForceFieldParamsIndexed::new(&params, atoms, adjacency, h_constrained)
-                    .map_err(|e| ParamError::new(&e.to_string()))?,
-            };
+            let indexed = explicit.to_indexed(atoms, h_constrained)?;
             merge_indexed_params(&mut force_field_params, indexed, *start);
         }
         let explicit_mols: Vec<(usize, &ExplicitParams)> = mol_ranges
             .iter()
-            .filter_map(|(start, _, _, explicit)| explicit.as_deref().map(|p| (*start, p)))
+            .map(|(start, _, _, explicit)| (*start, explicit))
             .collect();
 
         let mut extra_bonded = ExtraBondedTerms::default();

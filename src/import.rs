@@ -29,18 +29,14 @@ use bio_files::{
         top_parse::{GromacsTopology, TopAtomType, TopMoleculeType, combine},
     },
     inpcrd::AmberCoords,
-    md_params::{
-        AngleBendingParams, BondStretchingParams, DihedralParams, ForceFieldParamsIndexed,
-        LjParams, MassParams,
-    },
+    md_params::{AngleBendingParams, BondStretchingParams, DihedralParams},
     prmtop::AmberPrmtop,
 };
 use lin_alg::f64::Vec3 as Vec3F64;
 use na_seq::Element;
 
 use crate::{
-    AtomDynamics, FfMolType, MolDynamics, ParamError, SimBoxInit,
-    cmap::CmapGrid,
+    FfMolType, MolDynamics, ParamError, SimBoxInit,
     non_bonded::{LjCombiningRule, NbFix, Pair14, Scale14},
     params::FfParamSet,
     solvent::{Ion, IonParams, WaterModel},
@@ -49,134 +45,8 @@ use crate::{
 const KJ_TO_KCAL: f64 = 1. / 4.184;
 const NM_TO_ANGSTROM: f64 = 10.;
 
-/// Force field parameters for a molecule, per atom and per term, instead of by force field type.
-/// Indices are into the molecule's atoms. Units are Amber's: Å, kcal/mol, radians, amu. Bond
-/// energy is k_b (r − r_0)², and angle energy k (θ − θ_0)².
-#[derive(Clone, Debug, Default)]
-pub struct ExplicitParams {
-    /// Per atom.
-    pub masses: Vec<f32>,
-    /// (σ, ε), per atom.
-    pub lj: Vec<(f32, f32)>,
-    pub bonds: Vec<((usize, usize), BondStretchingParams)>,
-    pub angles: Vec<((usize, usize, usize), AngleBendingParams)>,
-    /// Several terms may share the same atoms. `barrier_height` is per term; `divider` is ignored.
-    pub dihedrals: Vec<((usize, usize, usize, usize), DihedralParams)>,
-    pub impropers: Vec<((usize, usize, usize, usize), DihedralParams)>,
-    /// Pairs with no non-bonded interaction: 1-2 and 1-3 pairs, and any others the source
-    /// specifies. Not 1-4 pairs.
-    pub exclusions: Vec<(usize, usize)>,
-    /// 1-4 pairs, their scale factors, and LJ parameters if they differ from the atoms'.
-    pub pairs_14: Vec<((usize, usize), Pair14)>,
-    /// The combining rule these LJ parameters are for. It must match the rest of the system.
-    pub lj_combining: LjCombiningRule,
-    /// Urey-Bradley terms, between the outer atoms of angles: (k kcal/mol/Å², r_0 Å), with
-    /// energy k (r − r_0)².
-    pub urey_bradley: Vec<((usize, usize), (f32, f32))>,
-    /// Harmonic impropers, e.g. CHARMM's: (k kcal/mol/rad², ψ_0 radians), with energy
-    /// k (ψ − ψ_0)². The first atom is the central one.
-    pub harmonic_impropers: Vec<((usize, usize, usize, usize), (f32, f32))>,
-    /// CMAP terms: The atoms of φ, then ψ, and an index into `cmap_grids`.
-    pub cmaps: Vec<([usize; 8], usize)>,
-    pub cmap_grids: Vec<CmapGrid>,
-    /// Pair-specific LJ parameters by force field type, (σ Å, ε kcal/mol), which override the
-    /// combining rule. These apply to pairs across the system, e.g. between an ion and a
-    /// protein; `MdState::new` combines them with the parameter set's.
-    pub nbfix: NbFix,
-}
-
-impl ExplicitParams {
-    /// Index these parameters, as we do for parameters assigned by type. `atoms` are this
-    /// molecule's atoms.
-    pub(crate) fn to_indexed(
-        &self,
-        atoms: &[AtomDynamics],
-        h_constrained: bool,
-    ) -> Result<ForceFieldParamsIndexed, ParamError> {
-        let n = atoms.len();
-        if self.masses.len() != n || self.lj.len() != n {
-            return Err(ParamError::new(&format!(
-                "Explicit parameters have {} masses and {} LJ entries, for {n} atoms",
-                self.masses.len(),
-                self.lj.len()
-            )));
-        }
-        let check = |indices: &[usize]| -> Result<(), ParamError> {
-            match indices.iter().find(|i| **i >= n) {
-                Some(i) => Err(ParamError::new(&format!(
-                    "Explicit parameter atom index {i} is out of range for {n} atoms"
-                ))),
-                None => Ok(()),
-            }
-        };
-
-        let mut result = ForceFieldParamsIndexed::default();
-
-        for (i, atom) in atoms.iter().enumerate() {
-            let atom_type = atom.force_field_type.clone();
-            result.mass.insert(
-                i,
-                MassParams {
-                    atom_type: atom_type.clone(),
-                    mass: self.masses[i],
-                    comment: None,
-                },
-            );
-            result.lennard_jones.insert(
-                i,
-                LjParams {
-                    atom_type,
-                    sigma: self.lj[i].0,
-                    eps: self.lj[i].1,
-                },
-            );
-        }
-
-        for &((i, j), ref params) in &self.bonds {
-            check(&[i, j])?;
-            let key = (i.min(j), i.max(j));
-            result.bonds_topology.insert(key);
-
-            // As for parameters assigned by type, constrained bonds to H are rigid.
-            if h_constrained
-                && (atoms[i].element == Element::Hydrogen || atoms[j].element == Element::Hydrogen)
-            {
-                let inv_mass = 1. / self.masses[i] + 1. / self.masses[j];
-                result
-                    .bond_rigid_constraints
-                    .insert(key, (params.r_0.powi(2), inv_mass));
-            } else {
-                result.bond_stretching.insert(key, params.clone());
-            }
-        }
-
-        for &((i, ctr, k), ref params) in &self.angles {
-            check(&[i, ctr, k])?;
-            // Canonical order, as for parameters assigned by type.
-            let key = (i.min(k), ctr, i.max(k));
-            if result.angle.insert(key, params.clone()).is_some() {
-                return Err(ParamError::new(&format!(
-                    "Multiple angle terms for atoms {i}-{ctr}-{k}"
-                )));
-            }
-        }
-
-        for (map, terms) in [
-            (&mut result.dihedral, &self.dihedrals),
-            (&mut result.improper, &self.impropers),
-        ] {
-            for &((a, b, c, d), ref params) in terms {
-                check(&[a, b, c, d])?;
-                map.entry((a, b, c, d)).or_default().push(DihedralParams {
-                    divider: 1,
-                    ..params.clone()
-                });
-            }
-        }
-
-        Ok(result)
-    }
-}
+/// Compatibility export; resolved parameters live in `params`.
+pub use crate::params::ExplicitParams;
 
 /// A system imported from topology and coordinate files. See the module documentation.
 #[derive(Clone, Debug)]

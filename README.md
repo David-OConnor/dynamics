@@ -84,6 +84,22 @@ The bundled families use these conventions:
 | CHARMM36 | CHARMM36m | modified TIP3P | Lorentz–Berthelot, NBFIX | 1 / 1, special LJ |
 | OPLS | OPLS-AA/L (Kaminski 2001) | TIP4P | geometric | 0.5 / 0.5 |
 
+Amber, CHARMM and OPLS parameter tables are embedded in the binary. Their shared
+interface separates atom-type assignment, partial-charge assignment and resolution
+of bonded/nonbonded terms. Native MD and GROMACS export consume the same resolved
+representation. See [the force-field API and extension guide](docs/force_fields.md).
+
+```rust
+let prepared = params.parameterize_with_options(
+    &molecule,
+    &dynamics::params::ParameterizationOptions::local_only(),
+)?;
+```
+
+Custom classical sets can implement `ForceFieldBackend`/`TypedTopology` or use
+`TableForceField` with already named/charged atoms. Water, ions, mixing and 1–4
+rules remain properties of the selected parameter set.
+
 `MdConfig::water_model` overrides the family's water and ions. CHARMM's preset
 includes the 10–12 Å LJ force switch. OPLS uses the same 10 Å hard LJ cutoff and
 PME defaults as the Amber preset. Packing templates are fitted to the selected
@@ -454,7 +470,7 @@ use std::path::Path;
 use bio_files::{MmCif, Mol2, md_params::ForceFieldParams};
 use dynamics::{
     ComputationDevice, FfMolType, MdConfig, MdState, MolDynamics,
-    params::{FfParamSet, prepare_peptide},
+    params::{FfParamSet, amber::prepare_peptide_mmcif},
     populate_hydrogens_dihedrals,
 };
 
@@ -520,7 +536,7 @@ fn main() {
     // `populate_peptide_ff_and_q() separately. Add bonds.
     let (_bonds, _dihedrals) = prepare_peptide_mmcif(
         &mut protein,
-        &param_set.peptide_ff_q_map.as_ref().unwrap(),
+        &param_set.amber().unwrap().peptide_ff_q_map.as_ref().unwrap(),
         7.0,
     )
         .unwrap();
@@ -678,25 +694,11 @@ for a given system involves work which we hope to eschew.
 
 ## Compiling from source
 
-It requires these Amber parameter files to be present under the project's `resources` folder at compile time.
-These are available in [Amber tools](https://ambermd.org/GetAmber.php). Download, unpack, then copy these files from
-`dat/leap/parm` and `dat/leap/lib`:
-
-- `amino19.lib`
-- `aminoct12.lib`
-- `aminont12.lib`
-- `parm19.dat`
-- `frcmod.ff19SB`
-- `gaff2.dat`
-- `ff-nucleic-OL24.lib`
-- `ff-nucleic-OL24.frcmod`
-- `RNA.lib`
-
-We provide
-a [copy of these files](https://github.com/David-OConnor/molchanicaa/releases/download/0.1.3/amber_params_sept_2025.zip)
-for convenience; this is a much smaller download than the entire Amber package, and prevents needing to locate the
-specific files.
-Unpack, and place these under `resources` prior to compiling.
+The repository contains all bundled force-field tables and the Amber charge model
+under `param_data/amber`, `param_data/charmm` and `param_data/opls`. They are embedded
+at compile time and included in the crate package; no external parameter-file setup
+is required. LigParGen generation for chemistry beyond the bundled OPLS tables is
+an optional runtime network operation.
 
 To build the Python library wheel, from the `python` subdirectory, run `maturin build`. You can load the library
 locally for testing, once built, by running `pip install .`

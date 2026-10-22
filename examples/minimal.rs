@@ -5,7 +5,7 @@ use std::path::Path;
 use bio_files::{MmCif, Mol2};
 use dynamics::{
     ComputationDevice, FfMolType, MdConfig, MdState, MolDynamics,
-    params::{FfParamSet, prepare_peptide_mmcif},
+    params::{FfParamSet, amber::prepare_peptide_mmcif},
 };
 
 fn main() {
@@ -20,7 +20,12 @@ fn main() {
     // `populate_peptide_ff_and_q() separately. Add bonds.
     let (_bonds, _dihedrals) = prepare_peptide_mmcif(
         &mut protein,
-        &param_set.peptide_ff_q_map.as_ref().unwrap(),
+        &param_set
+            .amber()
+            .unwrap()
+            .peptide_ff_q_map
+            .as_ref()
+            .unwrap(),
         7.0,
     )
     .unwrap();

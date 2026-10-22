@@ -20,10 +20,9 @@ use crate::{
     ComputationDevice, FfMolType, ForceFieldFamily, HydrogenConstraint, ImportedSystem, MdConfig,
     MdOverrides, MdState, MolDynamics, SimBoxInit, Solvent, WaterModel,
     bonded::ExtraBondedTerms,
-    charmm::CharmmSet,
     cmap::CmapGrid,
     non_bonded::{CHARGE_UNIT_SCALER, LjCombiningRule, LjTableIndices},
-    params::FfParamSet,
+    params::{FfParamSet, charmm::CharmmSet},
 };
 
 const OPENMM_REFERENCE: &str = include_str!("fixtures/charmm_ubq_openmm.txt");
@@ -224,6 +223,45 @@ fn charmm_files_parse() {
         nbfix.contains_key(&("NC2".to_owned(), "OC".to_owned()))
             || nbfix.contains_key(&("OC".to_owned(), "NC2".to_owned()))
     );
+}
+
+#[test]
+fn opls_protein_uses_shared_stages_and_embedded_parameters() {
+    let reference = load_reference();
+    let molecule = ubiquitin(&reference);
+    let set = FfParamSet::new_opls().unwrap();
+    let options = crate::params::ParameterizationOptions::local_only();
+    let typed = set.assign_atom_types(&molecule, &options).unwrap();
+    assert!(
+        typed
+            .atom_types()
+            .iter()
+            .all(|name| name.starts_with("opls_"))
+    );
+    let parameters = typed
+        .assign_parameters(&set.nonbonded_rules)
+        .unwrap()
+        .explicit;
+    assert_eq!(parameters.bonds.len(), 1237);
+    assert_eq!(parameters.angles.len(), 2257);
+    assert_eq!(parameters.impropers.len(), 216);
+    assert_eq!(parameters.pairs_14.len(), 3264);
+    let charges = typed.assign_partial_charges().unwrap();
+    assert!(charges.method.contains("OPLS"));
+    assert!(charges.values.iter().sum::<f32>().abs() < 0.005);
+    let prepared = set.parameterize_with_options(&molecule, &options).unwrap();
+    assert_eq!(
+        prepared
+            .atoms
+            .iter()
+            .map(|a| a.partial_charge.unwrap())
+            .collect::<Vec<_>>(),
+        charges.values
+    );
+    let topology =
+        crate::gromacs::make_topology(&[("PROTEIN".into(), prepared, 1)], &set, None, false)
+            .unwrap();
+    assert!(topology.contains("[ pairs ]"));
 }
 
 /// CMAP interpolation passes through the grid values, is smooth between them, and its derivatives
@@ -502,7 +540,8 @@ fn charmm_protonation_states_and_errors() {
     let build = |atoms: &[AtomGeneric], bonds: &[BondGeneric]| {
         let mut atoms = atoms.to_vec();
         let result =
-            crate::charmm::build_peptide(&mut atoms, bonds, &reference.residues, &set).map(|_| ());
+            crate::params::charmm::build_peptide(&mut atoms, bonds, &reference.residues, &set)
+                .map(|_| ());
         (atoms, result)
     };
 
@@ -855,7 +894,7 @@ fn cgenff_ligand_with_charmm_protein() {
     let reference = load_reference();
     let imported = import_cgenff_ligand();
     let param_set = FfParamSet::new_charmm().unwrap();
-    let set = param_set.charmm.as_ref().unwrap();
+    let set = param_set.charmm().unwrap();
 
     // Place the ligand and ions next to the protein.
     let protein = ubiquitin(&reference);

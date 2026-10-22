@@ -4,9 +4,9 @@ use std::path::Path;
 
 use bio_files::Mol2;
 
-use crate::{
-    param_inference::{AmberDefSet, find_ff_types},
-    partial_charge_inference::files::{GEOSTD_PATH, find_mol2_paths},
+use crate::params::amber::{
+    charges::files::{GEOSTD_PATH, find_mol2_paths},
+    typing::{AmberDefSet, find_ff_types},
 };
 
 mod charmm;
@@ -80,3 +80,4 @@ fn test_ff_types_geostd() {
         }
     }
 }
+mod parameterization;

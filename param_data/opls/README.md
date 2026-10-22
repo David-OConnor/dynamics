@@ -57,13 +57,19 @@ halogenated compounds. Temporary validation code was removed.
 
 ## Complete creatine ligand template
 
-`creatine.sdf` and `creatine.itp` are unmodified generated outputs from the
+`creatine.itp` is an unmodified generated output from the
 Jorgensen group's official LigParGen service, obtained 2026-10-21:
 https://huggingface.co/spaces/lsdodda/ligpargen
 https://github.com/leelasd/LigParGen_2.3
 
 Input: `CN(CC(=O)O)C(=N)N`, net charge 0, optimization level 0,
 1.14*CM1A-LBCC charge model. Job ID: `9ff3f126eaa040089eccb61f757b6a2c`.
+`creatine.mol` reconstructs the matching element/bond-order graph in that ITP's
+atom order from the documented input SMILES and bonded hydrogens. The previous
+`creatine.sdf` was absent from the repository. The MOL coordinates are placeholders
+because template recognition uses connectivity only; simulation coordinates always
+come from the caller. Numeric force-field parameters in the ITP are unchanged.
+
 This is the neutral tautomer present in the supplied PubChem 586 structure,
 not a zwitterionic or protonated creatine model. The server's generated residue
 label is YIB; recognition uses the entire element/bond-order graph, including
@@ -89,7 +95,6 @@ also passed. A changed guanidine bond order was rejected. Temporary validation
 code was removed.
 
 Generated data SHA256:
-- `creatine.sdf`: `e3364f1a3e0b977db92e3013ae593e388b9deb817b818094f93e351b9216ac66`
 - `creatine.itp`: `fe3cb6c73375c5df89f7191b87b57fa3ca7a3c4510fe6a1b52f7681392e08316`
 
 ## Automatic ligand generation and local cache

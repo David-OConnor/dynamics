@@ -8,9 +8,7 @@ use std::{
 
 use bio_files::gromacs::forcefield::{ForceField, TopologyConfig, WaterModel as GmxWater};
 
-use crate::{
-    FfMolType, ForceFieldFamily, MolDynamics, ParamError, params::FfParamSet, solvent::WaterModel,
-};
+use crate::{ForceFieldFamily, MolDynamics, ParamError, params::FfParamSet, solvent::WaterModel};
 
 /// Water/ion values and conventions shared with native dynamics, converted to
 /// the nm and kJ/mol units expected by Bio Files' GROMACS writer.
@@ -21,7 +19,17 @@ pub fn topology_config(set: &FfParamSet, water: Option<&WaterModel>) -> Topology
             ForceFieldFamily::Amber => ForceField::Amber,
             ForceFieldFamily::Charmm36 => ForceField::Charmm36,
             ForceFieldFamily::Opls => ForceField::Opls,
+            ForceFieldFamily::Custom => ForceField::Amber,
         },
+        // Conventions come from data, including caller-supplied classical force fields.
+        defaults_override: Some((
+            match set.nonbonded_rules.lj_combining {
+                crate::LjCombiningRule::LorentzBerthelot => 2,
+                crate::LjCombiningRule::Geometric => 3,
+            },
+            set.nonbonded_rules.scale_14.small_organic.lj as f64,
+            set.nonbonded_rules.scale_14.small_organic.coulomb as f64,
+        )),
         water_model: Some(GmxWater {
             mass_o: w.mass_o as f64,
             mass_h: w.mass_h as f64,
@@ -47,50 +55,10 @@ pub fn topology_config(set: &FfParamSet, water: Option<&WaterModel>) -> Topology
     }
 }
 
-/// Resolve protein and supported OPLS ligand parameters on a local copy. Supplied
-/// parameters take precedence, as in `MdState::new`.
+/// Compatibility wrapper. Parameterization is independent of the export format;
+/// prefer `FfParamSet::parameterize` for new callers.
 pub fn parameterize(mol: &MolDynamics, set: &FfParamSet) -> Result<MolDynamics, ParamError> {
-    let mut result = mol.clone();
-    if result.explicit_params.is_none() && set.family != ForceFieldFamily::Amber {
-        let params = match result.ff_mol_type {
-            FfMolType::SmallOrganic if set.opls.is_some() => set
-                .opls
-                .as_ref()
-                .unwrap()
-                .build_small_molecule(&mut result.atoms, &result.bonds)?,
-            FfMolType::Peptide => {
-                let residues = result.residues.as_deref().ok_or_else(|| {
-                    ParamError::new("Protein force field selection requires MolDynamics::residues")
-                })?;
-                if let Some(opls) = &set.opls {
-                    opls.build_peptide(&mut result.atoms, &result.bonds, residues)?
-                } else if let Some(charmm) = &set.charmm {
-                    crate::charmm::build_peptide(
-                        &mut result.atoms,
-                        &result.bonds,
-                        residues,
-                        charmm,
-                    )?
-                } else {
-                    return Err(ParamError::new("Missing family parameters"));
-                }
-            }
-            _ => {
-                return Err(ParamError::new(
-                    "This force field requires explicit parameters for this molecule class; import a matching topology",
-                ));
-            }
-        };
-        result.explicit_params = Some(params);
-    }
-    if let Some(p) = &result.explicit_params {
-        if p.lj_combining != set.nonbonded_rules.lj_combining {
-            return Err(ParamError::new(
-                "Explicit molecule and selected force field use different LJ combining rules",
-            ));
-        }
-    }
-    Ok(result)
+    set.parameterize(mol)
 }
 
 /// Self-contained topology for already parameterized molecules. `molecules`

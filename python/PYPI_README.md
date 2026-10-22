@@ -322,7 +322,7 @@ use std::path::Path;
 use bio_files::{MmCif, Mol2, md_params::ForceFieldParams};
 use dynamics::{
     ComputationDevice, FfMolType, MdConfig, MdState, MolDynamics,
-    params::{FfParamSet, prepare_peptide},
+    params::{FfParamSet, amber::prepare_peptide_mmcif},
     populate_hydrogens_dihedrals,
 };
 

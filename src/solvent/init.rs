@@ -16,9 +16,9 @@ use lin_alg::f32::{Quaternion, Vec3};
 use crate::{
     AtomDynamics, ComputationDevice, MdState, Solvent,
     barostat::SimBox,
-    partial_charge_inference::{files::load_from_bytes_bincode, save},
     sa_surface,
     solvent::{WaterModel, WaterMolOpc},
+    util::{load_from_bytes_bincode, save_bincode as save},
 };
 // 0.997 g cm⁻³ is a good default density for biological pressures. We use this for initializing
 // and maintaining the solvent density and molecule count.

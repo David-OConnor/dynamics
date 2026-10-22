@@ -12,7 +12,7 @@ use crate::{
 #[pyclass]
 #[derive(Clone)]
 struct ParamGeneralPaths {
-    pub inner: dynamics_rs::params::ParamGeneralPaths,
+    pub inner: dynamics_rs::params::amber::ParamGeneralPaths,
 }
 // todo: Set up this constructor, or this won't work
 
@@ -39,14 +39,16 @@ impl FfParamSet {
 
     #[getter]
     fn peptide_ff_q_map(&self) -> Option<ProtFfChargeMapSet> {
-        match self.inner.peptide_ff_q_map.clone() {
+        match self.inner.amber().and_then(|set| set.peptide_ff_q_map.clone()) {
             Some(v) => Some(ProtFfChargeMapSet { inner: v }),
             None => None,
         }
     }
     #[setter(peptide_ff_q_map)]
-    fn peptide_ff_q_map_set(&mut self, v: ProtFfChargeMapSet) {
-        self.inner.peptide_ff_q_map = Some(v.inner);
+    fn peptide_ff_q_map_set(&mut self, v: ProtFfChargeMapSet) -> PyResult<()> {
+        let amber = self.inner.amber_mut().ok_or_else(|| PyValueError::new_err("This map is Amber-specific"))?;
+        amber.peptide_ff_q_map = Some(v.inner);
+        Ok(())
     }
 
     // pub peptide: Option<ForceFieldParams>,
@@ -63,7 +65,7 @@ impl FfParamSet {
 #[derive(Clone)]
 #[pyclass]
 struct ProtFfChargeMapSet {
-    inner: dynamics_rs::params::ProtFfChargeMapSet,
+    inner: dynamics_rs::params::amber::ProtFfChargeMapSet,
 }
 
 // // todo: Impl after converting the atom and residue types.
@@ -108,7 +110,7 @@ pub fn prepare_peptide(
     let mut chains_inner: Vec<_> = chains.iter().map(|c| c.borrow(py).inner.clone()).collect();
 
     // Run the pure-Rust routine
-    let dihedrals = dynamics_rs::params::prepare_peptide(
+    let dihedrals = dynamics_rs::params::amber::prepare_peptide(
         &mut atoms_inner,
         &mut bonds_inner,
         &mut residues_inner,
@@ -153,7 +155,7 @@ pub fn prepare_peptide_mmcif(
     let mut mol_b = mol.borrow_mut();
 
     let (bonds, dihedrals) =
-        dynamics_rs::params::prepare_peptide_mmcif(&mut mol_b.inner, &ff_map.inner, ph)
+        dynamics_rs::params::amber::prepare_peptide_mmcif(&mut mol_b.inner, &ff_map.inner, ph)
             .map_err(|e| PyErr::new::<PyValueError, _>(format!("{e:?}")))?;
 
     let bonds_out = bonds

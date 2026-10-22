@@ -7,7 +7,7 @@ use bio_files::{MmCif, Sdf, create_bonds, md_params::ForceFieldParams};
 use dynamics::{
     BarostatCfg, ComputationDevice, FfMolType, HydrogenConstraint, Integrator, MdConfig, MdState,
     MolDynamics, ParamError, SimBoxInit,
-    params::{FfParamSet, prepare_peptide_mmcif},
+    params::{FfParamSet, amber::prepare_peptide_mmcif},
     snapshot::{Snapshot, SnapshotHandlers},
 };
 use lin_alg::f64::Vec3;
@@ -44,6 +44,7 @@ pub fn build_dynamics(
             mol_specific_params: None,
             bonded_only: false,
             explicit_params: None,
+            residues: None,
             // Or: ..Default::default()
         });
     }
@@ -144,7 +145,12 @@ fn main() {
     // `populate_peptide_ff_and_q() separately. Add bonds.
     let (_bonds, _dihedrals) = prepare_peptide_mmcif(
         &mut protein,
-        &param_set.peptide_ff_q_map.as_ref().unwrap(),
+        &param_set
+            .amber()
+            .unwrap()
+            .peptide_ff_q_map
+            .as_ref()
+            .unwrap(),
         7.0,
     )
     .unwrap();
