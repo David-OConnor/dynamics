@@ -914,10 +914,23 @@ impl MdState {
                 atoms_md.push(atom);
             }
 
-            // Use the included adjacency list if available. If not, construct it.
-            let adjacency_list_ = match &mol.adjacency_list {
-                Some(a) => a,
-                None => &build_adjacency_list(&atoms, &mol.bonds)?,
+            // OPLS protein typing completes heavy-atom connectivity from the
+            // residue templates when coordinate-based bond inference misses a
+            // bond. Use the resolved topology for MD adjacency as well.
+            let adjacency_list_ = if param_set.family == ForceFieldFamily::Opls
+                && mol.ff_mol_type == FfMolType::Peptide
+            {
+                let mut adjacency = vec![Vec::new(); atoms.len()];
+                for &((i, j), _) in &explicit.bonds {
+                    adjacency[i].push(j);
+                    adjacency[j].push(i);
+                }
+                adjacency
+            } else {
+                match &mol.adjacency_list {
+                    Some(a) => a.clone(),
+                    None => build_adjacency_list(&atoms, &mol.bonds)?,
+                }
             };
 
             mol_ranges.push((
@@ -928,7 +941,7 @@ impl MdState {
             ));
 
             // Update indices based on atoms from previously added molecules.
-            for aj in adjacency_list_ {
+            for aj in &adjacency_list_ {
                 let mut updated = aj.clone();
                 for neighbor in &mut updated {
                     *neighbor += atom_ct_prior_to_this_mol;

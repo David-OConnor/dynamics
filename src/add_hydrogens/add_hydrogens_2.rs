@@ -280,21 +280,71 @@ fn add_h_sc_het(
                         }
                     },
                     2 => {
-                        let mut planar = false;
-                        let mut exemption = false;
-                        if let Some(a) = aa {
-                            // Ring overrides, changing from 2 H in tetra to 1 in planar config.
-                            // todo: In the case of His, thsi might depend on the protonation state.
-                            if (a == AminoAcid::Trp && *parent_tir == AtomTypeInRes::CD1)
-                                || (a == AminoAcid::His && *parent_tir == AtomTypeInRes::CD2)
-                            {
-                                exemption = true;
+                        // Residue hydrogen names are more reliable than a crystal
+                        // bond angle for deciding whether this carbon is planar.
+                        if let Some(aa) = aa {
+                            let first =
+                                h_type_in_res_sidechain(0, parent_tir, Some(aa), digit_map)?;
+                            let aromatic = match aa {
+                                AminoAcid::Phe | AminoAcid::Tyr => matches!(
+                                    parent_tir,
+                                    AtomTypeInRes::CD1
+                                        | AtomTypeInRes::CD2
+                                        | AtomTypeInRes::CE1
+                                        | AtomTypeInRes::CE2
+                                        | AtomTypeInRes::CZ
+                                ),
+                                AminoAcid::His => {
+                                    matches!(parent_tir, AtomTypeInRes::CD2 | AtomTypeInRes::CE1)
+                                }
+                                AminoAcid::Trp => matches!(
+                                    parent_tir,
+                                    AtomTypeInRes::CD1
+                                        | AtomTypeInRes::CE3
+                                        | AtomTypeInRes::CZ2
+                                        | AtomTypeInRes::CZ3
+                                        | AtomTypeInRes::CH2
+                                ),
+                                _ => false,
+                            };
+                            let second = if aromatic {
+                                None
+                            } else {
+                                h_type_in_res_sidechain(1, parent_tir, Some(aa), digit_map)?
+                            };
+                            match (first, second) {
+                                (Some(first), Some(second)) if first != second => {
+                                    let (h0, h1) = tetra_atoms_2(
+                                        atom.posit,
+                                        atoms_bonded[0].1.posit,
+                                        atoms_bonded[1].1.posit,
+                                        LEN_C_H,
+                                    );
+                                    for (posit, name) in [(h0, first), (h1, second)] {
+                                        hydrogens.push(AtomGeneric {
+                                            posit,
+                                            type_in_res: Some(name),
+                                            ..h_default_sc.clone()
+                                        });
+                                    }
+                                }
+                                (Some(first), _) => {
+                                    let bond_0 = atom.posit - atoms_bonded[0].1.posit;
+                                    let bond_1 = atoms_bonded[1].1.posit - atom.posit;
+                                    hydrogens.push(AtomGeneric {
+                                        posit: planar_posit(atom.posit, bond_0, bond_1, LEN_C_H),
+                                        type_in_res: Some(first),
+                                        ..h_default_sc.clone()
+                                    });
+                                }
+                                (None, _) => (),
                             }
+                            continue;
                         }
 
+                        let mut planar = false;
                         if atoms_bonded[0].1.element == Nitrogen
                             && atoms_bonded[1].1.element == Nitrogen
-                            || exemption
                         {
                             planar = true;
                         } else {
@@ -312,14 +362,6 @@ fn add_h_sc_het(
                             if angle > PLANAR_ANGLE_THRESH {
                                 planar = true;
                             }
-                        }
-
-                        // MET CB and CG are methylene carbons. Distorted coordinates
-                        // can exceed the planar-angle cutoff, but each still needs two H.
-                        if aa == Some(AminoAcid::Met)
-                            && matches!(parent_tir, AtomTypeInRes::CB | AtomTypeInRes::CG)
-                        {
-                            planar = false;
                         }
 
                         // Add a single H
@@ -362,18 +404,40 @@ fn add_h_sc_het(
                         }
                     }
                     3 => {
+                        if let Some(aa) = aa {
+                            // These are the only amino-acid side-chain carbons
+                            // with three heavy-atom bonds and one hydrogen.
+                            let methine = matches!(
+                                (aa, parent_tir),
+                                (AminoAcid::Val, AtomTypeInRes::CB)
+                                    | (AminoAcid::Ile, AtomTypeInRes::CB)
+                                    | (AminoAcid::Thr, AtomTypeInRes::CB)
+                                    | (AminoAcid::Leu, AtomTypeInRes::CG)
+                            );
+                            if methine {
+                                let at =
+                                    h_type_in_res_sidechain(0, parent_tir, Some(aa), digit_map)?;
+                                if let Some(at) = at {
+                                    hydrogens.push(AtomGeneric {
+                                        posit: atom.posit
+                                            - tetra_atoms(
+                                                atom.posit,
+                                                atoms_bonded[0].1.posit,
+                                                atoms_bonded[1].1.posit,
+                                                atoms_bonded[2].1.posit,
+                                            ) * LEN_CALPHA_H,
+                                        type_in_res: Some(at),
+                                        ..h_default_sc.clone()
+                                    });
+                                }
+                            }
+                            continue;
+                        }
+
                         // Planar N arrangement.
                         if atoms_bonded[0].1.element == Nitrogen
                             && atoms_bonded[1].1.element == Nitrogen
                             && atoms_bonded[2].1.element == Nitrogen
-                        {
-                            continue;
-                        }
-
-                        // Trp planar ring junctions; don't add an H.
-                        if let Some(aa) = aa
-                            && aa == AminoAcid::Trp
-                            && matches!(parent_tir, AtomTypeInRes::CD2 | AtomTypeInRes::CE2)
                         {
                             continue;
                         }
@@ -432,18 +496,16 @@ fn add_h_sc_het(
                         // NH2 (2 H, planar) only above the LYS pKa (LYN variant).
                         // All other terminal nitrogens (ARG NH1/NH2, ASN ND2, GLN NE2) are
                         // always NH2 (2 H, planar).
-                        let depth = match parent_tir {
-                            AtomTypeInRes::NZ => 'Z',
-                            AtomTypeInRes::NH1 | AtomTypeInRes::NH2 => 'H',
-                            AtomTypeInRes::NE | AtomTypeInRes::NE1 | AtomTypeInRes::NE2 => 'E',
-                            AtomTypeInRes::ND1 | AtomTypeInRes::ND2 => 'D',
-                            _ => '\0',
+                        let n_h = if *parent_tir == AtomTypeInRes::NZ {
+                            aa.and_then(|a| digit_map.get(&a))
+                                .and_then(|m| m.get(&'Z'))
+                                .map(|d| d.len())
+                                .unwrap_or(2)
+                        } else {
+                            // The digit map groups both arginine NH1 and NH2
+                            // hydrogens under 'H'; it is not a per-atom count.
+                            2
                         };
-                        let n_h = aa
-                            .and_then(|a| digit_map.get(&a))
-                            .and_then(|m| m.get(&depth))
-                            .map(|d| d.len())
-                            .unwrap_or(2);
 
                         if n_h >= 3 {
                             // NH3+ ammonium: tetrahedral geometry, 3 H (e.g. LYS NZ)
@@ -665,6 +727,44 @@ fn handle_backbone(
                 ..h_default.clone()
             });
         }
+    } else if aa == &AminoAcid::Pro {
+        // The free proline nitrogen is bonded to CA and CD, so its
+        // protonated terminus has two hydrogens.
+        let cd = atoms
+            .iter()
+            .find(|atom| atom.type_in_res == Some(AtomTypeInRes::CD))
+            .map(|atom| atom.posit)
+            .ok_or_else(|| ParamError::new("Missing proline CD at N terminus"))?;
+        let (h1, h2) = tetra_atoms_2(n_posit, c_alpha_posit, cd, LEN_N_H);
+        for (i, posit) in [h1, h2].into_iter().enumerate() {
+            hydrogens.push(AtomGeneric {
+                posit,
+                type_in_res: Some(AtomTypeInRes::H(format!("H{}", i + 1))),
+                ..h_default.clone()
+            });
+        }
+    } else {
+        // A free backbone nitrogen has only its CA bond. Place the three
+        // ammonium hydrogens around that bond, using the CA-C direction to
+        // choose a stable rotation about the N-CA axis.
+        let bond_to_ca = bond_ca_n.to_normalized();
+        let ca_to_c = (c_alpha_posit - c_p_posit).to_normalized();
+        let rotator_a = Quaternion::from_unit_vecs(TETRA_A, bond_to_ca);
+        let tetra_b_rotated = rotator_a.rotate_vec(unsafe { TETRA_B });
+        let dihedral = calc_dihedral_angle(bond_to_ca, tetra_b_rotated, ca_to_c);
+        let rotator_b = Quaternion::from_axis_angle(bond_to_ca, -dihedral + TAU / 6.);
+        let rotator = rotator_b * rotator_a;
+
+        for (i, leg) in unsafe { [TETRA_B, TETRA_C, TETRA_D] }
+            .into_iter()
+            .enumerate()
+        {
+            hydrogens.push(AtomGeneric {
+                posit: n_posit + rotator.rotate_vec(leg) * LEN_N_H,
+                type_in_res: Some(AtomTypeInRes::H(format!("H{}", i + 1))),
+                ..h_default.clone()
+            });
+        }
     }
 
     // For residues prior to the last.
@@ -801,4 +901,64 @@ pub fn aa_data_from_coords(
     add_h_sc_het(&mut hydrogens, atoms, &h_default, residues, digit_map)?;
 
     Ok((dihedral, hydrogens, this_cp_ca))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::add_hydrogens::bond_vecs::init_local_bond_vecs;
+
+    #[test]
+    fn uncapped_n_termini_receive_ammonium_hydrogens() {
+        init_local_bond_vecs();
+
+        for (aa, count) in [(AminoAcid::Met, 3), (AminoAcid::Pro, 2)] {
+            let make = |type_in_res, x, y, z| AtomGeneric {
+                posit: Vec3::new(x, y, z),
+                type_in_res: Some(type_in_res),
+                ..Default::default()
+            };
+            let mut atoms = vec![
+                make(AtomTypeInRes::N, 0., 0., 0.),
+                make(AtomTypeInRes::CA, 1.45, 0., 0.),
+                make(AtomTypeInRes::C, 2.0, 1.4, 0.),
+                make(AtomTypeInRes::CB, 1.9, -0.8, 1.2),
+            ];
+            if aa == AminoAcid::Pro {
+                atoms.push(make(AtomTypeInRes::CD, -0.5, -1.2, 0.5));
+            }
+            let refs: Vec<_> = atoms.iter().collect();
+            let mut hydrogens = Vec::new();
+            let h_default = AtomGeneric {
+                element: Hydrogen,
+                ..Default::default()
+            };
+            handle_backbone(
+                &mut hydrogens,
+                &refs,
+                &[atoms[3].posit],
+                None,
+                None,
+                &h_default,
+                &aa,
+            )
+            .unwrap();
+
+            let terminal: Vec<_> = hydrogens
+                .iter()
+                .filter(|a| {
+                    matches!(&a.type_in_res, Some(AtomTypeInRes::H(name)) if name.starts_with('H') && name.len() == 2 && name.as_bytes()[1].is_ascii_digit())
+                })
+                .collect();
+            assert_eq!(terminal.len(), count, "{aa}");
+            for (i, atom) in terminal.iter().enumerate() {
+                assert_eq!(
+                    atom.type_in_res,
+                    Some(AtomTypeInRes::H(format!("H{}", i + 1)))
+                );
+                assert!((atom.posit - atoms[0].posit).magnitude().is_finite());
+                assert!(((atom.posit - atoms[0].posit).magnitude() - LEN_N_H).abs() < 1e-6);
+            }
+        }
+    }
 }

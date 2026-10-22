@@ -264,6 +264,56 @@ fn opls_protein_uses_shared_stages_and_embedded_parameters() {
     assert!(topology.contains("[ pairs ]"));
 }
 
+#[test]
+fn opls_protein_recovers_a_residue_bond_missed_by_distance_inference() {
+    let reference = load_reference();
+    let mut molecule = ubiquitin(&reference);
+    let first = &reference.residues[0];
+    let serial = |name: &str| {
+        first
+            .atom_sns
+            .iter()
+            .copied()
+            .find(|sn| {
+                molecule.atoms.iter().any(|a| {
+                    a.serial_number == *sn && a.type_in_res_general.as_deref() == Some(name)
+                })
+            })
+            .unwrap()
+    };
+    let cg = serial("CG");
+    let sd = serial("SD");
+    molecule.bonds.retain(|b| {
+        !((b.atom_0_sn == cg && b.atom_1_sn == sd) || (b.atom_0_sn == sd && b.atom_1_sn == cg))
+    });
+
+    let set = FfParamSet::new_opls().unwrap();
+    let prepared = set
+        .parameterize_with_options(
+            &molecule,
+            &crate::params::ParameterizationOptions::local_only(),
+        )
+        .unwrap();
+    assert_eq!(prepared.explicit_params.unwrap().bonds.len(), 1237);
+
+    let cfg = MdConfig {
+        solvent: Solvent::None,
+        ..MdConfig::for_family(ForceFieldFamily::Opls)
+    };
+    let (state, _) = MdState::new(&ComputationDevice::Cpu, &cfg, &[molecule], &set).unwrap();
+    let cg_i = reference
+        .atoms
+        .iter()
+        .position(|a| a.serial_number == cg)
+        .unwrap();
+    let sd_i = reference
+        .atoms
+        .iter()
+        .position(|a| a.serial_number == sd)
+        .unwrap();
+    assert!(state.adjacency_list[cg_i].contains(&sd_i));
+}
+
 /// CMAP interpolation passes through the grid values, is smooth between them, and its derivatives
 /// match its energy.
 #[test]

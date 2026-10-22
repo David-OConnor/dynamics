@@ -426,6 +426,27 @@ impl OplsSet {
                 }
             }
 
+            // Crystal coordinates can be distorted enough for distance-based
+            // bond inference to miss an existing heavy-atom bond. The residue
+            // topology specifies these connections exactly.
+            for (a, b) in &template.bonds {
+                if [a, b]
+                    .iter()
+                    .any(|name| name.starts_with('-') || name.starts_with('+'))
+                {
+                    continue;
+                }
+                let (Some(&i), Some(&j)) =
+                    (mapped.get(&(ri, a.clone())), mapped.get(&(ri, b.clone())))
+                else {
+                    continue;
+                };
+                if atoms[i].element != Element::Hydrogen && atoms[j].element != Element::Hydrogen {
+                    adjacency[i].insert(j);
+                    adjacency[j].insert(i);
+                }
+            }
+
             for heavy in template.atoms.iter().filter(|a| !a.name.starts_with('H')) {
                 let &parent = mapped
                     .get(&(ri, heavy.name.clone()))
