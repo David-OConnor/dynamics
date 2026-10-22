@@ -114,8 +114,10 @@ and cysteine thiolate are not currently built from residue templates.
 Hydrogenated OPLS ligands use bundled Foyer OPLS-AA rules where complete,
 or a persistent cache of LigParGen-generated parameters. A complete bundled
 LigParGen template also covers neutral creatine (PubChem 586). If local data
-cannot parameterize a ligand, Dynamics automatically submits its explicit,
-hydrogenated MOL graph to the official LigParGen service. It imports the
+cannot parameterize a ligand, Dynamics first tries an installed local
+LigParGen/BOSS, then submits its explicit, hydrogenated MOL graph to the
+official LigParGen service if no local installation is found and networking
+is allowed. It imports the
 complete returned topology, validates elements/connectivity/charge and OPLS
 conventions, and maps parameters into the original atom order. Coordinates
 and structural atom names are preserved; no GAFF2 parameters are substituted.
@@ -125,13 +127,34 @@ ligands. Its public service has chemistry/charge limits, a 200-atom limit
 including hydrogens, and a five-submission-per-ten-minute limit. Requests are
 serialized and wait automatically for quota; one server rate-limit rejection
 is retried after a cooldown. Failed generation reports the server's diagnostic.
-This is general organic-ligand parameterization, not support for every possible
-chemical species. Unsupported chemistry and larger ligands need explicit
-matching topologies, as do lipids and nucleic acids.
+These public-service limits do not restrict the local adapter, which accepts
+up to 999 atoms and bonds in its MOL input (the installed tools have their own
+chemistry/size limits). Unsupported chemistry needs an explicit matching topology,
+as do lipids and nucleic acids.
+
+Local generation supports both `Isra3l/ligpargen` (`-i`/`-cgen`) and
+`leelasd/LigParGen` (`-m`/`-l`). Install the selected package and its dependencies,
+including your own licensed BOSS installation, and set `BOSSdir` as required by
+that package. Dynamics detects `ligpargen`, `LigParGen` or `Converter` on `PATH`.
+Set `DYNAMICS_LIGPARGEN` to an executable/wrapper or `Converter.py` path to select
+an installation explicitly. This variable is a path, not a shell command.
+For Python scripts or library-only installations, set `DYNAMICS_LIGPARGEN_PYTHON`
+to that environment's Python. With `BOSSdir` set, Dynamics also probes installed
+Python packages using `python3`/`python`. A Docker/WSL installation can be exposed
+through a wrapper implementing one of those CLIs and mounting the job directory.
+On Windows, BOSS generally needs a suitable Linux environment; detecting the
+wrapper does not install BOSS or its dependencies.
+
+A detected/configured local installation's failure is reported without falling
+back to the public API. Local jobs have a five-minute execution timeout, retain
+subprocess diagnostics in errors, and share the validated persistent cache.
+`ParameterizationOptions::local_only()` allows local generation while prohibiting
+remote generation; it can therefore block on a local process.
 
 `OplsSet::build_small_molecule` and native/export initialization can therefore
-block on network I/O or the quota wait. Applications should use worker threads.
-`build_small_molecule_cached` never contacts the network. Successful results
+block on local execution, network I/O or the quota wait. Applications should use
+worker threads. `build_small_molecule_cached` only reads bundled/cached data and
+never starts a generator. Successful results
 are reusable offline across atom reorderings and serial-number changes. The
 cache is under `%LOCALAPPDATA%/dynamics/opls-ligpargen/v1` on Windows, or
 `$XDG_CACHE_HOME/dynamics/opls-ligpargen/v1` / `~/.cache/dynamics/opls-ligpargen/v1`
@@ -697,8 +720,8 @@ for a given system involves work which we hope to eschew.
 The repository contains all bundled force-field tables and the Amber charge model
 under `param_data/amber`, `param_data/charmm` and `param_data/opls`. They are embedded
 at compile time and included in the crate package; no external parameter-file setup
-is required. LigParGen generation for chemistry beyond the bundled OPLS tables is
-an optional runtime network operation.
+is required. LigParGen generation for chemistry beyond the bundled OPLS tables
+uses a local installation when available, or an optional runtime network operation.
 
 To build the Python library wheel, from the `python` subdirectory, run `maturin build`. You can load the library
 locally for testing, once built, by running `pip install .`

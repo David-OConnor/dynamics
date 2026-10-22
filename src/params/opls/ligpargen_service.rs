@@ -10,13 +10,9 @@ use std::{
 
 use serde_json::{Value, json};
 
-const BASE: &str = "https://lsdodda-ligpargen.hf.space";
+use super::ligpargen::Generated;
 
-pub(crate) struct Generated {
-    pub sdf: String,
-    pub itp: String,
-    pub job_id: String,
-}
+const BASE: &str = "https://lsdodda-ligpargen.hf.space";
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())

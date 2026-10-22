@@ -1,4 +1,4 @@
-//! Family-independent classical force-field parameterization.
+//! Classical force-field parameterization.
 //!
 //! Load a backend, assign atom types, assign partial charges, then resolve the
 //! bonded and nonbonded terms. Native dynamics and exporters consume the same result.
@@ -49,7 +49,8 @@ pub enum ForceFieldFamily {
     /// OPLS ions. Uses geometric LJ mixing and 0.5 scaling for both 1-4 terms.
     /// Proteins require `MolDynamics::residues` and explicit hydrogens.
     /// Hydrogenated ligands use Foyer's bundled OPLS-AA SMARTS rules, charges
-    /// and bonded tables. Unsupported chemistry and other molecule classes
+    /// and bonded tables. Other ligand chemistry uses cached or local LigParGen/BOSS
+    /// assignments, then the remote service if allowed. Other molecule classes
     /// require explicit OPLS parameters; GAFF2 is not used with this family.
     Opls,
     /// A caller-supplied classical force field. Construct its set with `FfParamSet::custom`.

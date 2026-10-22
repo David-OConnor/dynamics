@@ -99,8 +99,13 @@ Generated data SHA256:
 
 ## Automatic ligand generation and local cache
 
-The general ligand builder now supplements complete bundled assignments with
-https://huggingface.co/spaces/lsdodda/ligpargen at runtime. It submits a MOL
+The general ligand builder supplements complete bundled assignments with
+local LigParGen/BOSS when installed, then
+https://huggingface.co/spaces/lsdodda/ligpargen when no local installation is found
+and remote generation is allowed. The local adapter supports the Isra3l and
+leelasd CLI variants, selected from PATH or `DYNAMICS_LIGPARGEN`; Python-only
+installations can use `DYNAMICS_LIGPARGEN_PYTHON`. Local failures do not trigger a
+remote submission. See the main README for setup and timeout details. It supplies a MOL
 structure with explicit hydrogens and formal charges recovered from ordinary
 closed-shell organic valences. Ambiguous valences require an explicit topology;
 protonation is never changed to make typing succeed. Submission uses a connected

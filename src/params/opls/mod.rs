@@ -7,6 +7,15 @@
 //! chemistry outside those rules. GAFF2 parameters are not transferable to OPLS.
 //!
 //! [FOYER paper on parameterization](https://ar5iv.labs.arxiv.org/html/1812.06779)
+//!
+//! Does not use the Amber Geostd ML-based partial charge assignment; uses FOYER.
+//! Priority for parameterization:
+//! - Cached
+//! - FOYER
+//! - Local LigParGen/BOSS (then cache)
+//! - LigParGen API, if allowed (then cache)
+//!
+//! Note: For proteins, it parameterizes locally; it only uses the API for small mols.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -51,6 +60,7 @@ pub struct OplsSet {
 
 mod known;
 pub mod ligpargen;
+mod ligpargen_local;
 mod ligpargen_service;
 mod small_mol;
 mod smarts;
@@ -82,6 +92,7 @@ impl OplsSet {
             if line.is_empty() {
                 continue;
             }
+
             if line.starts_with('[') {
                 let tag = line.trim_matches(['[', ']']).trim();
                 if ["atoms", "bonds", "dihedrals", "impropers", "exclusions"].contains(&tag) {
@@ -92,6 +103,7 @@ impl OplsSet {
                 }
                 continue;
             }
+
             let cols: Vec<_> = line.split_whitespace().collect();
             let template = templates.entry(residue.clone()).or_default();
             match section.as_str() {
@@ -112,6 +124,7 @@ impl OplsSet {
                 _ => (),
             }
         }
+
         let small_mol = small_mol::SmallMolSet::new()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.descrip))?;
         Ok(Self {
@@ -122,9 +135,11 @@ impl OplsSet {
 
     /// Assign OPLS-AA parameters to a hydrogenated ligand. Uses validated
     /// cached/generated parameters or complete bundled rules; unsupported local
-    /// chemistry is submitted to the public LigParGen service and cached.
-    /// This can block on network I/O. Use `build_small_molecule_cached` on UI
-    /// threads; it never contacts a service. Existing labels change on success.
+    /// chemistry uses local LigParGen/BOSS when available, then the public
+    /// service when no local installation is found. Generated results are cached.
+    /// This can block on a subprocess or network I/O. Use
+    /// `build_small_molecule_cached` on UI threads; it only reads local data.
+    /// Existing labels change on success.
     pub fn build_small_molecule(
         &self,
         atoms: &mut [AtomGeneric],
@@ -163,6 +178,7 @@ impl OplsSet {
         let params = typed
             .assign_parameters(&crate::params::NonBondedRules::default())?
             .explicit;
+
         let charges = typed.assign_partial_charges()?.values;
         for ((atom, name), charge) in atoms.iter_mut().zip(typed.atom_types()).zip(charges) {
             atom.force_field_type = Some(name.clone());
@@ -185,6 +201,7 @@ impl OplsSet {
             .enumerate()
             .map(|(i, a)| (a.serial_number, i))
             .collect();
+
         let mut adjacency = vec![BTreeSet::new(); n];
         for bond in bonds {
             let (&i, &j) = indices
@@ -194,6 +211,7 @@ impl OplsSet {
             adjacency[i].insert(j);
             adjacency[j].insert(i);
         }
+
         let names: Vec<_> = atoms.iter().map(name).collect();
         let mut members = Vec::new();
         let mut aas = Vec::new();
@@ -234,6 +252,7 @@ impl OplsSet {
             if names[i] != "C" {
                 continue;
             }
+
             for &j in &adjacency[i] {
                 if names[j] == "N" && owner[i] != owner[j] {
                     next[owner[i]] = Some(owner[j]);
@@ -241,6 +260,7 @@ impl OplsSet {
                 }
             }
         }
+
         let mut mapped = HashMap::<(usize, String), usize>::new();
         let mut instances = Vec::new();
 
@@ -330,16 +350,19 @@ impl OplsSet {
                         "OPLS currently requires NH3+ (NH2+ for proline) at uncapped N termini",
                     ));
                 }
+
                 replace(&mut template, "N", n_type, n_q)?;
                 replace(&mut template, "CA", ca_type, ca_q)?;
                 if aa == AminoAcid::Pro {
                     replace(&mut template, "CD", "opls_296", 0.17)?;
                 }
+
                 template.atoms.retain(|a| a.name != "H");
                 template.bonds.retain(|(a, b)| a != "H" && b != "H");
                 template
                     .impropers
                     .retain(|d| !d.iter().take(4).any(|a| a == "-C"));
+
                 for hi in 1..=nh {
                     let h = format!("H{hi}");
                     template.atoms.push(TemplateAtom {
@@ -407,6 +430,7 @@ impl OplsSet {
                 let &parent = mapped
                     .get(&(ri, heavy.name.clone()))
                     .ok_or_else(|| error(format!("OPLS {label} is missing {}", heavy.name)))?;
+
                 let expected: Vec<_> = template
                     .bonds
                     .iter()
@@ -421,11 +445,13 @@ impl OplsSet {
                         h.starts_with('H').then_some(h.clone())
                     })
                     .collect();
+
                 let mut actual: Vec<_> = adjacency[parent]
                     .iter()
                     .copied()
                     .filter(|&i| atoms[i].element == Element::Hydrogen)
                     .collect();
+
                 if expected.len() != actual.len() {
                     return Err(error(format!(
                         "OPLS {label} {} requires {} hydrogens; found {}",
@@ -546,6 +572,7 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
                 }
             }
         }
+
         for b in 0..n {
             for &c in adjacency[b].range(b + 1..) {
                 for &a in &adjacency[b] {
@@ -557,6 +584,7 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
                 }
             }
         }
+
         let mut text = format!(
             "[ defaults ]\n1 3 yes 0.5 0.5\n{NONBONDED}\n{BONDED}\n[ moleculetype ]\nOPLS_PROTEIN 3\n[ atoms ]\n"
         );
@@ -591,9 +619,11 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
             }
         }
         text.push_str("[ dihedrals ]\n");
+
         for ([a, b, c, d], p) in propers {
             writeln!(text, "{} {} {} {} 3 {p}", a + 1, b + 1, c + 1, d + 1).unwrap();
         }
+
         for (ids, p) in impropers {
             writeln!(
                 text,
@@ -624,6 +654,7 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
                     }
                 }
             }
+
             for (j, &d) in depth.iter().enumerate().skip(start + 1) {
                 if d == 3 {
                     writeln!(text, "{} {} 1", start + 1, j + 1).unwrap();
@@ -704,6 +735,7 @@ impl crate::params::ForceFieldBackend for OplsSet {
                     residues,
                 )?))
             }
+
             crate::FfMolType::SmallOrganic => Ok(Box::new(self.small_mol.prepare_provider(
                 &molecule.atoms,
                 &molecule.bonds,

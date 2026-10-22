@@ -63,12 +63,12 @@ impl SmallMolSet {
         bonds: &[BondGeneric],
         network: crate::params::NetworkPolicy,
     ) -> Result<crate::params::ProvidedTopology, ParamError> {
-        use crate::params::{NetworkPolicy, ProvidedTopology};
+        use crate::params::ProvidedTopology;
         let mut staged = atoms.to_vec();
         if let Ok(Some(parameters)) = self.generator.cached(&mut staged, bonds) {
             return ProvidedTopology::new(&staged, parameters, "cached LigParGen topology");
         }
-        match self.build_bundled(&mut staged, bonds) {
+        let bundled_error = match self.build_bundled(&mut staged, bonds) {
             Ok(parameters) => {
                 return ProvidedTopology::new(
                     &staged,
@@ -76,11 +76,13 @@ impl SmallMolSet {
                     "bundled OPLS-AA templates/Foyer",
                 );
             }
-            Err(error) if network == NetworkPolicy::LocalOnly => return Err(error),
-            Err(_) => (),
-        }
-        let parameters = self.generator.generate(&mut staged, bonds)?;
-        ProvidedTopology::new(&staged, parameters, "LigParGen CM1A/CM1A-LBCC topology")
+            Err(error) => error,
+        };
+        let (parameters, source) = self
+            .generator
+            .generate_with_policy(&mut staged, bonds, network)
+            .map_err(|e| err(format!("{}; {}", bundled_error.descrip, e.descrip)))?;
+        ProvidedTopology::new(&staged, parameters, source)
     }
 
     pub fn new() -> Result<Self, ParamError> {

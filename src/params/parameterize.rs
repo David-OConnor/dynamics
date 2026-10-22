@@ -9,6 +9,7 @@ use crate::{MolDynamics, ParamError};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NetworkPolicy {
+    /// Prohibit remote services; installed local generators may still run.
     LocalOnly,
     /// Permit an optional provider when embedded tables and cached results are insufficient.
     #[default]

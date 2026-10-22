@@ -1,4 +1,10 @@
-//! General OPLS ligand generation, with validated, persistent topology caching.
+//! Generates and caches OPLS parameters using local LigParGen/BOSS when
+//! available, or the public LigParGen service when networking is allowed.
+//!
+//! [LibParGen Github](https://github.com/Isra3l/ligpargen)
+//!
+//! [Boss download](https://jorgensenresearch.com/boss/download)
+//! BOSS is "licensed software", and they want an academic or institution credentials?
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -18,16 +24,25 @@ use sha2::{Digest, Sha256};
 
 use super::known::Ligand;
 use crate::{
-    FfMolType, MolDynamics, ParamError, gromacs, import::ExplicitParams, params::FfParamSet,
+    FfMolType, MolDynamics, ParamError, gromacs,
+    import::ExplicitParams,
+    params::{FfParamSet, NetworkPolicy},
 };
 
 // The public server runs one BOSS job at a time. Recheck the cache after taking
 // this lock so copies and simultaneous consumers do not submit duplicate jobs.
 static REQUEST: Mutex<VecDeque<Instant>> = Mutex::new(VecDeque::new());
+static GENERATION: Mutex<()> = Mutex::new(());
 const REQUEST_WINDOW: Duration = Duration::from_secs(610);
 const REQUEST_LIMIT: usize = 5;
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 const SEPARATOR: &str = "\n$$$$\n";
+
+pub(super) struct Generated {
+    pub sdf: String,
+    pub itp: String,
+    pub job_id: String,
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct Generator {
@@ -82,6 +97,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
     let mut orders = vec![0.0_f32; atoms.len()];
     let mut aromatic = vec![0; atoms.len()];
     let mut seen = HashSet::new();
+
     for bond in bonds {
         let (&i, &j) = indices
             .get(&bond.atom_0_sn)
@@ -101,6 +117,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
                 ));
             }
         };
+
         let order = if kind == 4 { 1.5 } else { kind as f32 };
         orders[i] += order;
         orders[j] += order;
@@ -108,8 +125,10 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
         aromatic[j] += usize::from(kind == 4);
         adjacency[i].push(j);
         adjacency[j].push(i);
+
         edges.push((i, j, kind));
     }
+
     let mut visited = HashSet::from([0]);
     let mut queue = VecDeque::from([0]);
     while let Some(i) = queue.pop_front() {
@@ -119,6 +138,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
             }
         }
     }
+
     if visited.len() != atoms.len() {
         return Err(error(
             "Parameterize each disconnected ligand or salt component separately",
@@ -160,8 +180,10 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
                         }
                     })
                     .collect();
+
                 let mut frontier = vec![(neighbors[0], 0, vec![i])];
                 let mut five = false;
+
                 while let Some((node, depth, mut path)) = frontier.pop() {
                     if node == neighbors[1] && depth == 3 {
                         five = true;
@@ -205,6 +227,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
                 .count()
         })
         .unwrap_or(0);
+
     let mut order = Vec::new();
     let mut placed = HashSet::from([start]);
     let mut queue = VecDeque::from([start]);
@@ -226,6 +249,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
         .zip(&charges)
         .map(|(a, q)| Sha256::digest(format!("{}:{q}", a.element.atomic_number())).to_vec())
         .collect();
+
     for _ in 0..atoms.len() {
         labels = (0..atoms.len())
             .map(|i| {
@@ -294,14 +318,17 @@ fn mol_block(
         )
         .unwrap();
     }
+
     for &(i, j, kind) in edges {
         writeln!(mol, "{:3}{:3}{:3}  0  0  0  0", mapped[i], mapped[j], kind).unwrap();
     }
+
     let nonzero: Vec<_> = charges
         .iter()
         .enumerate()
         .filter(|(_, q)| **q != 0)
         .collect();
+
     for chunk in nonzero.chunks(8) {
         write!(mol, "M  CHG{:3}", chunk.len()).unwrap();
         for &(i, q) in chunk {
@@ -337,20 +364,25 @@ impl Generator {
         if let Some(template) = self.memory.lock().unwrap().get(&request.key) {
             return template.build(atoms, bonds);
         }
+
         let path = cache_dir().join(format!("{}.opls", request.key));
         let Ok(text) = fs::read_to_string(path) else {
             return Ok(None);
         };
+
         let Some((mol, top)) = text.split_once(SEPARATOR) else {
             return Ok(None);
         };
+
         let Ok(template) = Ligand::from_text(mol, top) else {
             return Ok(None);
         };
+
         let result = template.build(atoms, bonds)?;
         if result.is_some() {
             self.memory.lock().unwrap().insert(request.key, template);
         }
+
         Ok(result)
     }
 
@@ -359,18 +391,56 @@ impl Generator {
         atoms: &mut [AtomGeneric],
         bonds: &[BondGeneric],
     ) -> Result<ExplicitParams, ParamError> {
-        let mut requests = REQUEST.lock().unwrap();
+        self.generate_with_policy(atoms, bonds, NetworkPolicy::AllowRemote)
+            .map(|(params, _)| params)
+    }
+
+    pub fn generate_with_policy(
+        &self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+        network: NetworkPolicy,
+    ) -> Result<(ExplicitParams, &'static str), ParamError> {
+        let _generation = GENERATION.lock().unwrap();
         if let Some(params) = self.cached(atoms, bonds)? {
-            return Ok(params);
+            return Ok((params, "cached LigParGen topology"));
         }
         let request = input(atoms, bonds)?;
-        if atoms.len() > 200 {
+        let local = super::ligpargen_local::Local::discover()
+            .map_err(|e| error(format!("Unable to configure local LigParGen: {e}")))?;
+        let (generated, source) = if let Some(local) = local {
+            let generated = local
+                .parameterize(&request.upload, request.charge)
+                .map_err(|e| {
+                    error(format!(
+                        "Unable to generate OPLS parameters with local LigParGen/BOSS: {e}"
+                    ))
+                })?;
+            (generated, "local LigParGen/BOSS CM1A/CM1A-LBCC topology")
+        } else if network == NetworkPolicy::AllowRemote {
+            (
+                Self::generate_remote(&request, atoms.len())?,
+                "LigParGen CM1A/CM1A-LBCC topology",
+            )
+        } else {
+            return Err(error(
+                "No local LigParGen/BOSS installation found; install LigParGen on PATH or set DYNAMICS_LIGPARGEN. Remote generation is disabled",
+            ));
+        };
+        self.accept(atoms, bonds, &request, generated)
+            .map(|params| (params, source))
+    }
+
+    fn generate_remote(request: &Input, atom_count: usize) -> Result<Generated, ParamError> {
+        let mut requests = REQUEST.lock().unwrap();
+        if atom_count > 200 {
             return Err(error(
                 "The public LigParGen service supports at most 200 atoms including hydrogens; import an explicit OPLS topology for this ligand",
             ));
         }
+
         let mut retried = false;
-        let generated = loop {
+        loop {
             while requests
                 .front()
                 .is_some_and(|t| t.elapsed() >= REQUEST_WINDOW)
@@ -383,7 +453,7 @@ impl Generator {
             }
             requests.push_back(Instant::now());
             match super::ligpargen_service::parameterize(&request.upload, request.charge) {
-                Ok(result) => break result,
+                Ok(result) => return Ok(result),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && !retried => {
                     // Other apps or an earlier process may have consumed the quota.
                     // Rejected attempts also count, so do not poll the service.
@@ -396,17 +466,28 @@ impl Generator {
                     )));
                 }
             }
-        };
+        }
+    }
+
+    fn accept(
+        &self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+        request: &Input,
+        generated: Generated,
+    ) -> Result<ExplicitParams, ParamError> {
         let template = Ligand::from_text(&generated.sdf, &generated.itp)?;
         let mut prepared = atoms.to_vec();
         let params = template.build_generated(&mut prepared, bonds)?
             .ok_or_else(|| error("LigParGen changed the ligand's elements, hydrogens or bond graph; generated parameters were rejected"))?;
+
         let q: f32 = prepared.iter().map(|a| a.partial_charge.unwrap()).sum();
         if !q.is_finite() || (q - request.charge as f32).abs() > 0.005 {
             return Err(error(
                 "LigParGen output charge does not match the input protonation state",
             ));
         }
+
         let molecule = MolDynamics {
             ff_mol_type: FfMolType::SmallOrganic,
             atoms: prepared.clone(),
@@ -414,6 +495,7 @@ impl Generator {
             explicit_params: Some(params.clone()),
             ..Default::default()
         };
+
         let set = FfParamSet::new_opls().map_err(|e| error(e.to_string()))?;
         let exported = gromacs::make_topology(&[("LIG".into(), molecule, 1)], &set, None, false)?;
         // Export uses unique per-atom names; restore the original OPLS labels
@@ -445,6 +527,7 @@ impl Generator {
             .lock()
             .unwrap()
             .insert(request.key.clone(), template);
+
         let directory = cache_dir();
         let path = directory.join(format!("{}.opls", request.key));
         let temporary = directory.join(format!(
@@ -453,6 +536,7 @@ impl Generator {
             std::process::id(),
             TEMP_ID.fetch_add(1, Ordering::Relaxed)
         ));
+
         let persist = || -> std::io::Result<()> {
             fs::create_dir_all(&directory)?;
             fs::write(&temporary, cache)?;
@@ -462,11 +546,54 @@ impl Generator {
             }
             fs::rename(&temporary, &path)
         };
+
         if let Err(e) = persist() {
             eprintln!("Unable to save OPLS cache {}: {e}", path.display());
             let _ = fs::remove_file(temporary);
         }
         atoms.clone_from_slice(&prepared);
         Ok(params)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_topology_rejects_graph_and_charge_changes_atomically() {
+        let source =
+            bio_files::Sdf::new(include_str!("../../../param_data/opls/creatine.mol")).unwrap();
+        for change_charge in [false, true] {
+            let mut request = input(&source.atoms, &source.bonds).unwrap();
+            let mut bonds = source.bonds.clone();
+            if change_charge {
+                request.charge += 1;
+            } else {
+                bonds.pop();
+            }
+            let mut atoms = source.atoms.clone();
+            let generated = Generated {
+                sdf: include_str!("../../../param_data/opls/creatine.mol").into(),
+                itp: include_str!("../../../param_data/opls/creatine.itp").into(),
+                job_id: "local test".into(),
+            };
+            let error = Generator::default()
+                .accept(&mut atoms, &bonds, &request, generated)
+                .unwrap_err();
+            assert!(
+                error.descrip.contains(if change_charge {
+                    "charge"
+                } else {
+                    "bond graph"
+                }),
+                "{error}"
+            );
+            for (atom, original) in atoms.iter().zip(&source.atoms) {
+                assert_eq!(atom.force_field_type, original.force_field_type);
+                assert_eq!(atom.partial_charge, original.partial_charge);
+                assert_eq!(atom.posit, original.posit);
+            }
+        }
     }
 }
