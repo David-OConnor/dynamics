@@ -95,17 +95,31 @@ states from bonded hydrogens, handles disulfides and charged N/C termini, and
 retains OPLS-AA/L's residue-specific side-chain torsions. Neutral termini, caps,
 and cysteine thiolate are not currently built from residue templates.
 
-Hydrogenated OPLS ligands are typed natively using the bundled Foyer OPLS-AA
-SMARTS rules, charges and bonded tables. No Python installation, GAFF2 cache or
-external parameterization is needed for supported chemistry. A complete
-LigParGen-generated template additionally supports the neutral creatine
-tautomer in PubChem 586; it matches the entire hydrogenated element/bond-order
-graph and maps parameters into the caller's atom ordering. The Foyer
-rule set covers a subset of OPLS-AA: missing or ambiguous atom types, missing
-bonded terms, and non-integral total charge produce an error rather than
-estimated parameters. For example, caffeine and aspirin need explicit matching
-parameters, such as an imported LigParGen/GROMACS topology. Lipids, nucleic acids
-and other molecule classes also require explicit parameters.
+Hydrogenated OPLS ligands use bundled Foyer OPLS-AA rules where complete,
+or a persistent cache of LigParGen-generated parameters. A complete bundled
+LigParGen template also covers neutral creatine (PubChem 586). If local data
+cannot parameterize a ligand, Dynamics automatically submits its explicit,
+hydrogenated MOL graph to the official LigParGen service. It imports the
+complete returned topology, validates elements/connectivity/charge and OPLS
+conventions, and maps parameters into the original atom order. Coordinates
+and structural atom names are preserved; no GAFF2 parameters are substituted.
+
+LigParGen uses CM1A-LBCC charges for neutral ligands and CM1A for charged
+ligands. Its public service has chemistry/charge limits, a 200-atom limit
+including hydrogens, and a five-submission-per-ten-minute limit. Requests are
+serialized and wait automatically for quota; one server rate-limit rejection
+is retried after a cooldown. Failed generation reports the server's diagnostic.
+This is general organic-ligand parameterization, not support for every possible
+chemical species. Unsupported chemistry and larger ligands need explicit
+matching topologies, as do lipids and nucleic acids.
+
+`OplsSet::build_small_molecule` and native/export initialization can therefore
+block on network I/O or the quota wait. Applications should use worker threads.
+`build_small_molecule_cached` never contacts the network. Successful results
+are reusable offline across atom reorderings and serial-number changes. The
+cache is under `%LOCALAPPDATA%/dynamics/opls-ligpargen/v1` on Windows, or
+`$XDG_CACHE_HOME/dynamics/opls-ligpargen/v1` / `~/.cache/dynamics/opls-ligpargen/v1`
+on other platforms. Set `DYNAMICS_OPLS_CACHE` to override its root.
 
 Amber/GAFF2 atom types and partial charges are replaced on the simulation-local
 OPLS copy. Native and GROMACS export use the same ligand preparation, geometric

@@ -35,7 +35,11 @@ fn edges(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Vec<Vec<u8>>, P
             .zip(indices.get(&bond.atom_1_sn))
             .ok_or_else(|| ParamError::new("OPLS ligand bond references an absent atom"))?;
         // Zero means no edge; preserve every BondType value distinctly.
-        result[i][j] = bond.bond_type as u8 + 1;
+        result[i][j] = if bond.bond_type == bio_files::BondType::Amide {
+            bio_files::BondType::Single as u8 + 1
+        } else {
+            bond.bond_type as u8 + 1
+        };
         result[j][i] = result[i][j];
     }
     Ok(result)
@@ -43,14 +47,44 @@ fn edges(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Vec<Vec<u8>>, P
 
 impl Ligand {
     pub fn creatine() -> Result<Self, ParamError> {
-        let source = Sdf::new(include_str!("../../param_data/opls/creatine.sdf"))
-            .map_err(|e| ParamError::new(&format!("Bundled creatine structure: {e}")))?;
-        let top = GromacsTopology::new(concat!(
-            "[ defaults ]\n1 3 yes 0.5 0.5\n",
+        Self::from_text(
+            include_str!("../../param_data/opls/creatine.sdf"),
             include_str!("../../param_data/opls/creatine.itp"),
-        ))
-        .map_err(|e| ParamError::new(&format!("Bundled creatine topology: {e}")))?;
-        let mol = &top.molecule_types[0];
+        )
+    }
+
+    pub fn from_text(sdf: &str, itp: &str) -> Result<Self, ParamError> {
+        let source =
+            Sdf::new(sdf).map_err(|e| ParamError::new(&format!("OPLS ligand structure: {e}")))?;
+        let text = if itp
+            .lines()
+            .any(|l| l.split(';').next().unwrap_or("").trim() == "[ defaults ]")
+        {
+            itp.to_owned()
+        } else {
+            format!("[ defaults ]\n1 3 yes 0.5 0.5\n{itp}")
+        };
+        let top = GromacsTopology::new(&text)
+            .map_err(|e| ParamError::new(&format!("OPLS ligand topology: {e}")))?;
+        if top.defaults.comb_rule != 3
+            || (top.defaults.fudge_lj - 0.5).abs() > 1e-8
+            || (top.defaults.fudge_qq - 0.5).abs() > 1e-8
+        {
+            return Err(ParamError::new(&format!(
+                "Unexpected OPLS ligand conventions: combination rule {}, LJ scale {}, Coulomb scale {}",
+                top.defaults.comb_rule, top.defaults.fudge_lj, top.defaults.fudge_qq
+            )));
+        }
+        // A self-contained exported topology may define unused solvent/ion
+        // types. Validate the one molecule instantiated by [ molecules ].
+        let mol = if top.molecules.is_empty() && top.molecule_types.len() == 1 {
+            Some(&top.molecule_types[0])
+        } else if top.molecules.len() == 1 && top.molecules[0].1 == 1 {
+            top.molecule_type(&top.molecules[0].0)
+        } else {
+            None
+        }
+        .ok_or_else(|| ParamError::new("OPLS ligand topology must instantiate one molecule"))?;
         let params = gromacs_molecule_params(mol, &top)?;
         let graph = edges(&source.atoms, &source.bonds)?;
         if source.atoms.len() != mol.atoms.len()
@@ -67,7 +101,7 @@ impl Ligand {
             || !params.nbfix.is_empty()
         {
             return Err(ParamError::new(
-                "Unexpected bundled OPLS ligand parameter layout",
+                "OPLS ligand structure and parameter layout do not match",
             ));
         }
         Ok(Self {
@@ -83,12 +117,37 @@ impl Ligand {
         })
     }
 
+    pub fn from_prepared(mol: &crate::MolDynamics) -> Option<Self> {
+        let params = mol.explicit_params.clone()?;
+        let graph = edges(&mol.atoms, &mol.bonds).ok()?;
+        Some(Self {
+            degree: graph
+                .iter()
+                .map(|row| row.iter().filter(|&&v| v != 0).count())
+                .collect(),
+            atoms: mol.atoms.clone(),
+            edges: graph,
+            types: mol
+                .atoms
+                .iter()
+                .map(|a| a.force_field_type.clone())
+                .collect::<Option<_>>()?,
+            charges: mol
+                .atoms
+                .iter()
+                .map(|a| a.partial_charge)
+                .collect::<Option<_>>()?,
+            params,
+        })
+    }
+
     fn match_graph(
         &self,
         atoms: &[AtomGeneric],
         graph: &[Vec<u8>],
         degree: &[usize],
         mapped: &mut [Option<usize>],
+        aromatic: bool,
     ) -> bool {
         let next = (0..mapped.len())
             .filter(|&i| mapped[i].is_none())
@@ -109,15 +168,25 @@ impl Ligand {
             if mapped.contains(&Some(j))
                 || atoms[j].element != self.atoms[i].element
                 || degree[j] != self.degree[i]
-                || mapped
-                    .iter()
-                    .enumerate()
-                    .any(|(k, v)| v.is_some_and(|l| self.edges[i][k] != graph[j][l]))
+                || mapped.iter().enumerate().any(|(k, v)| {
+                    v.is_some_and(|l| {
+                        let a = self.edges[i][k];
+                        let b = graph[j][l];
+                        a != b
+                            && !(aromatic
+                                && b == bio_files::BondType::Aromatic as u8 + 1
+                                && [
+                                    bio_files::BondType::Single as u8 + 1,
+                                    bio_files::BondType::Double as u8 + 1,
+                                ]
+                                .contains(&a))
+                    })
+                })
             {
                 continue;
             }
             mapped[i] = Some(j);
-            if self.match_graph(atoms, graph, degree, mapped) {
+            if self.match_graph(atoms, graph, degree, mapped, aromatic) {
                 return true;
             }
             mapped[i] = None;
@@ -130,6 +199,25 @@ impl Ligand {
         atoms: &mut [AtomGeneric],
         bonds: &[BondGeneric],
     ) -> Result<Option<ExplicitParams>, ParamError> {
+        self.build_inner(atoms, bonds, false)
+    }
+
+    /// The service's preview kekulizes aromatic MOL bonds. Only aromatic input
+    /// edges may match a single/double preview edge; other bond orders remain exact.
+    pub fn build_generated(
+        &self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+    ) -> Result<Option<ExplicitParams>, ParamError> {
+        self.build_inner(atoms, bonds, true)
+    }
+
+    fn build_inner(
+        &self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+        aromatic: bool,
+    ) -> Result<Option<ExplicitParams>, ParamError> {
         if atoms.len() != self.atoms.len() {
             return Ok(None);
         }
@@ -139,7 +227,7 @@ impl Ligand {
             .map(|row| row.iter().filter(|&&v| v != 0).count())
             .collect();
         let mut mapped = vec![None; atoms.len()];
-        if !self.match_graph(atoms, &graph, &degree, &mut mapped) {
+        if !self.match_graph(atoms, &graph, &degree, &mut mapped, aromatic) {
             return Ok(None);
         }
         let m: Vec<_> = mapped.into_iter().map(Option::unwrap).collect();

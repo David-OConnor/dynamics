@@ -48,6 +48,7 @@ pub(super) struct SmallMolSet {
     angles: Vec<Term>,
     torsions: Vec<Term>,
     known: super::known::Ligand,
+    generator: super::ligpargen::Generator,
 }
 
 fn err(message: impl AsRef<str>) -> ParamError {
@@ -63,6 +64,7 @@ impl SmallMolSet {
             angles: Vec::new(),
             torsions: Vec::new(),
             known: super::known::Ligand::creatine()?,
+            generator: Default::default(),
         };
         for line in DATA
             .lines()
@@ -173,7 +175,33 @@ impl SmallMolSet {
         Ok(names)
     }
 
+    pub fn remember(&self, mol: &crate::MolDynamics) {
+        self.generator.remember(mol);
+    }
+
+    pub fn build_cached(
+        &self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+    ) -> Result<ExplicitParams, ParamError> {
+        if let Ok(Some(params)) = self.generator.cached(atoms, bonds) {
+            return Ok(params);
+        }
+        self.build_bundled(atoms, bonds)
+    }
+
     pub fn build(
+        &self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+    ) -> Result<ExplicitParams, ParamError> {
+        if let Ok(params) = self.build_cached(atoms, bonds) {
+            return Ok(params);
+        }
+        self.generator.generate(atoms, bonds)
+    }
+
+    fn build_bundled(
         &self,
         atoms: &mut [AtomGeneric],
         bonds: &[BondGeneric],

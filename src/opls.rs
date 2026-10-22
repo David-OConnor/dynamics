@@ -3,8 +3,8 @@
 //!
 //! Protein typing uses residue templates, including the Kaminski side-chain
 //! torsions. Ligands use Foyer's OPLS-AA SMARTS definitions, charges and bonded
-//! tables. Unsupported chemistry requires an explicit OPLS topology (e.g. from
-//! LigParGen); GAFF2 types and charges are not transferable to OPLS.
+//! tables, with automatic LigParGen generation and a persistent cache for
+//! chemistry outside those rules. GAFF2 parameters are not transferable to OPLS.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -48,6 +48,7 @@ pub struct OplsSet {
 }
 
 mod known;
+pub mod ligpargen;
 mod small_mol;
 mod smarts;
 
@@ -112,16 +113,33 @@ impl OplsSet {
         })
     }
 
-    /// Type a hydrogenated ligand and assign OPLS-AA charges and all bonded
-    /// parameters from the bundled Foyer rules. Unsupported or ambiguous
-    /// chemistry is an error; existing Amber types and charges are replaced
-    /// on success. No external Python tools are required.
+    /// Assign OPLS-AA parameters to a hydrogenated ligand. Uses validated
+    /// cached/generated parameters or complete bundled rules; unsupported local
+    /// chemistry is submitted to the public LigParGen service and cached.
+    /// This can block on network I/O. Use `build_small_molecule_cached` on UI
+    /// threads; it never contacts a service. Existing labels change on success.
     pub fn build_small_molecule(
         &self,
         atoms: &mut [AtomGeneric],
         bonds: &[BondGeneric],
     ) -> Result<ExplicitParams, ParamError> {
         self.small_mol.build(atoms, bonds)
+    }
+
+    /// Resolve a ligand using only bundled data or the local LigParGen cache.
+    /// A cache miss outside the bundled chemistry returns a parameter error.
+    pub fn build_small_molecule_cached(
+        &self,
+        atoms: &mut [AtomGeneric],
+        bonds: &[BondGeneric],
+    ) -> Result<ExplicitParams, ParamError> {
+        self.small_mol.build_cached(atoms, bonds)
+    }
+
+    /// Retain a validated background result for native and export consumers,
+    /// even if the filesystem cache could not be written.
+    pub fn remember_small_molecule(&self, mol: &crate::MolDynamics) {
+        self.small_mol.remember(mol);
     }
 
     /// Build OPLS protein parameters without altering coordinates, atom ordering,

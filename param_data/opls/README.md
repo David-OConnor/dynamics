@@ -11,7 +11,9 @@ side-chain torsion refinements (OPLS-AA/L).
 The Rust implementation embeds ffnonbonded.itp, ffbonded.itp and aminoacids.rtp.
 Charged terminal patches and TIP4P/ion values follow the accompanying .tdb,
 tip4p.itp and ffnonbonded.itp files. No external GROMACS installation or network
-access is needed for native OPLS simulations.
+access is needed for proteins or bundled ligand chemistry. Ligands outside
+these tables can use the automatic LigParGen service and persistent cache
+documented below.
 
 Validation used GROMACS 2025.3 pdb2gmx with these v2026.4 tables to independently
 parameterize ubiquitin (1,231 atoms). Native charges, 1,237 bonds, 2,257 angles,
@@ -38,8 +40,8 @@ The native matcher implements this data set's Foyer SMARTS subset, including
 ordered type overrides, type references and chordless rings of up to eight
 atoms. All hydrogens must be present. Missing or ambiguous types, missing bonded
 terms, and total charge farther than 0.005 e from an integer are rejected.
-This is not a universal ligand parameterization service; unsupported chemistry
-requires an explicit OPLS topology.
+These bundled rules are not universal. When they cannot parameterize a ligand,
+the general builder uses the LigParGen generation/cache path below.
 
 Temporary validation compared 50 hydrogenated molecules against upstream
 Foyer's matcher and independently assigned OpenMM bonded/nonbonded parameters.
@@ -47,6 +49,8 @@ Assigned types and charges matched. With electrostatics disabled to isolate
 bonded and geometric LJ terms, the maximum energy error was 0.00025 kcal/mol
 and maximum force component error was 0.006 kcal/mol/angstrom. Six further
 molecules were explicitly rejected (missing atom types or non-integral charge).
+Those tests exercised bundled rules only; the general builder can now generate
+parameters for additional chemistry through LigParGen.
 The fixtures included aliphatic, aromatic and heterocyclic compounds, alcohols,
 ethers, carbonyl compounds, amides, amines, nitriles, sulfur compounds and
 halogenated compounds. Temporary validation code was removed.
@@ -65,7 +69,7 @@ not a zwitterionic or protonated creatine model. The server's generated residue
 label is YIB; recognition uses the entire element/bond-order graph, including
 all 18 atoms and 17 bonds. No coordinates, serial numbers or atom names are
 required to match. A different protonation state or tautomer does not use this
-template. Dynamics never contacts a server at runtime.
+template. Recognizing this bundled template does not contact a server.
 
 The complete template supplements Foyer's rules, which do not cover creatine's
 substituted guanidine nitrogen. It supplies charges, masses, LJ values, bonds,
@@ -87,3 +91,36 @@ code was removed.
 Generated data SHA256:
 - `creatine.sdf`: `e3364f1a3e0b977db92e3013ae593e388b9deb817b818094f93e351b9216ac66`
 - `creatine.itp`: `fe3cb6c73375c5df89f7191b87b57fa3ca7a3c4510fe6a1b52f7681392e08316`
+
+## Automatic ligand generation and local cache
+
+The general ligand builder now supplements complete bundled assignments with
+https://huggingface.co/spaces/lsdodda/ligpargen at runtime. It submits a MOL
+structure with explicit hydrogens and formal charges recovered from ordinary
+closed-shell organic valences. Ambiguous valences require an explicit topology;
+protonation is never changed to make typing succeed. Submission uses a connected
+heavy-atom order for BOSS's Z-matrix construction. Output graph matching maps
+all parameters back without changing caller coordinates or structural names.
+
+The generated GROMACS topology supplies every bonded/nonbonded term, including
+impropers, exclusions and scaled pairs. Imports validate OPLS's geometric LJ
+mixing, 0.5 LJ/Coulomb scaling and the requested net charge. Neutral requests use
+CM1A-LBCC; charged requests use CM1A. BOSS itself is not bundled or installed.
+
+Successful assignments are saved as one structure/topology cache file; a full
+graph match validates reuse. The cache fingerprint ignores coordinates and atom
+ordering. The public service permits five submissions in ten minutes, up to
+200 atoms including hydrogens, with its own chemical coverage and charge limits.
+Requests wait for quota on the calling worker; rate-limit errors are not treated
+as unsupported atom types. Other server errors retain their actual diagnostic.
+See the main Dynamics README for cache paths and the offline-only API.
+
+Validation of the automatic path used live LigParGen jobs for neutral and
+zwitterionic methionine, caffeine and aspirin. Each generated topology passed
+an independent cache reload with reversed atom order/noncontiguous serials and
+a native force calculation. Neutral methionine also completed a full-charge
+TIP4P/PME step with 799 waters. Against OpenMM's independent GROMACS reader,
+methionine's bonded/geometric-LJ energy differed by less than 0.000001 kcal/mol
+and its largest force component by less than 0.0001 kcal/mol/angstrom, with
+charges disabled to isolate imported bonded/exclusion/LJ terms. Six existing
+Amber/GROMACS import regressions passed. Temporary validation code was removed.
