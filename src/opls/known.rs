@@ -1,4 +1,4 @@
-//! Complete ligand-specific OPLS parameterizations outside Foyer's SMARTS set.
+//! Ligand-specific OPLS parameterizations outside Foyer's SMARTS set.
 //! Match exact elemental/bond-order graphs, including explicit hydrogens, then
 //! map parameters into the caller's order. Coordinates and atom names are not
 //! involved in recognition. Each data set documents its tautomer and source.
@@ -164,6 +164,7 @@ impl Ligand {
         let Some(i) = next else {
             return true;
         };
+
         for j in 0..atoms.len() {
             if mapped.contains(&Some(j))
                 || atoms[j].element != self.atoms[i].element
@@ -185,6 +186,7 @@ impl Ligand {
             {
                 continue;
             }
+
             mapped[i] = Some(j);
             if self.match_graph(atoms, graph, degree, mapped, aromatic) {
                 return true;

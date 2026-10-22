@@ -9,12 +9,11 @@ use std::{
 
 use bio_files::{AtomGeneric, BondGeneric, gromacs::GromacsTopology};
 
+use super::smarts::{Graph, Pattern};
 use crate::{
     ParamError,
     import::{ExplicitParams, gromacs_molecule_params},
 };
-
-use super::smarts::{Graph, Pattern};
 
 const DATA: &str = include_str!("../../param_data/opls/foyer-ligands.tsv");
 

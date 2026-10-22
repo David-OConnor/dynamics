@@ -16,10 +16,10 @@ use std::{
 use bio_files::{AtomGeneric, BondGeneric, BondType};
 use sha2::{Digest, Sha256};
 
-use crate::import::ExplicitParams;
-use crate::{FfMolType, MolDynamics, ParamError, gromacs, params::FfParamSet};
-
 use super::known::Ligand;
+use crate::{
+    FfMolType, MolDynamics, ParamError, gromacs, import::ExplicitParams, params::FfParamSet,
+};
 
 // The public server runs one BOSS job at a time. Recheck the cache after taking
 // this lock so copies and simultaneous consumers do not submit duplicate jobs.

@@ -82,7 +82,6 @@ mod barostat;
 mod bonded;
 mod bonded_forces;
 pub mod charmm;
-pub mod cmap;
 mod config;
 mod forces;
 pub mod gromacs;
@@ -903,15 +902,13 @@ impl MdState {
                             "OPLS proteins require MolDynamics::residues and explicit hydrogens",
                         )
                     })?;
-                    Some(Cow::Owned(opls.build_peptide(
-                        &mut atoms,
-                        &mol.bonds,
-                        residues,
-                    )?))
+                    Some(Cow::Owned(
+                        opls.build_peptide(&mut atoms, &mol.bonds, residues)?,
+                    ))
                 }
-                (None, Some(opls), FfMolType::SmallOrganic) => {
-                    Some(Cow::Owned(opls.build_small_molecule(&mut atoms, &mol.bonds)?))
-                }
+                (None, Some(opls), FfMolType::SmallOrganic) => Some(Cow::Owned(
+                    opls.build_small_molecule(&mut atoms, &mol.bonds)?,
+                )),
                 (explicit, _, _) => explicit,
             };
 

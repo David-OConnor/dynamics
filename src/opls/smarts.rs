@@ -166,6 +166,7 @@ impl Pattern {
         if self.nodes.len() > graph.adj.len() || !self.nodes[0].matches(root, graph, labels) {
             return false;
         }
+
         let mut mapped = vec![None; self.nodes.len()];
         mapped[0] = Some(root);
         self.search(graph, labels, &mut mapped)
@@ -183,10 +184,12 @@ impl Pattern {
         let Some(p) = next else {
             return true;
         };
+
         let parent = self.adj[p].iter().find_map(|&q| mapped[q]);
         let Some(parent) = parent else {
             return false;
         };
+
         for &i in &graph.adj[parent] {
             if mapped.contains(&Some(i))
                 || graph.adj[i].len() < self.adj[p].len()
@@ -201,6 +204,7 @@ impl Pattern {
             }) {
                 continue;
             }
+
             mapped[p] = Some(i);
             if self.search(graph, labels, mapped) {
                 return true;
@@ -242,9 +246,11 @@ impl Graph {
             adj[i].push(j);
             adj[j].push(i);
         }
+
         for neighbors in &mut adj {
             neighbors.sort_unstable();
         }
+
         let mut rings = vec![Vec::new(); atoms.len()];
         for start in 0..atoms.len() {
             for &next in &adj[start] {
@@ -253,6 +259,7 @@ impl Graph {
                 }
             }
         }
+
         Ok(Self {
             adj,
             elements: atoms.iter().map(|a| a.element).collect(),

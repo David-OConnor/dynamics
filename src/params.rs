@@ -32,6 +32,8 @@ pub type ProtFfChargeMap = HashMap<AminoAcidGeneral, Vec<ChargeParamsProtein>>;
 pub type LipidFfChargeMap = HashMap<LipidStandard, Vec<ChargeParams>>;
 pub type NucleicAcidFfChargeMap = HashMap<NucleotideTemplate, Vec<ChargeParams>>;
 
+// todo: This is very Amber-centric. Should we add CHARMM and OPLS here as well. (2026-10-22)
+
 // We include Amber parameter files with this package.
 // Proteins and amino acids:
 const PARM_19: &str = include_str!("../param_data/parm19.dat"); // Bonded, and LJ

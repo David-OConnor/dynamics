@@ -1,4 +1,4 @@
-//! Estimate missing GAFF2 bonded parameters using Amber's directed EQUA/CORR
+//! Estimate missing Amber GAFF2 bonded parameters using Amber's directed EQUA/CORR
 //! replacements, weights, and positional penalty definitions from PARMCHK.DAT.
 //! Reference: `parmchk2.c`, AmberClassic 8e55e97ada48b96eefaec2e6a3fa849018aaeea5.
 //!

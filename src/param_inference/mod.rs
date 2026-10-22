@@ -1,4 +1,4 @@
-//! GAFF2 atom typing and estimation of missing bonded parameters.
+//! Amber GAFF2 atom typing and estimation of missing bonded parameters for small molecules.
 //!
 //! Atom types are assigned by evaluating the bundled ATOMTYPE_GFF2.DEF in order,
 //! then applying Amber's conjugated-type pairing. See Wang et al., Antechamber,

@@ -1,3 +1,5 @@
+//! For the [CHARMM](https://mackerell.umaryland.edu/charmm_ff.shtml) force fields.
+//!
 //! CHARMM36m for proteins. We build each residue from CHARMM's topology (`top_all36_prot.rtf`),
 //! apply patches for termini, protonation states, and disulfide bonds, generate angles and
 //! dihedrals from bonds, and assign parameters per term, as CHARMM and psfgen do. The result is
@@ -29,6 +31,8 @@ use crate::{
     cmap::CmapGrid,
     non_bonded::{LjCombiningRule, NbFix, Pair14, Scale14},
 };
+
+pub mod cmap;
 
 // CHARMM36m (proteins), and CHARMM's water and ions, from toppar_c36_jul24.
 const PAR_PROT: &str = include_str!("../param_data/charmm/par_all36m_prot.prm");

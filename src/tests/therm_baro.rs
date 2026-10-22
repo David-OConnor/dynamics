@@ -482,7 +482,7 @@ fn generate_water_30a_template() {
         }
     }
 
-    let out_path = PathBuf::from("src/param_data/water_30A.water_init_template");
+    let out_path = PathBuf::from("../solvent/water_30A.water_init_template");
     WaterInitTemplate::create_and_save(&md.water, md.cell, &out_path).unwrap();
     println!(
         "Saved 30 Å water template ({} molecules) to {:?}",
@@ -495,7 +495,7 @@ fn generate_water_30a_template() {
 /// time-averaged pressure is close to 1 bar.
 ///
 /// Requires a pre-equilibrated 30 Å water template at
-/// `src/param_data/water_30A.water_init_template`. Generate it once with:
+/// `src/solvent/water_30A.water_init_template`. Generate it once with:
 ///   cargo test generate_water_30a_template -- --ignored --nocapture
 ///
 /// The tolerance is ±500 bar (100-step average). This catches large systematic errors
@@ -509,7 +509,7 @@ fn test_pressure_water_sim_1bar() {
         params::FfParamSet, solvent::init::WaterInitTemplate,
     };
 
-    let template_path = "src/param_data/water_30A.water_init_template";
+    let template_path = "src/solvent/water_30A.water_init_template";
     if !std::path::Path::new(template_path).exists() {
         eprintln!("Skipping equilibrated-water pressure test: {template_path} is unavailable");
         return;

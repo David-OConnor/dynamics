@@ -1,10 +1,12 @@
-//! Bundled OPLS-AA/L (GROMACS 2026.4). Bonded terms are converted to the same
+//! Bundled OPLS-AA/L forcefield set (From GROMACS 2026.4). Bonded terms are converted to the same
 //! harmonic/periodic forms and units used by Amber in this library.
 //!
 //! Protein typing uses residue templates, including the Kaminski side-chain
 //! torsions. Ligands use Foyer's OPLS-AA SMARTS definitions, charges and bonded
 //! tables, with automatic LigParGen generation and a persistent cache for
 //! chemistry outside those rules. GAFF2 parameters are not transferable to OPLS.
+//!
+//! [FOYER paper on parameterization](https://ar5iv.labs.arxiv.org/html/1812.06779)
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -174,6 +176,7 @@ impl OplsSet {
             let ResidueType::AminoAcid(aa) = res.res_type else {
                 continue;
             };
+
             let ids: Vec<_> = res
                 .atom_sns
                 .iter()
@@ -182,12 +185,14 @@ impl OplsSet {
             if ids.is_empty() {
                 continue;
             }
+
             for &i in &ids {
                 if owner[i] != usize::MAX {
                     return Err(error("Overlapping OPLS residues"));
                 }
                 owner[i] = members.len();
             }
+
             members.push(ids);
             aas.push(aa);
         }
@@ -196,6 +201,7 @@ impl OplsSet {
                 "OPLS proteins require amino-acid residues for every atom; set MolDynamics::residues",
             ));
         }
+
         let mut previous = vec![None; members.len()];
         let mut next = previous.clone();
         for i in 0..n {
@@ -224,6 +230,7 @@ impl OplsSet {
                     })
                     .unwrap_or(0)
             };
+
             let aa = aas[ri];
             let label = match aa {
                 AminoAcid::His => match (h_count("ND1"), h_count("NE2")) {
@@ -251,6 +258,7 @@ impl OplsSet {
                 AminoAcid::Lys if h_count("NZ") == 3 => "LYSH",
                 _ => residue_name(aa).ok_or_else(|| error("Unsupported OPLS amino acid"))?,
             };
+
             let mut template = self
                 .templates
                 .get(label)
@@ -316,6 +324,7 @@ impl OplsSet {
                     template.bonds.push(("N".into(), h));
                 }
             }
+
             if c_terminal {
                 if !n_terminal {
                     let (t, q) = match aa {
@@ -325,6 +334,7 @@ impl OplsSet {
                     };
                     replace(&mut template, "CA", t, q)?;
                 }
+
                 replace(&mut template, "C", "opls_271", 0.7)?;
                 replace(&mut template, "O", "opls_272", -0.8)?;
                 template.atoms.push(TemplateAtom {
@@ -336,6 +346,7 @@ impl OplsSet {
                 template
                     .impropers
                     .retain(|d| !d.iter().take(4).any(|a| a == "+N"));
+
                 template.impropers.push(
                     ["CA", "O", "C", "OXT", "improper_O_C_X_Y"]
                         .map(str::to_owned)
@@ -355,6 +366,7 @@ impl OplsSet {
                     "O2" if c_terminal => "OXT",
                     a => a,
                 };
+
                 if !template.atoms.iter().any(|a| a.name == atom_name)
                     || mapped.insert((ri, atom_name.into()), i).is_some()
                 {
@@ -364,6 +376,7 @@ impl OplsSet {
                     )));
                 }
             }
+
             for heavy in template.atoms.iter().filter(|a| !a.name.starts_with('H')) {
                 let &parent = mapped
                     .get(&(ri, heavy.name.clone()))
@@ -395,6 +408,7 @@ impl OplsSet {
                         actual.len()
                     )));
                 }
+
                 for h in &expected {
                     if let Some(pos) = actual.iter().position(|&i| names[i] == *h) {
                         mapped.insert((ri, h.clone()), actual.remove(pos));
@@ -406,6 +420,7 @@ impl OplsSet {
                     }
                 }
             }
+
             for a in &template.atoms {
                 let &i = mapped
                     .get(&(ri, a.name.clone()))
@@ -426,6 +441,7 @@ impl OplsSet {
             };
             mapped.get(&(r, label.to_owned())).copied()
         };
+
         let mut propers = BTreeMap::<[usize; 4], String>::new();
         let mut impropers = Vec::new();
         for (ri, template) in instances.iter().enumerate() {
@@ -436,12 +452,14 @@ impl OplsSet {
                     }
                 }
             }
+
             for d in &template.dihedrals {
                 let ids: Option<Vec<_>> = d[..4].iter().map(|a| resolve(ri, a)).collect();
                 if let Some(ids) = ids {
                     propers.insert(canonical(ids.try_into().unwrap()), d[4..].join(" "));
                 }
             }
+
             for d in &template.impropers {
                 let ids: Option<Vec<_>> = d[..4].iter().map(|a| resolve(ri, a)).collect();
                 if let Some(ids) = ids {
@@ -463,6 +481,7 @@ impl OplsSet {
         let mut text = format!(
             "[ defaults ]\n1 3 yes 0.5 0.5\n{NONBONDED}\n{BONDED}\n[ moleculetype ]\nOPLS_PROTEIN 3\n[ atoms ]\n"
         );
+
         for (i, a) in atoms.iter().enumerate() {
             writeln!(
                 text,
@@ -476,6 +495,7 @@ impl OplsSet {
             )
             .unwrap();
         }
+
         text.push_str("[ bonds ]\n");
         for i in 0..n {
             for &j in adjacency[i].range(i + 1..) {
@@ -506,6 +526,7 @@ impl OplsSet {
             )
             .unwrap();
         }
+
         // Generate 1-4 pairs by shortest bond distance. Ring 1-2/1-3 exclusions
         // take precedence, and each pair appears once regardless of torsion count.
         text.push_str("[ pairs ]\n");

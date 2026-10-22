@@ -1,6 +1,8 @@
 //! For inferring partial charge of small organic molecules using Amber's
 //! GeoStd library as training data. Uses a neural net. Force field types must be assigned
 //! prior to running this, e.g. from the `param_inference` module.
+//!
+//! todo: Is this specific to Amber force fields, or do we use it for OPLS and CHARMM as well?
 
 pub(crate) mod files;
 

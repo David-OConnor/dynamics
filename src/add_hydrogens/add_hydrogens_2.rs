@@ -591,13 +591,10 @@ fn add_h_sc_het(
 /// Returns (Dihedral, (this c', this ca).
 fn handle_backbone(
     hydrogens: &mut Vec<AtomGeneric>,
-    // hydrogens: &mut Vec<Atom>,
     atoms: &[&AtomGeneric],
-    // atoms: &[&Atom],
     posits_sc: &[Vec3],
     prev_cp_ca: Option<(Vec3, Vec3)>,
     next_n: Option<Vec3>,
-    // h_default: &Atom,
     h_default: &AtomGeneric,
     aa: &AminoAcid,
 ) -> Result<(Dihedral, Option<(Vec3, Vec3)>), ParamError> {
