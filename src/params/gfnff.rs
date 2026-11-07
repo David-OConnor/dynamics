@@ -1,6 +1,9 @@
 //! GFN-FF through xTB, with a private working directory and retained topology.
+//!
+//! Requires [xTB](https://doi.org/10.1002/wcms.1493) to be installed. [xtB release binaries](https://github.com/grimme-lab/xtb/releases)
 
 use std::{
+    env,
     fs::{self, File},
     io::Write,
     path::PathBuf,
@@ -59,7 +62,7 @@ pub const TERMS: &[(&str, &str)] = &[
 
 #[derive(Clone, Debug)]
 pub struct GfnffSet {
-    /// xTB executable; otherwise xtb on PATH.
+    /// xTB executable; otherwise XTB_EXECUTABLE, then xtb on PATH.
     pub executable: Option<PathBuf>,
     /// Optional xTB GFN-FF parameter file; otherwise xTB's built-in parameters.
     pub parameter_file: Option<PathBuf>,
@@ -238,7 +241,11 @@ impl XtbPotential {
         if let Some(path) = &set.parameter_file {
             fs::copy(path, directory.path().join(".param_gfnff.xtb"))?;
         }
-        let executable = set.executable.clone().unwrap_or_else(|| "xtb".into());
+        let executable = set
+            .executable
+            .clone()
+            .or_else(|| env::var_os("XTB_EXECUTABLE").map(PathBuf::from))
+            .unwrap_or_else(|| "xtb".into());
         let executable = if executable.components().count() > 1 {
             fs::canonicalize(&executable).map_err(|e| {
                 ParamError::new(&format!("xTB executable {}: {e}", executable.display()))

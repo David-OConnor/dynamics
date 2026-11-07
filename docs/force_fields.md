@@ -99,7 +99,7 @@ dispatch branch in MD or export. New energy functional forms still require engin
 
 ## GFN-FF
 
-Use `FfParamSet::new_gfnff()` and `MdConfig::for_family(ForceFieldFamily::Gfnn)`. Install xTB (tested with 6.7.1) and put `xtb` on PATH, set `XTB_EXECUTABLE`, or set `set.gfnff_mut().unwrap().executable`. Its runtime libraries must also be discoverable. Optional `parameter_file` and `total_charge` overrides live on that backend.
+Use `FfParamSet::new_gfnff()` and `MdConfig::for_family(ForceFieldFamily::Gfnn)`. Install xTB (tested with 6.7.1 and 6.8.0), e.g. with `bio_tools install xtb`, and put `xtb` on PATH, set `XTB_EXECUTABLE`, or set `set.gfnff_mut().unwrap().executable`. Its runtime libraries must also be discoverable. Optional `parameter_file` and `total_charge` overrides live on that backend.
 
 xTB evaluates the full potential, including dispersion, repulsion, EEQ electrostatics, and hydrogen/halogen bonds. Each step launches xTB in a private directory and reuses the initial topology. No Amber bonded, LJ, PME, or counterion terms are added. This process-based implementation favors compatibility over throughput.
 

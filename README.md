@@ -83,11 +83,15 @@ The bundled families use these conventions:
 | Amber | ff19SB | OPC | Lorentz–Berthelot | 0.5 / 1/1.2 |
 | CHARMM36 | CHARMM36m | modified TIP3P | Lorentz–Berthelot, NBFIX | 1 / 1, special LJ |
 | OPLS | OPLS-AA/L (Kaminski 2001) | TIP4P | geometric | 0.5 / 0.5 |
+| GFN-FF | - | TIP4P | - | - |
 
 Amber, CHARMM and OPLS parameter tables are embedded in the binary. Their shared
 interface separates atom-type assignment, partial-charge assignment and resolution
 of bonded/nonbonded terms. Native MD and GROMACS export consume the same resolved
 representation. See [the force-field API and extension guide](docs/force_fields.md).
+
+To use GNN-FF, you must have xtb [xTB](https://doi.org/10.1002/wcms.1493)installed. Download  a [xtB release binary here](https://github.com/grimme-lab/xtb/releases).
+
 
 ```rust
 let prepared = params.parameterize_with_options(
