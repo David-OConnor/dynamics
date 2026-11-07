@@ -75,6 +75,11 @@ The bundled families use these conventions:
 
 Amber and OPLS parameters are embedded in the binary. Their shared interface separates atom-type assignment, partial-charge assignment and resolution of bonded/nonbonded terms. Native MD and GROMACS export consume the same resolved representation. See [the force-field API and extension guide](docs/force_fields.md).
 
+
+*GFN-FF* force fields are particularly interesting, as they are more general than most classical force fields. From [its documentation](https://xtb-docs.readthedocs.io/en/latest/gfnff.html):
+
+> Thereby a strictly global and element-specific parameter strategy is applied and no element pair-specific parameters are employed. 
+
 To use GNN-FF, you must have [xTB](https://doi.org/10.1002/wcms.1493) installed. Download a [xtB release here](https://github.com/grimme-lab/xtb/releases), unzip it, and add its `bin` directory to the *PATH*. We call *xTB* for both paramerization, and per-step force calculation, and use our native integrator.
 
 
