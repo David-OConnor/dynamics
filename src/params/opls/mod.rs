@@ -24,7 +24,12 @@ use std::{
 };
 
 use bio_files::{
-    AtomGeneric, BondGeneric, ResidueGeneric, ResidueType, gromacs::top_parse::GromacsTopology,
+    AtomGeneric, BondGeneric, ResidueGeneric, ResidueType,
+    gromacs::{
+        GromacsFfParams, Rtp,
+        rtp::{RtpAtom as TemplateAtom, RtpResidue as Template},
+        top_parse::GromacsTopology,
+    },
 };
 use na_seq::{AminoAcid, Element};
 
@@ -37,24 +42,14 @@ const NONBONDED: &str = include_str!("../../../param_data/opls/ffnonbonded.itp")
 const BONDED: &str = include_str!("../../../param_data/opls/ffbonded.itp");
 const RESIDUES: &str = include_str!("../../../param_data/opls/aminoacids.rtp");
 
-#[derive(Debug, Clone)]
-struct TemplateAtom {
-    name: String,
-    ff_type: String,
-    charge: f32,
-}
-
-#[derive(Debug, Clone, Default)]
-struct Template {
-    atoms: Vec<TemplateAtom>,
-    bonds: Vec<(String, String)>,
-    dihedrals: Vec<Vec<String>>,
-    impropers: Vec<Vec<String>>,
-}
-
 #[derive(Debug)]
 pub struct OplsSet {
-    templates: HashMap<String, Template>,
+    /// Atom types, and bonded parameters for proteins, from GROMACS' `ffnonbonded.itp`, and
+    /// `ffbonded.itp`. These include the macros for residue-specific dihedrals that `templates`
+    /// reference. Edits apply to proteins parameterized afterwards.
+    pub tables: GromacsFfParams,
+    /// Protein residue templates: atom types, charges, and topology. From `aminoacids.rtp`.
+    pub templates: Rtp,
     small_mol: small_mol::SmallMolSet,
 }
 
@@ -83,54 +78,29 @@ impl OplsSet {
     }
 
     pub fn new() -> io::Result<Self> {
-        let mut templates = HashMap::<String, Template>::new();
-        let mut residue = String::new();
-        let mut section = String::new();
-
-        for line in RESIDUES.lines() {
-            let line = line.split(';').next().unwrap_or("").trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            if line.starts_with('[') {
-                let tag = line.trim_matches(['[', ']']).trim();
-                if ["atoms", "bonds", "dihedrals", "impropers", "exclusions"].contains(&tag) {
-                    section = tag.to_owned();
-                } else {
-                    residue = tag.to_owned();
-                    section.clear();
-                }
-                continue;
-            }
-
-            let cols: Vec<_> = line.split_whitespace().collect();
-            let template = templates.entry(residue.clone()).or_default();
-            match section.as_str() {
-                "atoms" => template.atoms.push(TemplateAtom {
-                    name: cols[0].into(),
-                    ff_type: cols[1].into(),
-                    charge: cols[2]
-                        .parse()
-                        .map_err(|_| io::Error::other("Invalid OPLS charge"))?,
-                }),
-                "bonds" => template.bonds.push((cols[0].into(), cols[1].into())),
-                "dihedrals" => template
-                    .dihedrals
-                    .push(cols.iter().map(|c| c.to_string()).collect()),
-                "impropers" => template
-                    .impropers
-                    .push(cols.iter().map(|c| c.to_string()).collect()),
-                _ => (),
-            }
-        }
+        let tables = GromacsFfParams::new(&format!("{NONBONDED}\n{BONDED}"))?;
+        let templates = Rtp::new(RESIDUES)?;
 
         let small_mol = small_mol::SmallMolSet::new()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.descrip))?;
         Ok(Self {
+            tables,
             templates,
             small_mol,
         })
+    }
+
+    /// Atom types, and bonded parameters for small molecules, from Foyer's OPLS-AA set. Atom
+    /// types' bond types are Foyer's classes; bonded terms are by class. Typing uses Foyer's
+    /// SMARTS rules, by atom type name.
+    pub fn small_mol_tables(&self) -> &GromacsFfParams {
+        &self.small_mol.tables
+    }
+
+    /// Edits apply to small molecules parameterized from these tables afterwards. (Not those
+    /// cached from LigParGen.)
+    pub fn small_mol_tables_mut(&mut self) -> &mut GromacsFfParams {
+        &mut self.small_mol.tables
     }
 
     /// Assign OPLS-AA parameters to a hydrogenated ligand. Uses validated
@@ -307,6 +277,7 @@ impl OplsSet {
 
             let mut template = self
                 .templates
+                .residues
                 .get(label)
                 .cloned()
                 .ok_or_else(|| error(format!("Missing OPLS template {label}")))?;
@@ -505,6 +476,7 @@ impl OplsSet {
         }
 
         Ok(TypedOplsPeptide {
+            tables: self.tables.to_itp(),
             types,
             charges,
             previous,
@@ -519,6 +491,8 @@ impl OplsSet {
 
 #[derive(Debug)]
 struct TypedOplsPeptide {
+    /// `OplsSet::tables`, as topology text.
+    tables: String,
     types: Vec<String>,
     charges: Vec<f32>,
     previous: Vec<Option<usize>>,
@@ -547,6 +521,7 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
         _rules: &crate::params::NonBondedRules,
     ) -> Result<crate::params::ParameterAssignment, ParamError> {
         let Self {
+            tables,
             types,
             charges,
             previous,
@@ -607,7 +582,7 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
         }
 
         let mut text = format!(
-            "[ defaults ]\n1 3 yes 0.5 0.5\n{NONBONDED}\n{BONDED}\n[ moleculetype ]\nOPLS_PROTEIN 3\n[ atoms ]\n"
+            "[ defaults ]\n1 3 yes 0.5 0.5\n{tables}\n[ moleculetype ]\nOPLS_PROTEIN 3\n[ atoms ]\n"
         );
 
         for (i, atom_type) in types.iter().enumerate() {

@@ -7,7 +7,14 @@ use std::{
     fmt::Write,
 };
 
-use bio_files::{AtomGeneric, BondGeneric, gromacs::GromacsTopology};
+use bio_files::{
+    AtomGeneric, BondGeneric,
+    gromacs::{
+        GromacsFfParams, GromacsTopology,
+        ff_params::{ItpAtomType, ItpTypeEntry},
+    },
+};
+use na_seq::Element;
 
 use super::smarts::{Graph, Pattern};
 use crate::{
@@ -18,15 +25,6 @@ use crate::{
 const DATA: &str = include_str!("../../../param_data/opls/foyer-ligands.tsv");
 
 #[derive(Debug)]
-struct AtomType {
-    class: String,
-    mass: f64,
-    charge: f64,
-    sigma: f64,
-    epsilon: f64,
-}
-
-#[derive(Debug)]
 struct Rule {
     name: String,
     pattern: Pattern,
@@ -34,18 +32,12 @@ struct Rule {
 }
 
 #[derive(Debug)]
-struct Term {
-    classes: Vec<String>,
-    values: Vec<f64>,
-}
-
-#[derive(Debug)]
 pub(crate) struct SmallMolSet {
-    atom_types: HashMap<String, AtomType>,
+    /// Atom types, by name, with their class as bond type. Harmonic bonds and angles (funct 1),
+    /// and Ryckaert-Bellemans torsions (funct 3), by class. "X" is a wildcard. Foyer stores these
+    /// in GROMACS units, except for angles, which we convert from radians.
+    pub(crate) tables: GromacsFfParams,
     rules: Vec<Rule>,
-    bonds: Vec<Term>,
-    angles: Vec<Term>,
-    torsions: Vec<Term>,
     known: super::known::Ligand,
     generator: super::ligpargen::Generator,
 }
@@ -87,11 +79,8 @@ impl SmallMolSet {
 
     pub fn new() -> Result<Self, ParamError> {
         let mut result = Self {
-            atom_types: HashMap::new(),
+            tables: GromacsFfParams::default(),
             rules: Vec::new(),
-            bonds: Vec::new(),
-            angles: Vec::new(),
-            torsions: Vec::new(),
             known: super::known::Ligand::creatine()?,
             generator: Default::default(),
         };
@@ -108,16 +97,26 @@ impl SmallMolSet {
             };
             if cols[0] == "T" && cols.len() == 10 {
                 let name = cols[1].to_owned();
-                result.atom_types.insert(
-                    name.clone(),
-                    AtomType {
-                        class: cols[2].to_owned(),
-                        mass: number(4)?,
-                        charge: number(5)?,
-                        sigma: number(6)?,
-                        epsilon: number(7)?,
-                    },
-                );
+                let atom_type = ItpAtomType {
+                    name: name.clone(),
+                    bond_type: cols[2].to_owned(),
+                    atomic_number: Element::from_letter(cols[3])
+                        .ok()
+                        .map(|e| e.atomic_number() as u32),
+                    mass: number(4)?,
+                    charge: number(5)?,
+                    ptype: "A".to_owned(),
+                    v: number(6)?,
+                    w: number(7)?,
+                    comment: None,
+                };
+
+                let types = &mut result.tables.atom_types;
+                match types.iter_mut().find(|t| t.name == name) {
+                    Some(existing) => *existing = atom_type,
+                    None => types.push(atom_type),
+                }
+
                 if !cols[9].is_empty() {
                     result.rules.push(Rule {
                         name,
@@ -141,16 +140,27 @@ impl SmallMolSet {
             if cols.len() != expected {
                 return Err(err("Invalid bundled OPLS bonded record"));
             }
-            let term = Term {
-                classes: cols[1..=arity].iter().map(|s| s.to_string()).collect(),
-                values: (1 + arity..cols.len())
-                    .map(number)
-                    .collect::<Result<_, _>>()?,
+            let mut params: Vec<f64> = (1 + arity..cols.len())
+                .map(number)
+                .collect::<Result<_, _>>()?;
+            if arity == 3 {
+                params[0] = params[0].to_degrees();
+            }
+
+            let term = ItpTypeEntry {
+                // Foyer leaves wildcards blank.
+                types: cols[1..=arity]
+                    .iter()
+                    .map(|s| if s.is_empty() { "X" } else { s }.to_owned())
+                    .collect(),
+                funct: if arity == 4 { 3 } else { 1 },
+                params,
+                comment: None,
             };
             match arity {
-                2 => result.bonds.push(term),
-                3 => result.angles.push(term),
-                _ => result.torsions.push(term),
+                2 => result.tables.bond_types.push(term),
+                3 => result.tables.angle_types.push(term),
+                _ => result.tables.dihedral_types.push(term),
             }
         }
         Ok(result)
@@ -243,7 +253,22 @@ impl SmallMolSet {
             return Ok(params);
         }
         let names = self.type_atoms(atoms, &graph)?;
-        let types: Vec<_> = names.iter().map(|n| &self.atom_types[n]).collect();
+
+        let by_name: HashMap<_, _> = self
+            .tables
+            .atom_types
+            .iter()
+            .map(|t| (t.name.as_str(), t))
+            .collect();
+        let types = names
+            .iter()
+            .map(|n| {
+                by_name
+                    .get(n.as_str())
+                    .copied()
+                    .ok_or_else(|| err(format!("OPLS-AA atom type {n} has no parameters")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let total_charge: f64 = types.iter().map(|a| a.charge).sum();
         if (total_charge - total_charge.round()).abs() > 0.005 {
             return Err(err(format!(
@@ -257,7 +282,7 @@ impl SmallMolSet {
                 writeln!(
                     text,
                     "{} {:.12} 0 A {:.12e} {:.12e}",
-                    names[i], t.mass, t.sigma, t.epsilon
+                    names[i], t.mass, t.v, t.w
                 )
                 .unwrap();
             }
@@ -276,29 +301,34 @@ impl SmallMolSet {
             )
             .unwrap();
         }
+        // Terms of other forms, e.g. from user-loaded tables, don't apply.
         let lookup = |ids: &[usize],
-                      terms: &[Term],
+                      terms: &[ItpTypeEntry],
+                      funct: u8,
+                      n_params: usize,
                       specific: bool|
          -> Result<Vec<f64>, ParamError> {
-            let classes: Vec<_> = ids.iter().map(|&i| types[i].class.as_str()).collect();
+            let classes: Vec<_> = ids.iter().map(|&i| types[i].bond_type.as_str()).collect();
             let mut found = None;
-            for term in terms {
+            for term in terms.iter().filter(|t| {
+                t.types.len() == ids.len() && t.funct == funct && t.params.len() >= n_params
+            }) {
                 let matches = |reverse: bool| {
-                    term.classes.iter().enumerate().all(|(i, c)| {
-                        c.is_empty() || c == classes[if reverse { ids.len() - 1 - i } else { i }]
+                    term.types.iter().enumerate().all(|(i, c)| {
+                        c == "X" || c == classes[if reverse { ids.len() - 1 - i } else { i }]
                     })
                 };
                 if matches(false) || matches(true) {
                     if found.is_none() {
                         found = Some(term);
                     }
-                    if !specific || term.classes.iter().all(|c| !c.is_empty()) {
+                    if !specific || term.types.iter().all(|c| c != "X") {
                         found = Some(term);
                         break;
                     }
                 }
             }
-            found.map(|t| t.values.clone()).ok_or_else(|| err(format!(
+            found.map(|t| t.params[..n_params].to_vec()).ok_or_else(|| err(format!(
                 "Missing OPLS-AA {}-atom bonded parameter for {}; an explicit OPLS topology is required for this ligand",
                 ids.len(), ids.iter().map(|&i| names[i].as_str()).collect::<Vec<_>>().join("-"),
             )))
@@ -306,7 +336,7 @@ impl SmallMolSet {
         text.push_str("[ bonds ]\n");
         for (i, neighbors) in graph.adj.iter().enumerate() {
             for &j in neighbors.iter().filter(|&&j| j > i) {
-                let v = lookup(&[i, j], &self.bonds, false)?;
+                let v = lookup(&[i, j], &self.tables.bond_types, 1, 2, false)?;
                 writeln!(text, "{} {} 1 {:.12e} {:.12e}", i + 1, j + 1, v[0], v[1]).unwrap();
             }
         }
@@ -314,14 +344,14 @@ impl SmallMolSet {
         for (j, neighbors) in graph.adj.iter().enumerate() {
             for (a, &i) in neighbors.iter().enumerate() {
                 for &k in &neighbors[a + 1..] {
-                    let v = lookup(&[i, j, k], &self.angles, false)?;
+                    let v = lookup(&[i, j, k], &self.tables.angle_types, 1, 2, false)?;
                     writeln!(
                         text,
                         "{} {} {} 1 {:.12e} {:.12e}",
                         i + 1,
                         j + 1,
                         k + 1,
-                        v[0].to_degrees(),
+                        v[0],
                         v[1]
                     )
                     .unwrap();
@@ -333,7 +363,7 @@ impl SmallMolSet {
             for &k in neighbors.iter().filter(|&&k| k > j) {
                 for &i in neighbors.iter().filter(|&&i| i != k) {
                     for &l in graph.adj[k].iter().filter(|&&l| l != j && l != i) {
-                        let v = lookup(&[i, j, k, l], &self.torsions, true)?;
+                        let v = lookup(&[i, j, k, l], &self.tables.dihedral_types, 3, 6, true)?;
                         writeln!(
                             text,
                             "{} {} {} {} 3 {}",

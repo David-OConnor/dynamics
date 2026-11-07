@@ -54,6 +54,10 @@ impl NeighborsNb {
 
 impl MdState {
     pub(crate) fn update_max_displacement_since_rebuild(&mut self) {
+        if self.system_potential.is_some() {
+            return;
+        }
+
         for (i, a) in self.atoms.iter().enumerate() {
             // Static atoms always have 0 displacement.
             if a.static_ {
@@ -100,6 +104,10 @@ impl MdState {
     #[allow(unused)] // Unused when not using GPU.
     /// This rebuilds all neighbor lists.
     pub(crate) fn build_all_neighbors(&mut self, dev: &ComputationDevice) {
+        if self.system_potential.is_some() {
+            return;
+        }
+
         let atom_posits: Vec<_> = self.atoms.iter().map(|a| a.posit).collect();
         let water_posits: Vec<_> = self
             .water

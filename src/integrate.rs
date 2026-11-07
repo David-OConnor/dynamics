@@ -67,6 +67,10 @@ impl MdState {
     ///
     /// `External force` allows injection of a specific force into the system. It's indexed by atom.
     pub fn step(&mut self, dev: &ComputationDevice, dt: f32, external_force: Option<Vec<Vec3>>) {
+        if self.force_error.is_some() {
+            return;
+        }
+
         if let Some(f_ext) = &external_force
             && f_ext.len() != self.atoms.len()
         {
@@ -154,6 +158,9 @@ impl MdState {
 
                 self.reset_f_acc_pe_virial();
                 self.apply_all_forces(dev, &external_force);
+                if self.force_error.is_some() {
+                    return;
+                }
 
                 // Applying from our pre-reset calcs.
                 self.barostat.virial.constraints = virial_constr;
@@ -221,6 +228,9 @@ impl MdState {
 
                 self.reset_f_acc_pe_virial();
                 self.apply_all_forces(dev, &external_force);
+                if self.force_error.is_some() {
+                    return;
+                }
 
                 if log_time {
                     start = Instant::now();
@@ -354,6 +364,9 @@ impl MdState {
                 // Compute forces at x(n+1).
                 self.reset_f_acc_pe_virial();
                 self.apply_all_forces(dev, &external_force);
+                if self.force_error.is_some() {
+                    return;
+                }
 
                 self.barostat.virial.constraints = virial_constr;
 

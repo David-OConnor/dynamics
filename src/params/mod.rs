@@ -19,8 +19,10 @@ use crate::{
 pub mod amber;
 pub mod charmm;
 mod explicit;
+pub mod gfnff;
 pub mod opls;
 mod parameterize;
+pub mod potential;
 mod table;
 
 pub use explicit::ExplicitParams;
@@ -53,6 +55,10 @@ pub enum ForceFieldFamily {
     /// assignments, then the remote service if allowed. Other molecule classes
     /// require explicit OPLS parameters; GAFF2 is not used with this family.
     Opls,
+    /// GFN-FF through xTB; owns the complete system potential.
+    Gfnn,
+    // todo: Put this in when ready
+    // OrcaSurff,
     /// A caller-supplied classical force field. Construct its set with `FfParamSet::custom`.
     Custom,
 }
@@ -94,8 +100,7 @@ pub struct NonBondedRules {
     pub nbfix: NbFix,
 }
 
-/// A classical force field consists of a parameterization backend and system conventions.
-/// The engine consumes resolved terms, independently of the backend or file formats.
+/// A parameterization backend and system conventions, or a whole-system potential.
 #[derive(Debug)]
 pub struct FfParamSet {
     pub family: ForceFieldFamily,
@@ -116,12 +121,13 @@ impl Default for FfParamSet {
 }
 
 impl FfParamSet {
-    /// All three built-in backends load their tables from compile-time embedded data.
+    /// Classical families load embedded tables; GFN-FF uses an installed xTB executable.
     pub fn from_family(family: ForceFieldFamily) -> io::Result<Self> {
         match family {
             ForceFieldFamily::Amber => Self::new_amber(),
             ForceFieldFamily::Charmm36 => Self::new_charmm(),
             ForceFieldFamily::Opls => Self::new_opls(),
+            ForceFieldFamily::Gfnn => Ok(Self::new_gfnff()),
             ForceFieldFamily::Custom => Err(io::Error::other(
                 "Custom force fields require a backend, nonbonded rules and water model",
             )),
@@ -133,6 +139,22 @@ impl FfParamSet {
             backend: Box::new(AmberSet::bundled()?),
             ..Self::default()
         })
+    }
+
+    pub fn new_gfnff() -> Self {
+        Self {
+            family: ForceFieldFamily::Gfnn,
+            backend: Box::new(gfnff::GfnffSet::default()),
+            ..Self::default()
+        }
+    }
+
+    pub fn gfnff(&self) -> Option<&gfnff::GfnffSet> {
+        (&*self.backend as &dyn Any).downcast_ref()
+    }
+
+    pub fn gfnff_mut(&mut self) -> Option<&mut gfnff::GfnffSet> {
+        (&mut *self.backend as &mut dyn Any).downcast_mut()
     }
 
     /// Load caller-supplied Amber DAT/FRCMOD/LIB files.

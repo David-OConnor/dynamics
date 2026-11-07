@@ -102,6 +102,7 @@ mod com_zero;
 #[cfg(feature = "cuda")]
 mod gpu_interface;
 pub mod minimize_energy;
+mod system_potential;
 
 pub mod alchemical;
 pub use params::{amber::typing as param_inference, charmm::cmap};
@@ -627,6 +628,9 @@ pub struct MdOverrides {
 
 #[derive(Default)]
 pub struct MdState {
+    pub(crate) system_potential: Option<Box<dyn params::potential::SystemPotential>>,
+    pub force_error: Option<ParamError>,
+    pub potential_components: Vec<params::potential::EnergyComponent>,
     // todo: Update how we handle mode A/R.
     // todo: You need to rework this state in light of arbitrary mol count.
     pub cfg: MdConfig,
@@ -743,6 +747,10 @@ impl MdState {
                 "The MD config's force field family ({:?}) doesn't match the parameter set's ({:?}).",
                 cfg.ff_family, param_set.family
             )));
+        }
+
+        if param_set.backend.system_potential().is_some() {
+            return Self::new_system_potential(dev, cfg, mols, param_set);
         }
 
         if param_set.family != ForceFieldFamily::Amber
@@ -1338,6 +1346,12 @@ impl MdState {
         dev: &ComputationDevice,
         external_force: &Option<Vec<Vec3>>,
     ) {
+        if self.system_potential.is_some() {
+            self.apply_system_potential(external_force);
+
+            return;
+        }
+
         let mut start = Instant::now();
         let log_time = self.step_count.is_multiple_of(COMPUTATION_TIME_RATIO);
 
@@ -1525,6 +1539,7 @@ pub fn compute_energy_snapshot(
     // dt is arbitrary?
     let dt = 0.001;
     md_state.step(dev, dt, None);
+    md_state.check_force_error()?;
 
     if md_state.snapshots.is_empty() {
         return Err(ParamError {

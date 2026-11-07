@@ -181,6 +181,10 @@ impl MdState {
         e_prev: &mut f64,
         external_force: &Option<Vec<Vec3>>,
     ) -> bool {
+        if self.force_error.is_some() {
+            return true;
+        }
+
         let mut alpha_try = *alpha;
 
         loop {
@@ -227,6 +231,10 @@ impl MdState {
             self.build_neighbors_if_needed(dev);
 
             compute_forces_and_energy(self, dev, external_force);
+            if self.force_error.is_some() {
+                return true;
+            }
+
             let e_new = self.potential_energy;
 
             if self.cfg.overrides.snapshots_during_energy_min {

@@ -97,6 +97,16 @@ returns `params::ExplicitParams`, which also carries Urey–Bradley, harmonic im
 CMAP, NBFIX, exclusions and special 1–4 terms. Adding such a backend requires no new
 dispatch branch in MD or export. New energy functional forms still require engine support.
 
+## GFN-FF
+
+Use `FfParamSet::new_gfnff()` and `MdConfig::for_family(ForceFieldFamily::Gfnn)`. Install xTB (tested with 6.7.1) and put `xtb` on PATH, set `XTB_EXECUTABLE`, or set `set.gfnff_mut().unwrap().executable`. Its runtime libraries must also be discoverable. Optional `parameter_file` and `total_charge` overrides live on that backend.
+
+xTB evaluates the full potential, including dispersion, repulsion, EEQ electrostatics, and hydrogen/halogen bonds. Each step launches xTB in a private directory and reuses the initial topology. No Amber bonded, LJ, PME, or counterion terms are added. This process-based implementation favors compatibility over throughput.
+
+The current adapter supports nonperiodic systems with flexible hydrogens and no barostat or generated solvent. Explicit water and ions may be supplied as ordinary atoms. Use short timesteps, e.g. 0.5 fs with ordinary hydrogen masses. GROMACS export and alchemical scaling are unsupported. Classical bonded/nonbonded energy summaries are NaN; use `potential_components` instead. Check `check_force_error()` after steps and minimization; backend failures stop integration.
+
+`SystemPotentialBackend` and `SystemPotential` allow other whole-system models to own their force and long-range evaluation. Classical backends retain the existing table path.
+
 ## Source organization and migration
 
 * `params`: shared traits, options, conventions, strict table backend and resolved terms.

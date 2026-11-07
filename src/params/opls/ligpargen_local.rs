@@ -13,8 +13,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::ligpargen::Generated;
 use sha2::{Digest, Sha256};
+
+use super::ligpargen::Generated;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_OUTPUT: u64 = 8 * 1024 * 1024;

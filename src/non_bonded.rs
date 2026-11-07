@@ -1078,6 +1078,10 @@ impl MdState {
     /// Re-initializes the SPME based on sim box dimensions. Run this at init, and whenever you
     /// update the sim box. Sets FFT planner dimensions.
     pub(crate) fn regen_pme(&mut self, dev: &ComputationDevice) {
+        if self.system_potential.is_some() {
+            return;
+        }
+
         let [lx, ly, lz] = self.cell.extent.to_arr();
         let l = (lx, ly, lz);
         let n = get_grid_n(l, self.cfg.spme_mesh_spacing);

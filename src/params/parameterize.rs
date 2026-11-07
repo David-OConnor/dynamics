@@ -75,6 +75,10 @@ impl From<ExplicitParams> for ParameterAssignment {
 pub trait ForceFieldBackend: Any + Debug + Send + Sync {
     fn name(&self) -> &str;
 
+    fn system_potential(&self) -> Option<&dyn super::potential::SystemPotentialBackend> {
+        None
+    }
+
     fn assign_atom_types<'a>(
         &'a self,
         molecule: &'a MolDynamics,
@@ -135,6 +139,12 @@ impl FfParamSet {
         molecule: &MolDynamics,
         options: &ParameterizationOptions,
     ) -> Result<Parameterization, ParamError> {
+        if self.backend.system_potential().is_some() {
+            return Err(ParamError::new(
+                "This force field owns a whole-system potential; use parameterize or MdState::new",
+            ));
+        }
+
         if let Some(parameters) = &molecule.explicit_params {
             validate_parameters(parameters, molecule.atoms.len(), &self.nonbonded_rules)?;
             let charges = input_charges(&molecule.atoms)?;
@@ -195,6 +205,16 @@ impl FfParamSet {
         molecule: &MolDynamics,
         options: &ParameterizationOptions,
     ) -> Result<MolDynamics, ParamError> {
+        if let Some(backend) = self.backend.system_potential() {
+            if options.charge_policy == ChargePolicy::Supplied {
+                return Err(ParamError::new(
+                    "This potential calculates its own partial charges",
+                ));
+            }
+
+            return backend.prepare(molecule);
+        }
+
         let assignment = self.assign(molecule, options)?;
         let mut result = molecule.clone();
         for ((atom, name), charge) in result

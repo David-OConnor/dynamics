@@ -132,6 +132,7 @@ pub enum AlchemicalError {
     InvalidMoleculeIndex { mol_idx: usize, mol_count: usize },
     AlchemicalMoleculeNotSet,
     UnsupportedDevice(&'static str),
+    UnsupportedPotential,
 }
 
 impl Display for AlchemicalError {
@@ -168,6 +169,10 @@ impl Display for AlchemicalError {
                 write!(f, "no alchemical molecule has been configured")
             }
             Self::UnsupportedDevice(message) => write!(f, "{message}"),
+            Self::UnsupportedPotential => write!(
+                f,
+                "Alchemical scaling is unavailable for this system potential"
+            ),
         }
     }
 }
@@ -339,6 +344,10 @@ impl MdState {
         mol_idx: usize,
         lambda: f64,
     ) -> Result<(), AlchemicalError> {
+        if self.system_potential.is_some() {
+            return Err(AlchemicalError::UnsupportedPotential);
+        }
+
         if !lambda.is_finite() || !(0.0..=1.0).contains(&lambda) {
             return Err(AlchemicalError::InvalidLambda(lambda));
         }

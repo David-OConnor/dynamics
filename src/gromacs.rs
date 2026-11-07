@@ -13,6 +13,11 @@ use crate::{ForceFieldFamily, MolDynamics, ParamError, params::FfParamSet, solve
 /// Water/ion values and conventions shared with native dynamics, converted to
 /// the nm and kJ/mol units expected by Bio Files' GROMACS writer.
 pub fn topology_config(set: &FfParamSet, water: Option<&WaterModel>) -> TopologyConfig {
+    assert!(
+        set.backend.system_potential().is_none(),
+        "Whole-system potentials cannot be exported as GROMACS classical topologies"
+    );
+
     let w = water.unwrap_or(&set.default_water);
     TopologyConfig {
         force_field: match set.family {
@@ -20,6 +25,7 @@ pub fn topology_config(set: &FfParamSet, water: Option<&WaterModel>) -> Topology
             ForceFieldFamily::Charmm36 => ForceField::Charmm36,
             ForceFieldFamily::Opls => ForceField::Opls,
             ForceFieldFamily::Custom => ForceField::Amber,
+            ForceFieldFamily::Gfnn => unreachable!("GFN-FF requires its native evaluator"),
         },
         // Conventions come from data, including caller-supplied classical force fields.
         defaults_override: Some((
@@ -58,6 +64,12 @@ pub fn topology_config(set: &FfParamSet, water: Option<&WaterModel>) -> Topology
 /// Compatibility wrapper. Parameterization is independent of the export format;
 /// prefer `FfParamSet::parameterize` for new callers.
 pub fn parameterize(mol: &MolDynamics, set: &FfParamSet) -> Result<MolDynamics, ParamError> {
+    if set.backend.system_potential().is_some() {
+        return Err(ParamError::new(
+            "GFN-FF cannot be exported to GROMACS; use Dynamics",
+        ));
+    }
+
     set.parameterize(mol)
 }
 
@@ -69,6 +81,12 @@ pub fn make_topology(
     water: Option<&WaterModel>,
     include_water: bool,
 ) -> Result<String, ParamError> {
+    if set.backend.system_potential().is_some() {
+        return Err(ParamError::new(
+            "Whole-system potentials cannot be exported as GROMACS classical topologies",
+        ));
+    }
+
     let cfg = topology_config(set, water);
     let mut s = cfg.defaults_text();
     s.push_str("[ atomtypes ]\n");

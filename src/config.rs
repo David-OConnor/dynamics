@@ -164,6 +164,12 @@ impl MdConfig {
         match ff_family {
             // OPLS uses the same 10 Å hard LJ cutoff and PME configuration.
             ForceFieldFamily::Amber | ForceFieldFamily::Opls | ForceFieldFamily::Custom => (),
+            ForceFieldFamily::Gfnn => {
+                result.solvent = Solvent::None;
+                result.barostat_cfg = None;
+                result.hydrogen_constraint = HydrogenConstraint::Flexible;
+                result.overrides.skip_counterion_insertion = true;
+            }
             ForceFieldFamily::Charmm36 => {
                 // LJ force switched from 10 to 12 Å, and PME with a 12 Å real-space cutoff.
                 result.lj_cutoff = 12.;
