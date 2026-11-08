@@ -105,7 +105,8 @@ impl GfnffSet {
         Ok(solvent)
     }
 
-    fn charge(&self, charges: impl Iterator<Item = Option<f64>>) -> Result<f64, ParamError> {
+    /// Resolve the total system charge.
+    pub fn charge(&self, charges: impl Iterator<Item = Option<f64>>) -> Result<f64, ParamError> {
         if let Some(charge) = self.total_charge {
             if charge.is_finite() && (charge - charge.round()).abs() < 1e-6 {
                 return Ok(charge);
