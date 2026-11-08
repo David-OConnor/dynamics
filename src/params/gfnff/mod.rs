@@ -1,7 +1,9 @@
 //! GFN-FF through xTB, with a private working directory and retained topology.
 //!
 //! Requires [xTB](https://doi.org/10.1002/wcms.1493) to be installed. [xtB release binaries](https://github.com/grimme-lab/xtb/releases)
-//! xTB parameterizes molecules, and computes forces at each step. We use our native integrator; not xTB's.
+//! Dynamics integrates; libxtb supplies forces, with an executable fallback.
+
+mod libxtb;
 
 use std::{
     env,
@@ -24,6 +26,14 @@ use crate::{AtomDynamics, HydrogenConstraint, MdConfig, MolDynamics, ParamError,
 
 const BOHR_ANGSTROM: f64 = 0.529_177_210_903;
 const HARTREE_KCAL: f64 = 627.509_474_063_1;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GfnffEngine {
+    #[default]
+    Auto,
+    Library,
+    Executable,
+}
 
 /// Terms evaluated by xTB; LJ mixing and Amber PME do not apply.
 pub const TERMS: &[(&str, &str)] = &[
@@ -64,6 +74,10 @@ pub const TERMS: &[(&str, &str)] = &[
 
 #[derive(Clone, Debug)]
 pub struct GfnffSet {
+    /// Force evaluator used by Dynamics. Inspection uses the executable.
+    pub engine: GfnffEngine,
+    /// Shared library file or directory; otherwise XTB_LIBRARY and standard locations.
+    pub library: Option<PathBuf>,
     /// xTB executable; otherwise XTB_EXECUTABLE, then xtb on PATH.
     pub executable: Option<PathBuf>,
     /// Optional xTB GFN-FF parameter file; otherwise xTB's built-in parameters.
@@ -74,12 +88,15 @@ pub struct GfnffSet {
     /// `None` evaluates in vacuum. Applies to both inspection and MD; keep
     /// `MdConfig::solvent` set to `Solvent::None` to avoid generating explicit solvent.
     pub alpb_solvent: Option<String>,
+    /// Executable timeout. In-process libxtb calls run synchronously.
     pub timeout: Duration,
 }
 
 impl Default for GfnffSet {
     fn default() -> Self {
         Self {
+            engine: GfnffEngine::Auto,
+            library: None,
             executable: None,
             parameter_file: None,
             total_charge: None,
@@ -228,7 +245,25 @@ impl SystemPotentialBackend for GfnffSet {
                 .flat_map(|m| &m.atoms)
                 .map(|a| a.partial_charge.map(f64::from)),
         )?;
-        let elements = atoms.iter().map(|a| a.element).collect();
+        let elements: Vec<_> = atoms.iter().map(|a| a.element).collect();
+
+        if self.engine != GfnffEngine::Executable {
+            match libxtb::LibXtbPotential::new(self, elements.clone(), charge) {
+                Ok(potential) => {
+                    println!("Using libxtb for GFN-FF forces.");
+
+                    return Ok(Box::new(potential));
+                }
+                Err(error)
+                    if self.engine == GfnffEngine::Auto
+                        && self.library.is_none()
+                        && env::var_os("XTB_LIBRARY").is_none() =>
+                {
+                    eprintln!("libxtb unavailable; using the xTB executable: {error}");
+                }
+                Err(error) => return Err(error),
+            }
+        }
 
         Ok(Box::new(XtbPotential::new(self, elements, charge)?))
     }
