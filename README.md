@@ -191,6 +191,12 @@ Partial charges are included with the other OPLS parameters for proteins, and fe
 ### GFN-FF
 Partial charges are computed as required by the *xTB* executable.
 
+For implicit ALPB solvent, set `params.gfnff_mut().unwrap().alpb_solvent = Some("water".into())`
+on your `FfParamSet`. Other xTB solvent names, such as `methanol`, `dmso`, and `octanol`, are
+also accepted. Use `MdConfig::for_family(ForceFieldFamily::Gfnn)` and leave its generated
+`solvent` setting at `Solvent::None`. xTB includes solvation in both energies and forces;
+no solvent molecules are generated. See [GFN-FF configuration](docs/force_fields.md#gfn-ff).
+
 
 ## Bonded parameter overrides for small organic molecules
 

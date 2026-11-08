@@ -103,7 +103,20 @@ Use `FfParamSet::new_gfnff()` and `MdConfig::for_family(ForceFieldFamily::Gfnn)`
 
 xTB evaluates the full potential, including dispersion, repulsion, EEQ electrostatics, and hydrogen/halogen bonds. Each step launches xTB in a private directory and reuses the initial topology. No Amber bonded, LJ, PME, or counterion terms are added. This process-based implementation favors compatibility over throughput.
 
-The current adapter supports nonperiodic systems with flexible hydrogens and no barostat or generated solvent. Explicit water and ions may be supplied as ordinary atoms. Use short timesteps, e.g. 0.5 fs with ordinary hydrogen masses. GROMACS export and alchemical scaling are unsupported. Classical bonded/nonbonded energy summaries are NaN; use `potential_components` instead. Check `check_force_error()` after steps and minimization; backend failures stop integration.
+The current adapter supports nonperiodic systems with flexible hydrogens and no barostat or generated solvent. For implicit solvent, set `alpb_solvent` on the GFN-FF backend to an [xTB ALPB solvent name](https://xtb-docs.readthedocs.io/en/latest/gbsa.html), such as `water`, `methanol`, `dmso`, or `octanol`:
+
+```rust
+use dynamics::{MdConfig, params::{FfParamSet, ForceFieldFamily}};
+
+let cfg = MdConfig::for_family(ForceFieldFamily::Gfnn);
+let mut set = FfParamSet::new_gfnff();
+set.gfnff_mut().unwrap().alpb_solvent = Some("water".into());
+// Pass cfg and set to MdState::new as usual.
+```
+
+`alpb_solvent` defaults to `None` (vacuum). It applies to molecule inspection, preparation, minimization, and every MD force evaluation. xTB supplies solvent-corrected energies and gradients; the additive `Gsolv` component is included once in `potential_components`. No solvent atoms, classical water forces, or barostat are added. Keep `cfg.solvent = Solvent::None`, as supplied by the GFN-FF preset; generated solvent settings remain unsupported. Unknown solvent names are reported by xTB.
+
+Explicit water and ions may also be supplied as ordinary atoms. Use short timesteps, e.g. 0.5 fs with ordinary hydrogen masses. GROMACS export and alchemical scaling are unsupported. Classical bonded/nonbonded energy summaries are NaN; use `potential_components` instead. Check `check_force_error()` after steps and minimization; backend failures stop integration.
 
 `SystemPotentialBackend` and `SystemPotential` allow other whole-system models to own their force and long-range evaluation. Classical backends retain the existing table path.
 

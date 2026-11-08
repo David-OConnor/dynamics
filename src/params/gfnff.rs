@@ -1,6 +1,7 @@
 //! GFN-FF through xTB, with a private working directory and retained topology.
 //!
 //! Requires [xTB](https://doi.org/10.1002/wcms.1493) to be installed. [xtB release binaries](https://github.com/grimme-lab/xtb/releases)
+//! xTB parameterizes molecules, and computes forces at each step. We use our native integrator; not xTB's.
 
 use std::{
     env,
@@ -58,6 +59,7 @@ pub const TERMS: &[(&str, &str)] = &[
     ),
     ("external energy", "External potential"),
     ("add. restraining", "Additional restraints"),
+    ("Gsolv", "ALPB solvation free energy (when enabled)"),
 ];
 
 #[derive(Clone, Debug)]
@@ -68,6 +70,10 @@ pub struct GfnffSet {
     pub parameter_file: Option<PathBuf>,
     /// System charge in e. Otherwise inferred from complete input charges, or zero.
     pub total_charge: Option<f64>,
+    /// Implicit ALPB solvent, using an xTB name such as `water`, `methanol`, or `dmso`.
+    /// `None` evaluates in vacuum. Applies to both inspection and MD; keep
+    /// `MdConfig::solvent` set to `Solvent::None` to avoid generating explicit solvent.
+    pub alpb_solvent: Option<String>,
     pub timeout: Duration,
 }
 
@@ -77,12 +83,28 @@ impl Default for GfnffSet {
             executable: None,
             parameter_file: None,
             total_charge: None,
+            alpb_solvent: None,
             timeout: Duration::from_secs(300),
         }
     }
 }
 
 impl GfnffSet {
+    fn validated_alpb_solvent(&self) -> Result<Option<&str>, ParamError> {
+        let solvent = self.alpb_solvent.as_deref().map(str::trim);
+        if solvent.is_some_and(|s| {
+            s.is_empty()
+                || s.starts_with('-')
+                || s.chars().any(|c| c.is_whitespace() || c.is_control())
+        }) {
+            return Err(ParamError::new(
+                "GFN-FF ALPB solvent must be a single xTB solvent name, such as water or methanol",
+            ));
+        }
+
+        Ok(solvent)
+    }
+
     fn charge(&self, charges: impl Iterator<Item = Option<f64>>) -> Result<f64, ParamError> {
         if let Some(charge) = self.total_charge {
             if charge.is_finite() && (charge - charge.round()).abs() < 1e-6 {
@@ -124,6 +146,7 @@ impl GfnffSet {
                 .map(|a| a.partial_charge.map(f64::from)),
         )?;
         let elements: Vec<_> = molecule.atoms.iter().map(|a| a.element).collect();
+
         let positions: Vec<Vec3> = match &molecule.atom_posits {
             Some(p) => p.iter().map(|p| (*p).into()).collect(),
             None => molecule.atoms.iter().map(|a| a.posit.into()).collect(),
@@ -161,7 +184,7 @@ impl SystemPotentialBackend for GfnffSet {
             || cfg.hydrogen_constraint != HydrogenConstraint::Flexible
         {
             return Err(ParamError::new(
-                "GFN-FF requires explicit input atoms, no generated solvent or barostat, and flexible hydrogens. Use MdConfig::for_family(Gfnn).",
+                "GFN-FF requires no generated solvent or barostat and flexible hydrogens. Use MdConfig::for_family(Gfnn); set GfnffSet::alpb_solvent for implicit solvent.",
             ));
         }
 
@@ -173,6 +196,8 @@ impl SystemPotentialBackend for GfnffSet {
                 "GFN-FF cannot disable individual energy terms",
             ));
         }
+
+        self.validated_alpb_solvent()?;
 
         Ok(())
     }
@@ -214,6 +239,7 @@ struct XtbPotential {
     executable: PathBuf,
     elements: Vec<na_seq::Element>,
     charge: f64,
+    alpb_solvent: Option<String>,
     timeout: Duration,
     initialized: bool,
 }
@@ -231,9 +257,11 @@ impl XtbPotential {
         {
             return Err(ParamError::new("GFN-FF requires atoms with elements H–Rn"));
         }
+
         if set.timeout.is_zero() {
             return Err(ParamError::new("xTB timeout must be positive"));
         }
+        let alpb_solvent = set.validated_alpb_solvent()?.map(str::to_owned);
 
         let directory = tempfile::Builder::new()
             .prefix("dynamics-gfnff-")
@@ -241,11 +269,13 @@ impl XtbPotential {
         if let Some(path) = &set.parameter_file {
             fs::copy(path, directory.path().join(".param_gfnff.xtb"))?;
         }
+
         let executable = set
             .executable
             .clone()
             .or_else(|| env::var_os("XTB_EXECUTABLE").map(PathBuf::from))
             .unwrap_or_else(|| "xtb".into());
+
         let executable = if executable.components().count() > 1 {
             fs::canonicalize(&executable).map_err(|e| {
                 ParamError::new(&format!("xTB executable {}: {e}", executable.display()))
@@ -259,15 +289,15 @@ impl XtbPotential {
             executable,
             elements,
             charge,
+            alpb_solvent,
             timeout: set.timeout,
             initialized: false,
         })
     }
 
-    fn run(&self) -> Result<String, ParamError> {
-        let stdout = File::create(self.directory.path().join("stdout"))?;
-        let stderr = File::create(self.directory.path().join("stderr"))?;
+    fn command(&self) -> Command {
         let mut command = Command::new(&self.executable);
+
         command
             .current_dir(self.directory.path())
             .args([
@@ -281,20 +311,32 @@ impl XtbPotential {
             .env("XTBHOME", self.directory.path())
             .env("OMP_NUM_THREADS", "1")
             .env("MKL_NUM_THREADS", "1")
-            .stdin(Stdio::null())
-            .stdout(stdout)
-            .stderr(stderr);
+            .stdin(Stdio::null());
+
+        if let Some(solvent) = &self.alpb_solvent {
+            command.args(["--alpb", solvent]);
+        }
+
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-
             command.creation_flags(0x08000000);
         }
+
+        command
+    }
+
+    fn run(&self) -> Result<String, ParamError> {
+        let stdout = File::create(self.directory.path().join("stdout"))?;
+        let stderr = File::create(self.directory.path().join("stderr"))?;
+        let mut command = self.command();
+        command.stdout(stdout).stderr(stderr);
 
         let mut child = command.spawn().map_err(|e| ParamError::new(&format!(
             "Unable to run xTB ({}): {e}. Install xTB and set its path in the force-field viewer, or on the system path.",
             self.executable.display()
         )))?;
+
         let start = Instant::now();
         let status = loop {
             match child.try_wait() {
@@ -316,6 +358,7 @@ impl XtbPotential {
                 }
             }
         };
+
         let output = fs::read_to_string(self.directory.path().join("stdout"))?;
         let errors = fs::read_to_string(self.directory.path().join("stderr"))?;
         if !status.success()
@@ -386,37 +429,7 @@ impl SystemPotential for XtbPotential {
                 "xTB did not reuse the fixed GFN-FF topology",
             ));
         }
-        let mut components = Vec::new();
-        let mut energy = None;
-        for line in output.lines() {
-            let Some(line) = line.trim().strip_prefix("::") else {
-                continue;
-            };
-            let Some((label_value, _)) = line.split_once(" Eh ") else {
-                continue;
-            };
-            let mut parts: Vec<_> = label_value.split_whitespace().collect();
-            let Some(value) = parts.pop().and_then(parse_number) else {
-                continue;
-            };
-            let name = parts.join(" ");
-            if name == "total energy" {
-                energy = Some(value * HARTREE_KCAL);
-            } else if TERMS.iter().any(|(term, _)| *term == name) {
-                components.push(EnergyComponent {
-                    name,
-                    energy: value * HARTREE_KCAL,
-                });
-            }
-        }
-        let energy = energy.ok_or_else(|| ParamError::new("Missing GFN-FF total energy"))?;
-        if components.len() != TERMS.len()
-            || (components.iter().map(|c| c.energy).sum::<f64>() - energy).abs() > 1e-5
-        {
-            return Err(ParamError::new(
-                "Incomplete or inconsistent GFN-FF energy components",
-            ));
-        }
+        let (energy, components) = parse_energy(&output, self.alpb_solvent.is_some())?;
 
         let gradient = fs::read_to_string(self.directory.path().join("gradient"))?;
         let lines: Vec<_> = gradient.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -426,6 +439,7 @@ impl SystemPotential for XtbPotential {
         {
             return Err(ParamError::new("Invalid xTB gradient shape"));
         }
+
         let mut forces = Vec::with_capacity(count);
         for line in &lines[2 + count..2 + 2 * count] {
             let values: Vec<_> = line.split_whitespace().map(parse_number).collect();
@@ -439,11 +453,13 @@ impl SystemPotential for XtbPotential {
                 (values[2].unwrap() * scale) as f32,
             ));
         }
+
         let charges = fs::read_to_string(self.directory.path().join("gfnff_charges"))?;
         let charges: Option<Vec<_>> = charges
             .split_whitespace()
             .map(|v| parse_number(v).map(|q| q as f32))
             .collect();
+
         let charges = charges.ok_or_else(|| ParamError::new("Invalid xTB EEQ charge"))?;
         if charges.len() != count
             || (charges.iter().map(|q| *q as f64).sum::<f64>() - self.charge).abs()
@@ -467,9 +483,218 @@ impl SystemPotential for XtbPotential {
     }
 }
 
+fn parse_energy(output: &str, alpb: bool) -> Result<(f64, Vec<EnergyComponent>), ParamError> {
+    let mut components = Vec::new();
+    let mut energy = None;
+
+    for line in output.lines() {
+        let Some(line) = line.trim().strip_prefix("::") else {
+            continue;
+        };
+        let Some((label_value, _)) = line.split_once(" Eh ") else {
+            continue;
+        };
+        let mut parts: Vec<_> = label_value.split_whitespace().collect();
+        let Some(value) = parts.pop().and_then(parse_number) else {
+            continue;
+        };
+        let name = parts.join(" ");
+        // xTB also prints Gborn, Gsasa, Ghb, and Gshift under Gsolv. Only the
+        // aggregate belongs in the additive component list, to avoid double counting.
+        let name = name.strip_prefix("-> ").unwrap_or(&name);
+        if name == "total energy" {
+            energy = Some(value * HARTREE_KCAL);
+        } else if TERMS.iter().any(|(term, _)| *term == name) {
+            components.push(EnergyComponent {
+                name: name.to_owned(),
+                energy: value * HARTREE_KCAL,
+            });
+        }
+    }
+
+    let energy = energy.ok_or_else(|| ParamError::new("Missing GFN-FF total energy"))?;
+    let mut expected_terms = TERMS.iter().filter(|(name, _)| *name != "Gsolv" || alpb);
+    if components.len() != TERMS.len() - usize::from(!alpb)
+        || expected_terms
+            .any(|(name, _)| components.iter().filter(|c| c.name == *name).count() != 1)
+        || (components.iter().map(|c| c.energy).sum::<f64>() - energy).abs() > 1e-5
+    {
+        return Err(ParamError::new(
+            "Incomplete or inconsistent GFN-FF energy components",
+        ));
+    }
+
+    Ok((energy, components))
+}
+
 fn parse_number(text: &str) -> Option<f64> {
     text.replace(['D', 'd'], "E")
         .parse::<f64>()
         .ok()
         .filter(|v| v.is_finite())
+}
+
+#[cfg(test)]
+mod tests {
+    use na_seq::Element;
+
+    use super::*;
+    use crate::params::ForceFieldFamily;
+
+    const VACUUM_OUTPUT: &str = "
+         :: total energy           -0.110000000000 Eh    ::
+         :: gradient norm           0.010000000000 Eh/a0 ::
+         :: bond energy            -0.100000000000 Eh    ::
+         :: angle energy            0.002000000000 Eh    ::
+         :: torsion energy          0.000000000000 Eh    ::
+         :: repulsion energy        0.003000000000 Eh    ::
+         :: electrostat energy     -0.010000000000 Eh    ::
+         :: dispersion energy      -0.004000000000 Eh    ::
+         :: HB energy              -0.001000000000 Eh    ::
+         :: XB energy               0.000000000000 Eh    ::
+         :: bonded atm energy       0.000000000000 Eh    ::
+         :: external energy         0.000000000000 Eh    ::
+         :: add. restraining        0.000000000000 Eh    ::
+         :: total charge            0.000000000000 e     ::
+";
+
+    fn alpb_output() -> String {
+        let mut output = VACUUM_OUTPUT.replace("-0.110000000000", "-0.120000000000");
+        output.push_str(
+            "
+         :: total w/o Gsolv         -0.110000000000 Eh    ::
+         :: total w/o Gsasa/hb      -0.113000000000 Eh    ::
+         :: -> Gsolv               -0.010000000000 Eh    ::
+         ::    -> Gborn            -0.003000000000 Eh    ::
+         ::    -> Gsasa             0.001000000000 Eh    ::
+         ::    -> Ghb              -0.008000000000 Eh    ::
+         ::    -> Gshift            0.000000000000 Eh    ::
+",
+        );
+        output
+    }
+
+    #[test]
+    fn vacuum_and_alpb_energies_sum_without_double_counting() {
+        let (vacuum, components) = parse_energy(VACUUM_OUTPUT, false).unwrap();
+        assert!((vacuum + 0.11 * HARTREE_KCAL).abs() < 1e-8);
+        assert_eq!(components.len(), 11);
+
+        let (solvated, components) = parse_energy(&alpb_output(), true).unwrap();
+        assert!((solvated + 0.12 * HARTREE_KCAL).abs() < 1e-8);
+        assert_eq!(components.len(), 12);
+        assert!((components.iter().map(|c| c.energy).sum::<f64>() - solvated).abs() < 1e-8);
+        let solvation = components.iter().find(|c| c.name == "Gsolv").unwrap();
+        assert!((solvation.energy + 0.01 * HARTREE_KCAL).abs() < 1e-8);
+        assert!((solvated - vacuum - solvation.energy).abs() < 1e-8);
+    }
+
+    #[test]
+    fn rejects_missing_unexpected_and_duplicate_energy_components() {
+        assert!(parse_energy(VACUUM_OUTPUT, true).is_err());
+        assert!(parse_energy(&alpb_output(), false).is_err());
+        assert!(parse_energy(&alpb_output().replace("-> Gsolv", "-> missing"), true).is_err());
+        assert!(
+            parse_energy(
+                &alpb_output().replace("-0.120000000000", "-0.130000000000"),
+                true
+            )
+            .is_err()
+        );
+        // These zero-energy terms have the right count and sum, but one is duplicated.
+        assert!(parse_energy(&alpb_output().replace("XB energy", "torsion energy"), true).is_err());
+    }
+
+    #[test]
+    fn alpb_is_passed_to_each_evaluation_without_generating_solvent() {
+        let set = GfnffSet {
+            alpb_solvent: Some(" water ".into()),
+            ..Default::default()
+        };
+        let cfg = MdConfig::for_family(ForceFieldFamily::Gfnn);
+        set.validate_config(&cfg).unwrap();
+        let mut evaluator = XtbPotential::new(&set, vec![Element::Oxygen], 0.).unwrap();
+        for initialized in [false, true] {
+            evaluator.initialized = initialized;
+            let command = evaluator.command();
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            assert_eq!(
+                args,
+                [
+                    "geometry.xyz",
+                    "--gfnff",
+                    "--grad",
+                    "--chrg",
+                    "0",
+                    "--alpb",
+                    "water"
+                ]
+            );
+        }
+
+        let mut generated = cfg;
+        generated.solvent = Solvent::WaterOpc;
+        assert!(set.validate_config(&generated).is_err());
+
+        let vacuum = XtbPotential::new(&GfnffSet::default(), vec![Element::Oxygen], 0.).unwrap();
+        assert!(!vacuum.command().get_args().any(|arg| arg == "--alpb"));
+    }
+
+    #[test]
+    fn rejects_invalid_alpb_names_before_starting_xtb() {
+        for solvent in ["", " ", "--md", "water --md", "water\0", "water\nmethanol"] {
+            let set = GfnffSet {
+                alpb_solvent: Some(solvent.into()),
+                ..Default::default()
+            };
+            assert!(
+                set.validate_config(&MdConfig::for_family(ForceFieldFamily::Gfnn))
+                    .is_err()
+            );
+            assert!(XtbPotential::new(&set, vec![Element::Oxygen], 0.).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires xTB on PATH or XTB_EXECUTABLE"]
+    fn xtb_alpb_forces_match_energy_gradient_and_reuse_topology() {
+        let positions = vec![
+            Vec3::new(0., 0., 0.),
+            Vec3::new(0.98, 0., 0.),
+            Vec3::new(-0.25, 0.94, 0.),
+        ];
+        let elements = vec![Element::Oxygen, Element::Hydrogen, Element::Hydrogen];
+        let set = GfnffSet {
+            alpb_solvent: Some("water".into()),
+            ..Default::default()
+        };
+        let mut evaluator = XtbPotential::new(&set, elements.clone(), 0.).unwrap();
+        let result = evaluator.evaluate(&positions).unwrap();
+        assert_eq!(result.forces.len(), 3);
+        assert!(
+            result
+                .components
+                .iter()
+                .any(|c| c.name == "Gsolv" && c.energy.abs() > 1e-6)
+        );
+
+        let mut displaced = positions.clone();
+        let delta = 0.001;
+        displaced[1].x += delta;
+        let plus = evaluator.evaluate(&displaced).unwrap().energy;
+        displaced[1].x = positions[1].x - delta;
+        let minus = evaluator.evaluate(&displaced).unwrap().energy;
+        let numerical_force = -((plus - minus) / (2. * delta as f64));
+        assert!((result.forces[1].x as f64 - numerical_force).abs() < 0.05);
+
+        let vacuum = XtbPotential::new(&GfnffSet::default(), elements, 0.)
+            .unwrap()
+            .evaluate(&positions)
+            .unwrap();
+        assert!((result.energy - vacuum.energy).abs() > 1e-4);
+        assert!((result.forces[1].x - vacuum.forces[1].x).abs() > 1e-4);
+    }
 }
