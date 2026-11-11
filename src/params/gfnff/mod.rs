@@ -82,7 +82,7 @@ pub struct GfnffSet {
     pub executable: Option<PathBuf>,
     /// Optional xTB GFN-FF parameter file; otherwise xTB's built-in parameters.
     pub parameter_file: Option<PathBuf>,
-    /// System charge in e. Otherwise inferred from complete input charges, or zero.
+    /// Integer system charge in e; defaults to zero. Input partial charges are ignored.
     pub total_charge: Option<f64>,
     /// Implicit ALPB solvent, using an xTB name such as `water`, `methanol`, or `dmso`.
     /// `None` evaluates in vacuum. Applies to both inspection and MD; keep
@@ -122,47 +122,21 @@ impl GfnffSet {
         Ok(solvent)
     }
 
-    /// Resolve the total system charge.
-    pub fn charge(&self, charges: impl Iterator<Item = Option<f64>>) -> Result<f64, ParamError> {
-        if let Some(charge) = self.total_charge {
-            if charge.is_finite() && (charge - charge.round()).abs() < 1e-6 {
-                return Ok(charge);
-            }
-
+    /// Resolve the explicit net charge, independently of atomic partial charges.
+    pub fn charge(&self) -> Result<f64, ParamError> {
+        let charge = self.total_charge.unwrap_or(0.);
+        if !charge.is_finite() || (charge - charge.round()).abs() >= 1e-6 {
             return Err(ParamError::new(
                 "GFN-FF total charge must be a finite integer",
             ));
         }
 
-        let charges: Vec<_> = charges.collect();
-        if charges.iter().all(Option::is_none) {
-            return Ok(0.);
-        }
-
-        if charges.iter().any(|q| q.is_none_or(|q| !q.is_finite())) {
-            return Err(ParamError::new(
-                "GFN-FF needs complete input charges or an explicit total charge",
-            ));
-        }
-
-        let sum: f64 = charges.iter().flatten().sum();
-        if (sum - sum.round()).abs() > 0.05 {
-            return Err(ParamError::new(
-                "GFN-FF input charges do not sum to an integer; set the total charge",
-            ));
-        }
-
-        Ok(sum.round())
+        Ok(charge)
     }
 
     /// Inspect one geometry; the report includes xTB's energy components and EEQ charges.
     pub fn inspect(&self, molecule: &MolDynamics) -> Result<PotentialEvaluation, ParamError> {
-        let charge = self.charge(
-            molecule
-                .atoms
-                .iter()
-                .map(|a| a.partial_charge.map(f64::from)),
-        )?;
+        let charge = self.charge()?;
         let elements: Vec<_> = molecule.atoms.iter().map(|a| a.element).collect();
 
         let positions: Vec<Vec3> = match &molecule.atom_posits {
@@ -216,6 +190,7 @@ impl SystemPotentialBackend for GfnffSet {
         }
 
         self.validated_alpb_solvent()?;
+        self.charge()?;
 
         Ok(())
     }
@@ -237,19 +212,19 @@ impl SystemPotentialBackend for GfnffSet {
         &self,
         atoms: &[AtomDynamics],
         _: &SimBox,
-        molecules: &[MolDynamics],
+        _: &[MolDynamics],
     ) -> Result<Box<dyn SystemPotential>, ParamError> {
-        let charge = self.charge(
-            molecules
-                .iter()
-                .flat_map(|m| &m.atoms)
-                .map(|a| a.partial_charge.map(f64::from)),
-        )?;
+        let charge = self.charge()?;
         let elements: Vec<_> = atoms.iter().map(|a| a.element).collect();
 
         if self.engine != GfnffEngine::Executable {
             match libxtb::LibXtbPotential::new(self, elements.clone(), charge) {
-                Ok(potential) => {
+                Ok(mut potential) => {
+                    // The C API omits EEQ charges; initialize them through the executable.
+                    let positions: Vec<_> = atoms.iter().map(|a| a.posit).collect();
+                    potential.initial_charges = XtbPotential::new(self, elements.clone(), charge)?
+                        .evaluate(&positions)?
+                        .charges;
                     println!("Using libxtb for GFN-FF forces.");
 
                     return Ok(Box::new(potential));

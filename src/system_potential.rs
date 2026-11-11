@@ -72,7 +72,7 @@ impl MdState {
                         .as_ref()
                         .map_or(Vec3::new_zero(), |v| v[i]),
                     mass,
-                    partial_charge: atom.partial_charge.unwrap_or(0.) * CHARGE_UNIT_SCALER,
+                    partial_charge: 0.,
                     ..Default::default()
                 });
                 result.mass_accel_factor.push(KCAL_TO_NATIVE / mass);

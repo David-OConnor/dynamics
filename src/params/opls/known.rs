@@ -5,8 +5,10 @@
 
 use std::collections::HashMap;
 
-use bio_files::{AtomGeneric, BondGeneric, Sdf, gromacs::GromacsTopology};
+use bio_files::{AtomGeneric, BondGeneric, BondType, Sdf, gromacs::GromacsTopology};
+use na_seq::Element;
 
+use super::smarts::for_each_chordless_ring;
 use crate::{
     ParamError,
     import::{ExplicitParams, gromacs_molecule_params},
@@ -43,6 +45,60 @@ fn edges(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Vec<Vec<u8>>, P
         result[j][i] = result[i][j];
     }
     Ok(result)
+}
+
+/// Normalize alternating single and double bonds in benzene rings.
+fn benzene_edges(atoms: &[AtomGeneric], graph: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    const SINGLE: u8 = BondType::Single as u8 + 1;
+    const DOUBLE: u8 = BondType::Double as u8 + 1;
+    const AROMATIC: u8 = BondType::Aromatic as u8 + 1;
+
+    let sp2_carbon: Vec<_> = atoms
+        .iter()
+        .zip(graph)
+        .map(|(atom, bonds)| {
+            atom.element == Element::Carbon
+                && bonds.iter().filter(|&&b| b != 0).count() == 3
+                && bonds.iter().filter(|&&b| b == SINGLE).count() == 2
+                && bonds.contains(&DOUBLE)
+        })
+        .collect();
+    let adjacency: Vec<_> = graph
+        .iter()
+        .enumerate()
+        .map(|(i, bonds)| {
+            bonds
+                .iter()
+                .enumerate()
+                .filter_map(|(j, &b)| (sp2_carbon[i] && sp2_carbon[j] && b != 0).then_some(j))
+                .collect()
+        })
+        .collect();
+
+    let mut normalized = graph.to_vec();
+    for_each_chordless_ring(&adjacency, 6, |ring| {
+        if ring.len() != 6 {
+            return;
+        }
+
+        let pairs = ring
+            .iter()
+            .copied()
+            .zip(ring.iter().copied().cycle().skip(1));
+        if pairs
+            .clone()
+            .filter(|&(i, j)| graph[i][j] == DOUBLE)
+            .count()
+            == 3
+        {
+            for (i, j) in pairs {
+                normalized[i][j] = AROMATIC;
+                normalized[j][i] = AROMATIC;
+            }
+        }
+    });
+
+    normalized
 }
 
 impl Ligand {
@@ -144,6 +200,7 @@ impl Ligand {
     fn match_graph(
         &self,
         atoms: &[AtomGeneric],
+        source: &[Vec<u8>],
         graph: &[Vec<u8>],
         degree: &[usize],
         mapped: &mut [Option<usize>],
@@ -156,7 +213,7 @@ impl Ligand {
                     mapped
                         .iter()
                         .enumerate()
-                        .filter(|(j, v)| v.is_some() && self.edges[i][*j] != 0)
+                        .filter(|(j, v)| v.is_some() && source[i][*j] != 0)
                         .count(),
                     self.degree[i],
                 )
@@ -171,7 +228,7 @@ impl Ligand {
                 || degree[j] != self.degree[i]
                 || mapped.iter().enumerate().any(|(k, v)| {
                     v.is_some_and(|l| {
-                        let a = self.edges[i][k];
+                        let a = source[i][k];
                         let b = graph[j][l];
                         a != b
                             && !(aromatic
@@ -188,7 +245,7 @@ impl Ligand {
             }
 
             mapped[i] = Some(j);
-            if self.match_graph(atoms, graph, degree, mapped, aromatic) {
+            if self.match_graph(atoms, source, graph, degree, mapped, aromatic) {
                 return true;
             }
             mapped[i] = None;
@@ -204,8 +261,7 @@ impl Ligand {
         self.build_inner(atoms, bonds, false)
     }
 
-    /// The service's preview kekulizes aromatic MOL bonds. Only aromatic input
-    /// edges may match a single/double preview edge; other bond orders remain exact.
+    /// Accept alternate benzene Kekulé forms from LigParGen.
     pub fn build_generated(
         &self,
         atoms: &mut [AtomGeneric],
@@ -229,9 +285,20 @@ impl Ligand {
             .map(|row| row.iter().filter(|&&v| v != 0).count())
             .collect();
         let mut mapped = vec![None; atoms.len()];
-        if !self.match_graph(atoms, &graph, &degree, &mut mapped, aromatic) {
+        if !self.match_graph(atoms, &self.edges, &graph, &degree, &mut mapped, aromatic)
+            && !(aromatic
+                && self.match_graph(
+                    atoms,
+                    &benzene_edges(&self.atoms, &self.edges),
+                    &benzene_edges(atoms, &graph),
+                    &degree,
+                    &mut mapped,
+                    false,
+                ))
+        {
             return Ok(None);
         }
+
         let m: Vec<_> = mapped.into_iter().map(Option::unwrap).collect();
         let mut p = self.params.clone();
         for (i, &j) in m.iter().enumerate() {

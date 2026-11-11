@@ -316,6 +316,7 @@ pub(super) struct LibXtbPotential {
     parameter_file: CString,
     solvent: Option<CString>,
     failed: bool,
+    pub(super) initial_charges: Option<Vec<f32>>,
 }
 
 // Handles have one owner; all Fortran calls, including deletion, hold API_LOCK.
@@ -389,6 +390,7 @@ impl LibXtbPotential {
             parameter_file,
             solvent,
             failed: false,
+            initial_charges: None,
         })
     }
 
@@ -550,11 +552,11 @@ impl SystemPotential for LibXtbPotential {
             ));
         }
 
-        // The C API does not expose GFN-FF charges or individual energy terms.
+        // The C API omits EEQ charges; retain the executable's initial assignment.
         Ok(PotentialEvaluation {
             energy,
             forces,
-            charges: None,
+            charges: self.initial_charges.take(),
             components: Vec::new(),
         })
     }

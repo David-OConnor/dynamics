@@ -252,13 +252,11 @@ impl Graph {
         }
 
         let mut rings = vec![Vec::new(); atoms.len()];
-        for start in 0..atoms.len() {
-            for &next in &adj[start] {
-                if next > start {
-                    visit(&mut vec![start, next], &adj, &mut rings);
-                }
+        for_each_chordless_ring(&adj, 8, |ring| {
+            for &i in ring {
+                rings[i].push(ring.len());
             }
-        }
+        });
 
         Ok(Self {
             adj,
@@ -268,7 +266,26 @@ impl Graph {
     }
 }
 
-fn visit(path: &mut Vec<usize>, adj: &[Vec<usize>], rings: &mut [Vec<usize>]) {
+pub(super) fn for_each_chordless_ring(
+    adj: &[Vec<usize>],
+    max_size: usize,
+    mut visit: impl FnMut(&[usize]),
+) {
+    for (start, neighbors) in adj.iter().enumerate() {
+        for &next in neighbors {
+            if next > start {
+                visit_rings(&mut vec![start, next], adj, max_size, &mut visit);
+            }
+        }
+    }
+}
+
+fn visit_rings(
+    path: &mut Vec<usize>,
+    adj: &[Vec<usize>],
+    max_size: usize,
+    visit: &mut impl FnMut(&[usize]),
+) {
     let start = path[0];
     let last = *path.last().unwrap();
     for &next in &adj[last] {
@@ -283,14 +300,13 @@ fn visit(path: &mut Vec<usize>, adj: &[Vec<usize>], rings: &mut [Vec<usize>]) {
         }
         if adj[next].contains(&start) {
             if path[1] < next {
-                for &i in path.iter() {
-                    rings[i].push(path.len() + 1);
-                }
-                rings[next].push(path.len() + 1);
+                path.push(next);
+                visit(path);
+                path.pop();
             }
-        } else if path.len() < 7 {
+        } else if path.len() + 1 < max_size {
             path.push(next);
-            visit(path, adj, rings);
+            visit_rings(path, adj, max_size, visit);
             path.pop();
         }
     }
