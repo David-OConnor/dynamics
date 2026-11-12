@@ -6,17 +6,15 @@
 [![PyPI](https://img.shields.io/pypi/v/mol_dynamics.svg)](https://pypi.org/project/mol_dynamics)
 
 
-A Rust library for molecular dynamics, with Python bindings. Compatible with Linux, Windows, and Mac. Uses CPU with threadpools and SIMD, or an Nvidia GPU. It uses traditional forcefield-based molecular dynamics. It does not use quantum-mechanics, nor ab-initio methods.
+A Rust library for molecular dynamics, with Python bindings. Compatible with Linux, Windows, and Mac. Uses CPU with threadpools, or an Nvidia GPU. It uses traditional forcefield-based molecular dynamics. It does not use quantum-mechanics, nor ab-initio methods.
 
 It uses the [Bio-Files](https://github.com/david-oconnor/bio-files) dependency to load molecule and force-field files.
 
-This readme is a general overview, and focuses on code examples integration into application, and code examples. For more information about the algorithm, reference the [docs here](https://www.athanorlab.com/docs/md.html). Please reference the [API documentation](https://docs.rs/dynamics) for details on the functionality of each data structure and function. You may wish to reference the [Bio Files API docs](https://docs.rs/bio-files) as well.
+This readme is a general overview, and focuses on integration into applications, and code examples. For more information about the algorithm, reference the [docs here](https://www.athanorlab.com/docs/md.html). Please reference the [API documentation](https://docs.rs/dynamics) for details on the functionality of each data structure and function. You may wish to reference the [Bio Files API docs](https://docs.rs/bio-files) as well.
 
-We recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer, with Nvidia drivers 580 or newer.
+We strongly recommend running this on GPU; it's much faster. This requires an Nvidia GPU Rtx3 series or newer, with Nvidia drivers 580 or newer.
 
 Includes auxillary functionality to faciliate ease of use, including populating force field parameters on arbitrary molecules, and preparing proteins for MD. For example, by populating hydrogens on mmCIF data, based on pH.
-
-**Note: The Python version does not yet use GPU for long-range forces**. We would like to fix this, but are having trouble linking the cuFFT dependency.
 
 It natively supports Amber, Charmm, OPLS, and GFN-FF force fields.
 
@@ -45,7 +43,7 @@ It can save and load its MD configuration data in GROMACS's MDP format.
 - Python: `pip install mol-dynamics`
 
 
-For a GUI application that uses this library, download [Molchanica](https://github.com/david-oconnor/molchanicaa) This provides an easy-to-use way to set up the simulation, and play back trajectories.
+For a GUI application that uses this library, download [Molchanica](https://github.com/david-oconnor/molchanica) This provides an easy-to-use way to set up the simulation, and play back trajectories.
 
 
 ## Input topology
@@ -55,8 +53,6 @@ The simulation accepts sets of [AtomicGeneric](https://docs.rs/bio_files/latest/
 
 ## Force-field selection
 
-This library supports Amber, Charmm, OPLS, and GFN-FF force fields.
-
 ```rust
 use dynamics::{ForceFieldFamily, MdConfig, params::FfParamSet};
 
@@ -64,23 +60,23 @@ let cfg = MdConfig::for_family(ForceFieldFamily::Opls);
 let params = FfParamSet::from_family(cfg.ff_family)?;
 ```
 
-The bundled families use these conventions:
+Each family uses these conventions:
 
 | Family | Protein parameters | Water | LJ mixing | 1–4 LJ / Coulomb |
 |---|---|---|---|---|
-| Amber | ff19SB | OPC | Lorentz–Berthelot | 0.5 / 1/1.2 |
+| Amber | ff19SB | OPC | Lorentz–Berthelot | 0.5 / 1/1.2 (GLYCAM: 1 / 1) |
 | CHARMM36 | CHARMM36m | modified TIP3P | Lorentz–Berthelot, NBFIX | 1 / 1, special LJ |
 | OPLS | OPLS-AA/L (Kaminski 2001) | TIP4P | geometric | 0.5 / 0.5 |
-| GFN-FF | - | - | - | - |
+| GFN-FF | - | Implicit (xTB) | - | - |
 
-Amber and OPLS parameters are embedded in the binary. Their shared interface separates atom-type assignment, partial-charge assignment and resolution of bonded/nonbonded terms. Native MD and GROMACS export consume the same resolved representation. See [the force-field API and extension guide](docs/force_fields.md).
+Amber parameters, and OPLS protein parameters, are embedded in the binary. Their shared interface separates atom-type assignment, partial-charge assignment and resolution of bonded/nonbonded terms. Native MD and GROMACS export consume the same resolved representation. See [the force-field API and extension guide](docs/force_fields.md).
 
 
 *GFN-FF* force fields are particularly interesting, as they are more general than most classical force fields. From [its documentation](https://xtb-docs.readthedocs.io/en/latest/gfnff.html):
 
 > Thereby a strictly global and element-specific parameter strategy is applied and no element pair-specific parameters are employed. 
 
-To use GNN-FF, you must have [xTB](https://doi.org/10.1002/wcms.1493) installed. Download a [xtB release here](https://github.com/grimme-lab/xtb/releases), unzip it, and add its `bin` directory to the *PATH*. We call *xTB* for both paramerization, and per-step force calculation, and use our native integrator.
+To use GNN-FF, you must have [xTB](https://doi.org/10.1002/wcms.1493) installed. Download a [xtB release here](https://github.com/grimme-lab/xtb/releases), unzip it, and add its `bin` directory to the *PATH*.
 
 
 ```rust
@@ -107,10 +103,6 @@ It integrates the following [Amber parameter sets](https://ambermd.org/AmberMode
 - Carbohydrates: GLYCAM_06j
 - Water: [OPC](https://arxiv.org/abs/1408.1679)
 
-We use embedded OPLS parameters for proteins, and call its public API to parameterize small molecules. We cache this parameterization. To parameterize GFN-FF parameters, we launch the `xtb` executable, which can be installed from the *Tools* window. Or, it can use an `xtb` present on your system path.
-
-The *GFN-FF* force fields can be used with either the *Dynamics* or *xTB* backends. In either case, we parameterize by calling the *xTB* executable. If using the *xTB* backend, we launch that executable at the run start, and collect + display results once complete. If using the *Dynamics* backend, we call *xTB* as a library to compute forces each run, and use *Dynamics*'s integrator, thermostat, and other functionality. 
-
 ## The algorithm
 
 This library uses a traditional MD workflow. We use the following components:
@@ -126,16 +118,16 @@ The Langevin Middle integrator is selected by default, and is always used with a
 
 ## Solvation
 
-We use an explicit water solvation model: A 4-point rigid OPC model, with a point partial charge on each Hydrogen, and a M (or EP) point offset from the Oxygen.
+We use explicit, rigid water. The model depends on the force field family: 4-point OPC for Amber, CHARMM's modified TIP3P for CHARMM, and TIP4P for OPLS. Override it with `MdConfig::water_model`. GFN-FF uses xTB's implicit solvent models instead. The 4-point models have a point partial charge on each Hydrogen, and on an M (or EP) point offset from the Oxygen.
 
-We use the [SETTLE](https://onlinelibrary.wiley.com/doi/10.1002/jcc.540130805) algorithm to maintain rigidity, while applying forces to each atom. Only the Oxygen atom carries a Lennard Jones(LJ) force. Solvation is set up by default, and requires no special adjustments. If you wish, you may change the size of the simulation box padding with its associated input on the MD toolbar.
+We use the [SETTLE](https://onlinelibrary.wiley.com/doi/10.1002/jcc.540130805) algorithm to maintain rigidity, while applying forces to each atom. Only the Oxygen atom carries a Lennard Jones (LJ) force, except in CHARMM's TIP3P, which also has LJ on Hydrogen. Solvation is set up by default, and requires no special adjustments. If you wish, you may change the size of the simulation box padding with its associated input on the MD toolbar.
 
 The simulation box uses periodic boundary conditions: When a water molecule exits one side of it, it simultaneously re-appears on the opposite side. Further, our long-range SPME computations are designed to incorporate this periodic boundary position, simulating an infinitely-extending simulation box. Note that this has an unfortunate (But usually negligible) side effect of also including *images* of non-water molecules in computations.
 
 
 ## Equilibration
 
-Prior to the simulation properly starting, we perform equilibration with two techniques: Iterative energy minimization of the (non-water) molecules, and running a short simulation of only the water molecules. The minimization helps to relieve tension in the initial atom configuration. For example, if the bond length provided by the initial atom coordinates doesn't match that of the *bonded* length parameter.
+Prior to the simulation properly starting, we perform equilibration with two techniques: Iterative energy minimization of the (non-water) molecules, and running a short simulation of only the water molecules, with the solute held rigid. The minimization helps to relieve tension in the initial atom configuration. For example, if the bond length provided by the initial atom coordinates doesn't match that of the *bonded* length parameter.
 
 The water pre-simulation breaks the initial crystal lattice configuration, builds hydrogen bond networks, and allows the simulation to settle at the specific temperature. We initialize water molecules with appropriate velocities, but this additional step helps. When the snapshots (aka trajectories) start building, the system will be equilibrated.
 
@@ -147,10 +139,9 @@ You can disable the energy minimization using the *relax* check box in the UI, b
 We use Amber-style spring-based forces to maintain covalent bonds. We maintain the following parameters:
 
 - Bond length between each covalently-bonded atom pair
-- Angle (sometimes called valence angle) between each 3-atom line of covalently-bonded atoms. (4atoms, 2 bonds)
+- Angle (sometimes called valence angle) between each 3-atom line of covalently-bonded atoms. (3 atoms, 2 bonds)
 - Dihedral (aka torsion) angles between each 4-atom line of covalently-bonded atoms. (4 atoms, 3 bonds). These usually have rotational symmetry of 2 or 3 values which are stable.
-- Improper Dihedral angles between 4-atoms in a hub-and-spoke configuration. These, for example, maintain stability
-- where rings meet other parts of the molecule, or other rings.
+- Improper Dihedral angles between 4-atoms in a hub-and-spoke configuration. These, for example, maintain stability where rings meet other parts of the molecule, or other rings.
 
 
 ## Non-bonded forces
@@ -159,44 +150,80 @@ These are Coulomb and Lennard Jones (LJ) interactions. These make up the large m
 
 We use a neighbors list (Sometimes called Verlet neighbors; not directly related to the Verlet integrator) to reduce computational effort. We use the [SPME Ewald](https://manual.gromacs.org/nightly/reference-manual/functions/long-range-electrostatics.html) approximation to reduce computation time. This algorithm is suited for periodic boundary conditions, which we use for the solvent.
 
-We use Amber's scaling and exclusion rules: LJ and Coulomb force is reduced between atoms separated by 1 and 2 covalent bonds, and skipped between atoms separated by 3 covalent bonds.
+We skip LJ and Coulomb interactions between atoms separated by 1 or 2 covalent bonds, and scale them between atoms separated by 3 covalent bonds (1–4 pairs). Scale factors are per force field family; see the table under *Force-field selection*.
 
-We have two modes of handling Hydrogen in bonded forces: The same as other atoms, and rigid, with position maintained using SHAKE and RATTLE algorithms. The latter allows for stability under higher timesteps. (e.g. 2ps)
+We have two modes of handling Hydrogen in bonded forces: The same as other atoms, and rigid, with bond lengths maintained using a LINCS-like linear solver (the default), or SHAKE and RATTLE. The latter allows for stability under higher timesteps. (e.g. 2 fs)
 
 ## Center-of-mass drift removal
 
-Periodically we remove any linear and angular center of mass drift, that applies to the whole system. This helps reduce extra energy in the system that may have entered from numerical precision and other error sources. We apply this to both water, and non-water molecules.
+Periodically we remove the whole system's linear center-of-mass drift, and optionally its angular drift. This helps reduce extra energy in the system that may have entered from numerical precision and other error sources. We apply this to both water, and non-water molecules.
 
 ## Velocity initiation and maintenance
 
-Water molecules are initiated with velocities according to the [Maxwell-Boltzmann distribution](https://en.wikipedia.org/wiki/Maxwell%E2%80%93Boltzmann_distribution), according to the prescribed target temperature. This temperature is specified in the UI. Prior to our proper simulation start time, we briefly perform MD on water molecules only, holding the solute rigid. This allows hydrogen bond networks to form, and lets the thermostat fine-tune the velocities.
+Water molecules are initiated with velocities according to the [Maxwell-Boltzmann distribution](https://en.wikipedia.org/wiki/Maxwell%E2%80%93Boltzmann_distribution), according to the prescribed target temperature. This temperature is specified in the UI. These are then refined by the water pre-simulation described under *Equilibration*.
 
 ![MD of a DNA strand](https://www.athanorlab.com/static/images/molchanica/dna_md.png)
 
 
-
-## Partial Charges
-
-For proteins, nucleic acids, and lipids, we use partial charges provided by Amber force fields (listed above) directly.
+## Parameterization
 
 ### Amber
+Amber parameters are generated directly using the `dynamics` library, which embeds Amber's (per-mol-class) paramter files for all supported molecule types. This is straightforward for proteins/peptides, lipids, carbohydrates, and nucleic acids. For small molecules, we use an algorithm based on Amber's Antechamber software to create GAFF2 parameters, and per-molecule FRCMOD overrides.
+
+For details on how this parameterized approach works, see the [Amber Reference Manual](https://ambermd.org/doc12/Amber25.pdf). Section 3 and 15 are of particular interest regarding force field parameters.
+
+Moleucule-specific overrides to these general parameters can be loaded from *.frcmod*, *prmptom*, and *.dat* files. We delegate this to the [bio files](https://github.com/david-OConnor/bio_files) library, or compute them directly if not present.
+
+![MD on DNA, with Amber and GROMACS](https://www.athanorlab.com/static/images/molchanica/md_with_dna_gromacs.png)
+
+### CHARMM
+CHARMM parameters must be loaded manually for now.
+
+
+### OPLS
+Protein typing uses residue templates, including the Kaminski side-chain torsions. Ligands use Foyer's OPLS-AA SMARTS definitions, charges and bonded tables, with automatic LigParGen generation and a persistent cache for chemistry outside those rules. GAFF2 parameters are not transferable to OPLS.
+
+This uses FOYER for partial charge assignment.
+
+Priority for parameterization:
+- Cached
+- FOYER
+- Local LigParGen/BOSS (then cache)
+- LigParGen API, if allowed (then cache)
+
+[FOYER paper on parameterization](https://ar5iv.labs.arxiv.org/html/1812.06779)
+
+## GFN-FF
+A promising *universal* force field, which departs from previous ones, especially regarding how it handles nonbonded forces. Uses repulsion, dispersion, and hydrogen bond terms the others don't. Doesn't use Lennard Jones. Of particular interest is that it doesn't use separate force fields for different classes of molecules: It's a universal field.
+
+![MD on DNA, with GFN-FF and xTB](https://www.athanorlab.com/static/images/molchanica/md_on_dna_gfnff.png)
+
+The *GFN-FF* force fields can be used with either the *Dynamics* or *xTB* backends. In either case, we parameterize by calling the *xTB* executable. If using the *xTB* backend, we launch that executable at the run start, and collect + display results once complete. If using the *Dynamics* backend, we call *xTB* as a library to compute forces each run, and use *Dynamics*'s integrator, thermostat, and other functionality. 
+
+- [Paper](https://doi.org/10.1002/wcms.1493)
+- [Docs](https://xtb-docs.readthedocs.io/en/latest/gfnff.html)
+- [Github](https://github.com/grimme-lab/xtb)
+- [Download](https://github.com/grimme-lab/xtb/releases)
+
+
+## Partial Charges
+How partial charges are handled differs by force field.
+
+### Amber
+For proteins, nucleic acids, and lipids, we use partial charges provided by Amber force fields (listed above) directly.
+
 For small organic molecules, we infer [AM1-BCC partial charges](https://onlinelibrary.wiley.com/doi/10.1002/jcc.10128) for each molecule when loading it. We do so using a machine learning algorithm trained on Amber's Geostd set. We use the [candle](https://github.com/huggingface/candle) library's neural nets. It's trained on this set of ~30k small organic molecules that have force field types, and partial charges assigned using AM1-BCC computations. Inference is fast, typically taking a few milliseconds.
 
 If your small molecule already has partial charges, we use those directly instead of computing new ones. Partial charges may be provided in Mol2 files as part of their column data, or as SDF metadata. For the latter, we support both *OpenFF*'s "atom.dprop.PartialCharge", and *Pubchem*'s "PUBCHEM_MMFF94_PARTIAL_CHARGES" formats.
 
-If ORCA is installed, you can use it to generate [MBIS](https://arxiv.org/pdf/1608.05556) charges. This is one of the most accurate approaches, but is very slow; it may take several minutes to complete for a single small molecule. To use this, click *Assign MBIS q* from the *ORCA* UI section; it will update charges for the active molecule. You may then save this to `Mol2` or `SDF` format if you wish. When saving to SDF, we use the Pubchem metadata format for partial charges.
-
 ### OPLS
-Partial charges are included with the other OPLS parameters for proteins, and fetched from an API for small molecules.
+Partial charges are included with the other OPLS parameters for proteins, and fetched from the [LigParGen / BOSS API](https://github.com/Isra3l/ligpargen) for small molecules.
 
 ### GFN-FF
-Partial charges are computed as required by the *xTB* executable.
+Partial charges are computed by the *xTB* executable during parameterization.
 
-For implicit ALPB solvent, set `params.gfnff_mut().unwrap().alpb_solvent = Some("water".into())`
-on your `FfParamSet`. Other xTB solvent names, such as `methanol`, `dmso`, and `octanol`, are
-also accepted. Use `MdConfig::for_family(ForceFieldFamily::Gfnn)` and leave its generated
-`solvent` setting at `Solvent::None`. xTB includes solvation in both energies and forces;
-no solvent molecules are generated. See [GFN-FF configuration](docs/force_fields.md#gfn-ff).
+### MBIS partial charges: An optional replacement
+If ORCA is installed, you can use it to generate [MBIS](https://arxiv.org/pdf/1608.05556) charges. This is one of the most accurate approaches, but is very slow; it may take several minutes to complete for a single small molecule. To use this, click *Assign MBIS q* from the *ORCA* UI section; it will update charges for the active molecule. You may then save this to `Mol2` or `SDF` format if you wish. When saving to SDF, we use the Pubchem metadata format for partial charges.
 
 
 ## Bonded parameter overrides for small organic molecules
@@ -218,13 +245,13 @@ pH in proteins is represented by the protenation state of certain amino acids. H
 
 Snapshots contain energy data. Potential energy is broken down into two components: That from covalent bonds (*Bonded*), and that from Coulomb, Lennard Jones, and SPME forces. (*Non-bonded*) These values all take into account both the molecules loaded, and the explicit water solvent molecules. Water molecules are treated as any other, with some exceptions due to their rigidly-defined geometry.
 
-Kinetic energy is computed using the standard manner: By computing the mass of each atom multiplied by the magnitude squared of its velocity, summed over every atom. Temperature, displayed in Kelvin, is computed as follows: $2 KE / (**DOF** × **R**) $ , where **R** is the Boltzmann gas constant, defined as 1.987 × 10³ kcal mol⁻¹ K⁻¹. (These are the simulation's native units).
+Kinetic energy is computed using the standard manner: By computing the mass of each atom multiplied by the magnitude squared of its velocity, summed over every atom. Temperature, displayed in Kelvin, is computed as follows: $2 KE / (**DOF** × **R**) $ , where **R** is the gas constant, 1.987 × 10⁻³ kcal mol⁻¹ K⁻¹. (These are the simulation's native units).
 
-**DOF** is the number of degrees-of-freedom of the system. We compute this as 3 × the number of non-static atoms in the system excluding water, for the 3 orthogonal directions an atom can move. We add 6 × the number of water molecules in the system; this takes into account its rigid character, with each water molecule having 3 positional degrees of freedom, and 3 rotational ones. We subtract one degree of freedom for each non-water hydrogen atom, if hydrogens are set as constrained. We also subtract 3 DOF for the center-of-motion drift removal, and 3 for its angular motion removal.
+**DOF** is the number of degrees-of-freedom of the system. We compute this as 3 × the number of non-static atoms in the system excluding water, for the 3 orthogonal directions an atom can move. We add 6 × the number of water molecules in the system; this takes into account its rigid character, with each water molecule having 3 positional degrees of freedom, and 3 rotational ones. We subtract one degree of freedom for each non-water hydrogen atom, if hydrogens are set as constrained. We also subtract 3 DOF for center-of-mass drift removal, and 3 more if angular motion is also removed.
 
 ### Saving results
 
-Snapshots of results can be returned in memory, or saved to disk in [DCD](https://docs.openmm.org/7.1.0/api-python/generated/simtk.openmm.app.dcdfile.DCDFile.html) format.
+Snapshots of results can be returned in memory, or saved to disk in [DCD](https://docs.openmm.org/7.1.0/api-python/generated/simtk.openmm.app.dcdfile.DCDFile.html), TRR, or [XTC](https://manual.gromacs.org/archive/5.0.4/online/xtc.html) format. Set each one's save interval with `MdConfig::snapshot_handlers`. Files are written to `md_out/`.
 
 
 ## An example
@@ -325,8 +352,8 @@ def main():
         # Also keeps track of velocities, and water molecule positions/velocity
     
     # Do something with snapshot data, like displaying atom positions in your UI.
-    # You can save to DCD file, and adjust the ratio they're saved at using the `MdConfig.snapshot_setup`
-    # field: See the example below.
+    # You can save to DCD, TRR, or XTC files, and adjust the ratio they're saved at using the
+    # `MdConfig.snapshot_handlers` field: See the example below.
     for snap in md.snapshots:
         pass
         
@@ -423,7 +450,7 @@ fn main() {
     for _ in 0..n_steps {
         md.step(&dev, dt);
     }
-    md.flush_snaps * ***hot_queues();
+    md.flush_snapshot_queues();
 
     let snap = &md.snapshots[md.snapshots.len() - 1]; // A/R.
     println!(
@@ -436,8 +463,8 @@ fn main() {
     }
 
     // Do something with snapshot data, like displaying atom positions in your UI.
-    // You can save to DCD file, and adjust the ratio they're saved at using the `MdConfig.snapshot_setup`
-    // field: See the example below.
+    // You can save to DCD, TRR, or XTC files, and adjust the ratio they're saved at using the
+    // `MdConfig.snapshot_handlers` field: See the example below.
     for snap in &md.snapshots {}
 }
 ```
@@ -466,7 +493,7 @@ peptide_ff_q: Some( & Path::new("amino19.lib")),
 peptide_ff_q_c: Some( & Path::new("aminoct12.lib")),
 peptide_ff_q_n: Some( & Path::new("aminont12.lib")),
 small_organic: Some( & Path::new("gaff2.dat")),
-lipids: Some( & Path::new("lipid21.dat")),
+lipid: Some( & Path::new("lipid21.dat")),
 ..default ()
 };
 
@@ -477,39 +504,44 @@ An overview of configuration parameters. You may wish to (Rust) use a baseline o
 
 ```rust
 let cfg = MdConfig {
-// Defaults to Langevin middle.
-integrator: dynamics::Integrator::VelocityVerlet,
-// If enabled, zero the drift in center of mass of the system.
-zero_com_drift: true,
-// Kelvin. Defaults to 310 K.
-temp_target: 310.,
-// Bar (Pa/100). Defaults to 1 bar.
-pressure_target: 1.,
-// Allows constraining Hydrogens to be rigid with their bonded atom, using SHAKE and RATTLE
-// algorithms. This allows for higher time steps.
-hydrogen_constraint: dynamics::HydrogenConstraint::Fixed,
-// Deafults to in-memory, every step
-snapshot_handlers: vec![
-    SnapshotHandler {
-        save_type: SaveType::Memory,
-        ratio: 1,
+    // Defaults to Langevin middle. The inner value is the thermostat τ in ps; `None` disables it.
+    integrator: Integrator::VerletVelocity { thermostat: Some(0.1) },
+    // If enabled, zero the drift in center of mass of the system.
+    zero_com_drift: true,
+    // Kelvin. Defaults to 310 K.
+    temp_target: 310.,
+    // Bar (Pa/100). Defaults to 1 bar. `None` disables the barostat.
+    barostat_cfg: Some(BarostatCfg {
+        pressure_target: 1.,
+        ..Default::default()
+    }),
+    // Constrain bonds to Hydrogen, allowing higher time steps. Defaults to a LINCS-like linear
+    // solver. `Flexible` disables this.
+    hydrogen_constraint: HydrogenConstraint::Shake {
+        shake_tolerance: SHAKE_TOL_DEFAULT,
     },
-    SnapshotHandler {
-        save_type: SaveType::Dcd(PathBuf::from("output.dcd")),
-        ratio: 10,
+    // Save ratios, in steps. Defaults to in-memory and TRR coordinates, every 10 steps.
+    snapshot_handlers: SnapshotHandlers {
+        memory: Some(1),
+        dcd: Some(10),
+        // TRR, XTC, and energy intervals, using GROMACS' MDP fields.
+        gromacs: OutputControl {
+            nstxout_compressed: Some(100),
+            ..Default::default()
+        },
     },
-],
-sim_box: SimBoxInit::Pad(10.),
-// Or sim_box: SimBoxInit::Fixed((Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.)),
+    sim_box: SimBoxInit::Pad(10.),
+    // Or sim_box: SimBoxInit::Fixed((Vec3::new(-10., -10., -10.), Vec3::new(10., 10., 10.))),
+    ..Default::default()
 };
 ```
 
 Python config syntax:
 
 ```python
-cfg = MdConfig() // Initializes with defaults.
+cfg = MdConfig()  # Initializes with defaults.
 
-cfg.integrator = dynamics.Integrator.VelocityVerlet
+cfg.integrator = Integrator.VerletVelocity
 cfg.temp_target = 310.
 # etc
 ```

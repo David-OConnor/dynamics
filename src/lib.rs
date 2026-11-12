@@ -174,6 +174,8 @@ pub use solvent::{
 
 #[cfg(feature = "cuda")]
 use crate::gpu_interface::{ForcesPositsGpu, GpuKernels, PerNeighborGpu};
+#[cfg(target_arch = "x86_64")]
+use crate::solvent::{WaterMolx8, WaterMolx16};
 use crate::{
     alchemical::StateAlchemical,
     barostat::Barostat,
@@ -182,8 +184,7 @@ use crate::{
     params::FfParamSet,
     snapshot::Snapshot,
     solvent::{
-        WaterMolx8, WaterMolx16, init::water_mols_from_template_in_region_avoiding,
-        octanol::octanol_mols_from_gro,
+        init::water_mols_from_template_in_region_avoiding, octanol::octanol_mols_from_gro,
     },
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
 };
