@@ -183,9 +183,7 @@ use crate::{
     non_bonded::{CHARGE_UNIT_SCALER, LjTables, NonBondedPair},
     params::FfParamSet,
     snapshot::Snapshot,
-    solvent::{
-        init::water_mols_from_template_in_region_avoiding, octanol::octanol_mols_from_gro,
-    },
+    solvent::{init::water_mols_from_template_in_region_avoiding, octanol::octanol_mols_from_gro},
     util::{ComputationTime, ComputationTimeSums, build_adjacency_list},
 };
 pub use crate::{
@@ -726,11 +724,9 @@ pub struct MdState {
     /// A flag we set to disable certain things like snapshots during this MD phase.
     solvent_only_sim_at_init: bool,
     pub alchemical: StateAlchemical,
-    /// Index assigned at the start of each MD run. Trajectory files are named
-    /// `traj_N.dcd`, `traj_N.trr`, etc. so that successive runs never overwrite
-    /// each other.  Chosen as the lowest N for which no such files exist yet.
-    /// `None` until the first call to `handle_ss_file_writes`.
-    pub run_index: Option<usize>,
+    output_dir: Option<std::path::PathBuf>,
+    output_dt: f32,
+    energy_output: Vec<(f64, [f64; 4])>,
 }
 
 impl MdState {

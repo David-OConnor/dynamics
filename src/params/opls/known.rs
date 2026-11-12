@@ -124,7 +124,7 @@ impl Ligand {
                 top.defaults.comb_rule, top.defaults.fudge_lj, top.defaults.fudge_qq
             )));
         }
-        
+
         // A self-contained exported topology may define unused solvent/ion
         // types. Validate the one molecule instantiated by [ molecules ].
         let mol = if top.molecules.is_empty() && top.molecule_types.len() == 1 {
@@ -135,7 +135,7 @@ impl Ligand {
             None
         }
         .ok_or_else(|| ParamError::new("OPLS ligand topology must instantiate one molecule"))?;
-        
+
         let params = gromacs_molecule_params(mol, &top)?;
         let graph = edges(&source.atoms, &source.bonds)?;
         if source.atoms.len() != mol.atoms.len()

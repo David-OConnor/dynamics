@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     f32::consts::{PI, TAU},
     fs,
-    io::{self, ErrorKind},
+    io::{self, BufWriter, ErrorKind, Write},
     path::Path,
 };
 
@@ -14,7 +14,11 @@ use bio_files::{
     AtomGeneric, BondGeneric, ChargeType, MmCif, Mol2, MolType,
     dcd::{DcdFrame, DcdTrajectory, DcdUnitCell},
     gromacs,
-    gromacs::{GromacsFrame, GromacsOutput, OutputControl, trr::write_trr},
+    gromacs::{
+        GromacsFrame, GromacsOutput, OutputControl,
+        gro::{AtomGro, Gro},
+        trr::write_trr_with_metadata,
+    },
     xtc::write_xtc,
 };
 use lin_alg::f32::Vec3;
@@ -753,6 +757,7 @@ impl MdState {
         let mut temperature = None;
 
         if let Some(ratio) = self.cfg.snapshot_handlers.memory
+            && ratio != 0
             && i.is_multiple_of(ratio)
         {
             if temperature.is_none() {
@@ -772,6 +777,7 @@ impl MdState {
         }
 
         if let Some(ratio) = self.cfg.snapshot_handlers.dcd
+            && ratio != 0
             && i.is_multiple_of(ratio)
         {
             // DCD: No energy or velocity, for now. todo: Check teh spec.
@@ -780,15 +786,34 @@ impl MdState {
 
         let oc = &self.cfg.snapshot_handlers.gromacs;
 
-        // Check whether any GROMACS TRR output is due this step: positions,
-        // velocities, energy, or forces. A snapshot is created whenever *any*
-        // of these intervals fires, not only when nstxout fires.
-        let write_posit = oc.nstxout.is_some_and(|r| i.is_multiple_of(r as usize));
-        let write_vel = oc.nstvout.is_some_and(|r| i.is_multiple_of(r as usize));
-        let write_en = oc.nstenergy.is_some_and(|r| i.is_multiple_of(r as usize));
-        let write_f = oc.nstfout.is_some_and(|r| i.is_multiple_of(r as usize));
+        // TRR frames can include velocities and forces.
+        let write_posit = oc
+            .nstxout
+            .is_some_and(|r| r != 0 && i.is_multiple_of(r as usize));
+        let write_vel = oc
+            .nstvout
+            .is_some_and(|r| r != 0 && i.is_multiple_of(r as usize));
+        let write_en = oc
+            .nstenergy
+            .is_some_and(|r| r != 0 && i.is_multiple_of(r as usize));
+        let write_f = oc
+            .nstfout
+            .is_some_and(|r| r != 0 && i.is_multiple_of(r as usize));
 
-        if write_posit || write_vel || write_en || write_f {
+        if write_en {
+            let temperature = temperature.unwrap_or_else(|| self.measure_temperature() as f32);
+            self.energy_output.push((
+                self.time,
+                [
+                    self.potential_energy * 4.184,
+                    self.kinetic_energy * 4.184,
+                    f64::from(temperature),
+                    f64::from(pressure),
+                ],
+            ));
+        }
+
+        if write_posit || write_vel || write_f {
             let ss = {
                 let mut s = Snapshot::new(self);
 
@@ -796,17 +821,18 @@ impl MdState {
                     s.update_with_velocities(self);
                 }
 
-                // We are ignoring `nstcalcenergy`.
-                if write_en {
-                    if temperature.is_none() {
-                        temperature = Some(self.measure_temperature() as f32);
-                    }
-
-                    s.update_with_energy(self, pressure, temperature.unwrap());
-                }
-
                 if write_f {
-                    s.force = Some(self.atoms.iter().map(|a| a.force).collect());
+                    s.force = Some(
+                        self.atoms
+                            .iter()
+                            .map(|a| a.force)
+                            .chain(
+                                self.water
+                                    .iter()
+                                    .flat_map(|w| [w.o.force, w.h0.force, w.h1.force]),
+                            )
+                            .collect(),
+                    );
                 }
 
                 s
@@ -816,6 +842,7 @@ impl MdState {
         }
 
         if let Some(ratio) = oc.nstxout_compressed
+            && ratio != 0
             && i.is_multiple_of(ratio as usize)
         {
             self.snapshot_queue_for_xtc.push(Snapshot::new(self));
@@ -824,37 +851,111 @@ impl MdState {
         self.handle_ss_file_writes();
     }
 
-    /// Peridically offloads the in-memory snapshot queues for various file-handlers onto disk.
-    /// Clear the queues. Appends to DCD and TRR files.
     fn handle_ss_file_writes(&mut self) {
-        if !self.step_count.is_multiple_of(TRAJ_FILE_SAVE_INTERVAL) {
-            return;
+        if self.step_count.is_multiple_of(TRAJ_FILE_SAVE_INTERVAL) {
+            self.flush_snapshot_queues();
         }
-        self.flush_snapshot_queues();
     }
 
-    /// Flush any remaining snapshots in the DCD/TRR/XTC queues to disk.
-    /// Call this at the end of a simulation run to ensure the last frames
-    /// (those accumulated since the most recent `TRAJ_FILE_SAVE_INTERVAL`
-    /// write) are not lost.
-    pub fn flush_snapshot_queues(&mut self) {
-        // On the first call, choose the lowest run index N for which no trajectory files
-        // exist yet, so that each fresh MD run writes to its own set of files (traj_N.*).
-        if self.run_index.is_none() {
-            let out = Path::new(TRAJ_OUT_PATH);
-            self.run_index = (0..).find(|&n| {
-                !out.join(format!("traj_{n}.dcd")).exists()
-                    && !out.join(format!("traj_{n}.trr")).exists()
-                    && !out.join(format!("traj_{n}.xtc")).exists()
+    /// Save the initial structure and settings before stepping a run of known length.
+    pub fn start_run_output(&mut self, n_steps: usize, dt: f32) -> io::Result<&Path> {
+        if self.output_dir.is_none() {
+            let root = Path::new(TRAJ_OUT_PATH);
+            fs::create_dir_all(root)?;
+            let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S%.3f");
+            let dir = (0..)
+                .find_map(|i| {
+                    let path = root.join(format!("dynamics_{stamp}_{i}"));
+                    match fs::create_dir(&path) {
+                        Err(e) if e.kind() == ErrorKind::AlreadyExists => None,
+                        result => Some(result.map(|()| path)),
+                    }
+                })
+                .unwrap()?;
+            self.cfg.save_mdp(&dir.join("md.mdp"), n_steps, dt)?;
+            self.save_run_gro(&dir.join("conf.gro"))?;
+            self.output_dir = Some(dir);
+            self.output_dt = dt;
+        }
+
+        Ok(self.output_dir.as_deref().unwrap())
+    }
+
+    /// Save the final structure and flush remaining snapshots.
+    pub fn finish_run_output(&mut self) -> io::Result<Option<&Path>> {
+        let result = self.write_snapshot_queues();
+        if let Some(dir) = &self.output_dir {
+            self.save_run_gro(&dir.join("confout.gro"))?;
+        }
+        result?;
+
+        Ok(self.output_dir.as_deref())
+    }
+
+    fn save_run_gro(&self, path: &Path) -> io::Result<()> {
+        let mut gro = Gro {
+            head_text: "Dynamics".into(),
+            box_vec: lin_alg::f64::Vec3::from(self.cell.extent) / 10.,
+            atoms: Vec::new(),
+        };
+        let mut starts = self.mol_start_indices.iter().copied().skip(1).peekable();
+        let mut mol_id = 1;
+        let mut push = |mol_id, mol_name, name: &str, atom: &AtomDynamics, posit: Vec3| {
+            gro.atoms.push(AtomGro {
+                mol_id,
+                mol_name,
+                element: atom.element,
+                atom_type: name.into(),
+                serial_number: (gro.atoms.len() + 1) as u32,
+                posit: lin_alg::f64::Vec3::from(posit) / 10.,
+                velocity: Some(lin_alg::f64::Vec3::from(atom.vel) / 10.),
             });
+        };
+
+        for (i, atom) in self.atoms.iter().enumerate() {
+            if starts.next_if_eq(&i).is_some() {
+                mol_id += 1;
+            }
+            push(
+                mol_id,
+                format!("MOL{mol_id}"),
+                &atom.element.to_letter(),
+                atom,
+                self.cell.wrap(atom.posit),
+            );
         }
 
-        let n = self.run_index.unwrap_or(0);
-
-        if let Err(e) = fs::create_dir_all(TRAJ_OUT_PATH) {
-            eprintln!("Error creating output directory '{TRAJ_OUT_PATH}': {e:?}");
-            return;
+        for water in &self.water {
+            mol_id += 1;
+            for (name, atom) in [("OW", &water.o), ("HW1", &water.h0), ("HW2", &water.h1)] {
+                push(mol_id, "SOL".into(), name, atom, atom.posit);
+            }
         }
+
+        gro.save(path)
+    }
+
+    /// Flush queued trajectory and energy output.
+    pub fn flush_snapshot_queues(&mut self) {
+        if let Err(e) = self.write_snapshot_queues() {
+            eprintln!("Error writing Dynamics output: {e}");
+        }
+    }
+
+    fn write_snapshot_queues(&mut self) -> io::Result<()> {
+        if self.snapshot_queue_for_dcd.is_empty()
+            && self.snapshot_queue_for_trr.is_empty()
+            && self.snapshot_queue_for_xtc.is_empty()
+            && self.energy_output.is_empty()
+        {
+            return Ok(());
+        }
+
+        if self.output_dir.is_none() {
+            let dt = (self.time / self.step_count.max(1) as f64) as f32;
+            self.start_run_output(self.step_count, dt)?;
+        }
+        let dir = self.output_dir.as_deref().unwrap();
 
         if !self.snapshot_queue_for_dcd.is_empty() {
             let frames: Vec<_> = self
@@ -865,22 +966,41 @@ impl MdState {
 
             let dcd = DcdTrajectory { frames };
 
-            let path = Path::new(TRAJ_OUT_PATH).join(format!("traj_{n}.dcd"));
-            if let Err(e) = dcd.save(&path) {
-                eprintln!("Error writing DCD: {e:?}");
-            }
+            dcd.save(&dir.join("traj.dcd"))?;
 
             self.snapshot_queue_for_dcd.clear();
         }
 
         if !self.snapshot_queue_for_trr.is_empty() {
-            let path = Path::new(TRAJ_OUT_PATH).join(format!("traj_{n}.trr"));
-            let frames = ss_to_gromacs_frames(&self.snapshot_queue_for_trr);
-            if let Err(e) = write_trr(&path, &frames) {
-                eprintln!("Error writing TRR: {e:?}");
-            }
+            let path = dir.join("traj.trr");
+            write_trr_snapshots(&path, &self.snapshot_queue_for_trr, self.output_dt)?;
 
             self.snapshot_queue_for_trr.clear();
+        }
+
+        if !self.energy_output.is_empty() {
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("energy_out.xvg"))?;
+            let mut out = BufWriter::new(file);
+            if out.get_ref().metadata()?.len() == 0 {
+                writeln!(out, r#"@ xaxis label "Time (ps)""#)?;
+                for (i, name) in ["Potential", "Kinetic En.", "Temperature", "Pressure"]
+                    .iter()
+                    .enumerate()
+                {
+                    writeln!(out, r#"@ s{i} legend "{name}""#)?;
+                }
+            }
+            for (time, [potential, kinetic, temperature, pressure]) in &self.energy_output {
+                writeln!(
+                    out,
+                    "{time:.9} {potential:.6} {kinetic:.6} {temperature:.6} {pressure:.6}"
+                )?;
+            }
+            out.flush()?;
+            self.energy_output.clear();
         }
 
         // todo: Make sure this fails gracefully if mdtraj isn't available.
@@ -891,14 +1011,31 @@ impl MdState {
                 .map(|ss| ss.to_dcd(&self.cell, true))
                 .collect();
 
-            let path = Path::new(TRAJ_OUT_PATH).join(format!("traj_{n}.xtc"));
-            if let Err(e) = write_xtc(&path, &frames) {
-                eprintln!("Error writing XTC: {e:?}");
-            }
+            write_xtc(&dir.join("traj.xtc"), &frames)?;
 
             self.snapshot_queue_for_xtc.clear();
         }
+
+        Ok(())
     }
+}
+
+/// Write TRR snapshots with their steps and box dimensions.
+pub fn write_trr_snapshots(path: &Path, snapshots: &[Snapshot], dt: f32) -> io::Result<()> {
+    for chunk in snapshots.chunks(128) {
+        let frames = ss_to_gromacs_frames(chunk);
+        let metadata: Vec<_> = chunk
+            .iter()
+            .map(|snap| {
+                let step = (snap.time / f64::from(dt)).round() as i32;
+                let cell = snap.cell.map(|cell| (cell.extent / 10.).to_arr());
+                (step, cell)
+            })
+            .collect();
+        write_trr_with_metadata(path, &frames, &metadata)?;
+    }
+
+    Ok(())
 }
 
 /// Convert GROMACS trajectory frames into `Snapshot` values.
