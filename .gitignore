@@ -16,6 +16,7 @@ Cargo.lock
 *.ptx
 
 .claude/
+AGENTS.md
 
 
 # Molecular formats

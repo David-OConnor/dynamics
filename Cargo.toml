@@ -1,6 +1,6 @@
 [package]
 name = "dynamics"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 authors = ["David O'Connor <the_alchemist@fastmail.com>"]
 description = "Molecular dynamics"
@@ -15,7 +15,6 @@ repository = "https://github.com/David-OConnor/dynamics"
 documentation = "https://docs.rs/dynamics"
 readme = "README.md"
 license = "MIT"
-#exclude = [".gitignore"]
 
 
 # This is required to package the parameter files on crates.io
@@ -37,22 +36,21 @@ required-features = ["train-bin"]
 
 [dependencies]
 lin_alg = { version = "1.4.3", features = ["encode", "random"] }
-na_seq = "0.3.15"
-bio_files = "0.5.3"
-ewald = { version = "0.1.15" }
+na_seq = "0.3.16"
+bio_files = "0.5.4"
+ewald = { version = "0.1.16" }
 # For erf, in Ewald exclusion corrections. `ewald` already depends on this.
-statrs = "0.18.0"
+statrs = "0.19.1"
 bio_apis = "0.3.0"
-sha2 = "0.10"
+sha2 = "0.11"
 # Optional OPLS generation provider; all bundled parameterization remains offline.
-ureq = { version = "3.4", features = ["json"] }
+ureq = { version = "3.5", features = ["json"] }
 serde_json = "1"
 tempfile = "3"
 libloading = "0.9"
-zip = { version = "8", default-features = false, features = ["deflate"] }
-#mol_defs = { path = "../mol_defs" }  # e.g. Dihedral and a few auxillary types.
+zip = { version = "9.5", default-features = false, features = ["deflate"] }
 
-rand = "0.10.2"
+rand = "0.10"
 rand_distr = "0.6.0"
 
 itertools = "0.15.0" # For combinations when matching angles.
@@ -68,7 +66,7 @@ mcubes = "0.1.7"
 candle-core = { version = "0.11.0" }
 candle-nn = { version = "0.11.0" }
 
-lazy_static = "1.5.0"
+lazy_static = "1.5"
 
 # `dynamic-loading` keeps the CUDA driver library out of the executable's load-time dependencies, so
 # a binary built with the `cuda` feature still starts where no NVIDIA driver is installed. Cargo
@@ -82,13 +80,12 @@ cuda_setup = { version = "0.1.10", optional = true }
 
 
 [patch.crates-io]
-ewald = { path = "../ewald" }
-bio_files = { path = "../bio_files" }
-na_seq = { path = "../na_seq" }
+#ewald = { path = "../ewald" }
+#bio_files = { path = "../bio_files" }
+#na_seq = { path = "../na_seq" }
 
 
 [features]
-
 # Enabling CUDA allows CUDA for short-range interactions, but `cufft` or `vkfft` is
 # required to enable it for long-range SPME.
 # For now, we have CUDA disabled on CANDLE, as it seesm to require cudfft, curng, and perhaps more

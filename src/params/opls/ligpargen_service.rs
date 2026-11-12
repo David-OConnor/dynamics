@@ -144,7 +144,7 @@ pub(crate) fn parameterize(mol: &str, charge: i32) -> io::Result<Generated> {
     let mut itp = None;
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(io::Error::other)?;
-        if entry.name().ends_with(".itp") {
+        if entry.name().map_err(io::Error::other)?.ends_with(".itp") {
             if itp.is_some() {
                 return Err(invalid("LigParGen returned several molecule ITP files"));
             }

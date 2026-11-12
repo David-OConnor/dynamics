@@ -109,6 +109,7 @@ It integrates the following [Amber parameter sets](https://ambermd.org/AmberMode
 
 (todo: Details here on OPLS and GFN-FF parameters) We use embedded OPLS parameters for proteins, and call its public API to parameterize small molecules. We cache this parameterization. To parameterize GFN-FF parameters, we launch the `xtb` executable, which can be installed from the *Tools* window. Or, it can use an `xtb` present on your system path.
 
+The *GFN-FF* force fields can be used with either the *Dynamics* or *xTB* backends. In either case, we parameterize by calling the *xTB* executable. If using the *xTB* backend, we launch that executable at the run start, and collect + display results once complete. If using the *Dynamics* backend, we call *xTB* as a library to compute forces each run, and use *Dynamics*'s integrator, thermostat, and other functionality. 
 
 ## The algorithm
 

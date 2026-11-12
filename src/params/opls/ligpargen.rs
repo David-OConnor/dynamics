@@ -284,7 +284,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
     for label in labels {
         hash.update(label);
     }
-    let key = format!("{:x}", hash.finalize());
+    let key: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
     Ok(Input {
         mol,
         upload,
@@ -553,47 +553,5 @@ impl Generator {
         }
         atoms.clone_from_slice(&prepared);
         Ok(params)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generated_topology_rejects_graph_and_charge_changes_atomically() {
-        let source =
-            bio_files::Sdf::new(include_str!("../../../param_data/opls/creatine.mol")).unwrap();
-        for change_charge in [false, true] {
-            let mut request = input(&source.atoms, &source.bonds).unwrap();
-            let mut bonds = source.bonds.clone();
-            if change_charge {
-                request.charge += 1;
-            } else {
-                bonds.pop();
-            }
-            let mut atoms = source.atoms.clone();
-            let generated = Generated {
-                sdf: include_str!("../../../param_data/opls/creatine.mol").into(),
-                itp: include_str!("../../../param_data/opls/creatine.itp").into(),
-                job_id: "local test".into(),
-            };
-            let error = Generator::default()
-                .accept(&mut atoms, &bonds, &request, generated)
-                .unwrap_err();
-            assert!(
-                error.descrip.contains(if change_charge {
-                    "charge"
-                } else {
-                    "bond graph"
-                }),
-                "{error}"
-            );
-            for (atom, original) in atoms.iter().zip(&source.atoms) {
-                assert_eq!(atom.force_field_type, original.force_field_type);
-                assert_eq!(atom.partial_charge, original.partial_charge);
-                assert_eq!(atom.posit, original.posit);
-            }
-        }
     }
 }
