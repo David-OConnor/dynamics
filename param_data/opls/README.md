@@ -55,51 +55,9 @@ The fixtures included aliphatic, aromatic and heterocyclic compounds, alcohols,
 ethers, carbonyl compounds, amides, amines, nitriles, sulfur compounds and
 halogenated compounds. Temporary validation code was removed.
 
-## Complete creatine ligand template
-
-`creatine.itp` is an unmodified generated output from the
-Jorgensen group's official LigParGen service, obtained 2026-10-21:
-https://huggingface.co/spaces/lsdodda/ligpargen
-https://github.com/leelasd/LigParGen_2.3
-
-Input: `CN(CC(=O)O)C(=N)N`, net charge 0, optimization level 0,
-1.14*CM1A-LBCC charge model. Job ID: `9ff3f126eaa040089eccb61f757b6a2c`.
-`creatine.mol` reconstructs the matching element/bond-order graph in that ITP's
-atom order from the documented input SMILES and bonded hydrogens. The previous
-`creatine.sdf` was absent from the repository. The MOL coordinates are placeholders
-because template recognition uses connectivity only; simulation coordinates always
-come from the caller. Numeric force-field parameters in the ITP are unchanged.
-
-This is the neutral tautomer present in the supplied PubChem 586 structure,
-not a zwitterionic or protonated creatine model. The server's generated residue
-label is YIB; recognition uses the entire element/bond-order graph, including
-all 18 atoms and 17 bonds. No coordinates, serial numbers or atom names are
-required to match. A different protonation state or tautomer does not use this
-template. Recognizing this bundled template does not contact a server.
-
-The complete template supplements Foyer's rules, which do not cover creatine's
-substituted guanidine nitrogen. It supplies charges, masses, LJ values, bonds,
-angles, propers/impropers, exclusions and scaled pairs. Numeric parameters are
-generated OPLS-AA/CM1A-LBCC data; no BOSS executable or source is distributed.
-References: Dodda et al., Nucleic Acids Res. 2017, 45, W331-W336,
-doi:10.1093/nar/gkx312; Dodda et al., J. Phys. Chem. B 2017, 121, 3864-3870,
-doi:10.1021/acs.jpcb.7b00272. Upstream attribution remains in the ITP header.
-
-Temporary validation used the user's creatine coordinates, reversed atom order
-and noncontiguous serial numbers. Against OpenMM's independent GROMACS topology
-reader (with the same geometric LJ rule), maximum energy error was below
-0.00004 kcal/mol and force component error below 0.0036 kcal/mol/angstrom, with
-electrostatics disabled to isolate bonded and LJ terms. Exported GROMACS energy
-agreed within 0.00005 kcal/mol. Native CPU/CUDA agreed; a native TIP4P/PME step
-also passed. A changed guanidine bond order was rejected. Temporary validation
-code was removed.
-
-Generated data SHA256:
-- `creatine.itp`: `fe3cb6c73375c5df89f7191b87b57fa3ca7a3c4510fe6a1b52f7681392e08316`
-
 ## Automatic ligand generation and local cache
 
-The general ligand builder supplements complete bundled assignments with
+The general ligand builder supplements bundled Foyer rules with
 local LigParGen/BOSS when installed, then
 https://huggingface.co/spaces/lsdodda/ligpargen when no local installation is found
 and remote generation is allowed. The local adapter supports the Isra3l and

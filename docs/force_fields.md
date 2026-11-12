@@ -46,7 +46,7 @@ The engine validates parameter lengths, atom indices, numerical values and LJ mi
 |---|---|---|---|
 | `params::amber::AmberSet` | Residue libraries; ff19SB tables | GAFF2 rules, supplied or GeoStd ML charges, supplied/estimated bonded overrides | `param_data/amber/` |
 | `params::charmm::CharmmSet` | Residue topologies and patches; CHARMM36m tables | Matching imported topologies; automatic CGenFF is not supplied | `param_data/charmm/` |
-| `params::opls::OplsSet` | OPLS-AA/L residue templates and tables | Bundled known/Foyer assignments, LigParGen cache, optional generation | `param_data/opls/` |
+| `params::opls::OplsSet` | OPLS-AA/L residue templates and tables | Bundled Foyer assignments, LigParGen cache, optional generation | `param_data/opls/` |
 
 All three load their supported tables with `include_str!`/`include_bytes!`; users do
 not need parameter files, AmberTools, GROMACS, CHARMM, Python or BOSS installed for
@@ -126,7 +126,7 @@ Explicit water and ions may also be supplied as ordinary atoms. Use short timest
 * `params::amber`: Amber tables and residue preparation; `typing` contains GAFF2 rules and
   missing-parameter estimates, and `charges` contains the GeoStd model and trainer.
 * `params::charmm`: CHARMM topology/patch assignment and parameter resolution, plus CMAP support.
-* `params::opls`: OPLS templates, Foyer rules, known topologies and LigParGen transport/cache.
+* `params::opls`: OPLS templates, Foyer rules and LigParGen transport/cache.
 * `bio_files`: format codecs, parameter data structures and indexed table lookup.
 
 Amber-specific fields formerly on `FfParamSet` are now accessed through

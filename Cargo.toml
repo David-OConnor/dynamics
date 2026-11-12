@@ -21,6 +21,7 @@ license = "MIT"
 include = [
     "src/**",
     "param_data/**",
+    "!*.sdf",
     "docs/**",
     "Cargo.toml",
     "README.md",

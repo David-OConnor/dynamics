@@ -102,13 +102,6 @@ fn benzene_edges(atoms: &[AtomGeneric], graph: &[Vec<u8>]) -> Vec<Vec<u8>> {
 }
 
 impl Ligand {
-    pub fn creatine() -> Result<Self, ParamError> {
-        Self::from_text(
-            include_str!("../../../param_data/opls/creatine.mol"),
-            include_str!("../../../param_data/opls/creatine.itp"),
-        )
-    }
-
     pub fn from_text(sdf: &str, itp: &str) -> Result<Self, ParamError> {
         let source =
             Sdf::new(sdf).map_err(|e| ParamError::new(&format!("OPLS ligand structure: {e}")))?;
@@ -131,6 +124,7 @@ impl Ligand {
                 top.defaults.comb_rule, top.defaults.fudge_lj, top.defaults.fudge_qq
             )));
         }
+        
         // A self-contained exported topology may define unused solvent/ion
         // types. Validate the one molecule instantiated by [ molecules ].
         let mol = if top.molecules.is_empty() && top.molecule_types.len() == 1 {
@@ -141,6 +135,7 @@ impl Ligand {
             None
         }
         .ok_or_else(|| ParamError::new("OPLS ligand topology must instantiate one molecule"))?;
+        
         let params = gromacs_molecule_params(mol, &top)?;
         let graph = edges(&source.atoms, &source.bonds)?;
         if source.atoms.len() != mol.atoms.len()

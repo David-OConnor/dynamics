@@ -38,7 +38,6 @@ pub(crate) struct SmallMolSet {
     /// in GROMACS units, except for angles, which we convert from radians.
     pub(crate) tables: GromacsFfParams,
     rules: Vec<Rule>,
-    known: super::known::Ligand,
     generator: super::ligpargen::Generator,
 }
 
@@ -81,7 +80,6 @@ impl SmallMolSet {
         let mut result = Self {
             tables: GromacsFfParams::default(),
             rules: Vec::new(),
-            known: super::known::Ligand::creatine()?,
             generator: Default::default(),
         };
         for line in DATA
@@ -249,9 +247,6 @@ impl SmallMolSet {
             return Err(err("Cannot parameterize an empty OPLS ligand"));
         }
         let graph = Graph::new(atoms, bonds)?;
-        if let Some(params) = self.known.build(atoms, bonds)? {
-            return Ok(params);
-        }
         let names = self.type_atoms(atoms, &graph)?;
 
         let by_name: HashMap<_, _> = self

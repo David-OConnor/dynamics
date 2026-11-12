@@ -59,6 +59,7 @@ pub fn cache_dir() -> PathBuf {
     if let Some(path) = std::env::var_os("DYNAMICS_OPLS_CACHE") {
         return PathBuf::from(path).join("v1");
     }
+
     let root = std::env::var_os("LOCALAPPDATA")
         .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
         .map(PathBuf::from)
@@ -80,6 +81,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
             "OPLS ligand input needs 1–999 atoms and at most 999 bonds",
         ));
     }
+
     let mut indices = HashMap::new();
     for (i, atom) in atoms.iter().enumerate() {
         if indices.insert(atom.serial_number, i).is_some() {
@@ -213,6 +215,7 @@ fn input(atoms: &[AtomGeneric], bonds: &[BondGeneric]) -> Result<Input, ParamErr
         };
         charges.push(q);
     }
+
     let charge = charges.iter().sum();
     let original: Vec<_> = (0..atoms.len()).collect();
     let mol = mol_block(atoms, &edges, &charges, &original);
@@ -405,9 +408,11 @@ impl Generator {
         if let Some(params) = self.cached(atoms, bonds)? {
             return Ok((params, "cached LigParGen topology"));
         }
+
         let request = input(atoms, bonds)?;
         let local = super::ligpargen_local::Local::discover()
             .map_err(|e| error(format!("Unable to configure local LigParGen: {e}")))?;
+
         let (generated, source) = if let Some(local) = local {
             let generated = local
                 .parameterize(&request.upload, request.charge)
@@ -427,6 +432,7 @@ impl Generator {
                 "No local LigParGen/BOSS installation found; install LigParGen on PATH or set DYNAMICS_LIGPARGEN. Remote generation is disabled",
             ));
         };
+
         self.accept(atoms, bonds, &request, generated)
             .map(|params| (params, source))
     }
@@ -447,10 +453,12 @@ impl Generator {
             {
                 requests.pop_front();
             }
+
             if requests.len() >= REQUEST_LIMIT {
                 wait_until(*requests.front().unwrap() + REQUEST_WINDOW);
                 continue;
             }
+
             requests.push_back(Instant::now());
             match super::ligpargen_service::parameterize(&request.upload, request.charge) {
                 Ok(result) => return Ok(result),
@@ -517,11 +525,13 @@ impl Generator {
             })
             .collect::<Vec<_>>()
             .join("\n");
+
         let cache = format!(
             "{}{SEPARATOR}; LigParGen job {}\n{top}",
             request.mol.trim_end(),
             generated.job_id
         );
+
         let template = Ligand::from_text(&request.mol, &top)?;
         self.memory
             .lock()
@@ -530,6 +540,7 @@ impl Generator {
 
         let directory = cache_dir();
         let path = directory.join(format!("{}.opls", request.key));
+
         let temporary = directory.join(format!(
             "{}.{}.{}.tmp",
             request.key,
