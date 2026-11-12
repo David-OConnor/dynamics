@@ -39,8 +39,8 @@ required-features = ["train-bin"]
 [dependencies]
 lin_alg = { version = "1.4.3", features = ["encode", "random"] }
 na_seq = "0.3.16"
-bio_files = "0.5.4"
-ewald = { version = "0.1.16" }
+bio_files = "0.5.5"
+ewald = { version = "0.2.0" }
 # For erf, in Ewald exclusion corrections. `ewald` already depends on this.
 statrs = "0.19.1"
 bio_apis = "0.3.0"
