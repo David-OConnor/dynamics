@@ -1,6 +1,6 @@
 [package]
 name = "dynamics"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 authors = ["David O'Connor <the_alchemist@fastmail.com>"]
 description = "Molecular dynamics"
@@ -19,6 +19,7 @@ license = "MIT"
 
 # This is required to package the parameter files on crates.io
 include = [
+    "build.rs",
     "src/**",
     "param_data/**",
     "!*.sdf",
