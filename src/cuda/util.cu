@@ -83,23 +83,36 @@ __device__ inline float3 load_pos(
     }
 }
 
+// Warps are 32 lanes on Nvidia; 32 or 64 on AMD, depending on the architecture.
+#ifdef __HIPCC__
+#define WARP_SIZE warpSize
+#define SHFL_DOWN(x, offset) __shfl_down(x, offset)
+#else
+#define WARP_SIZE 32
+#define SHFL_DOWN(x, offset) __shfl_down_sync(0xffffffff, x, offset)
+#endif
+
 // Helpers to avoid atomic adds on energies
 __inline__ __device__ double warp_sum(double x) {
-    for (int offset = 16; offset > 0; offset >>= 1)
-        x += __shfl_down_sync(0xffffffff, x, offset);
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+        x += SHFL_DOWN(x, offset);
     return x;
 }
 
 __inline__ __device__ double block_sum(double x) {
-    static __shared__ double smem[32]; // one lane-0 per warp
-    int lane = threadIdx.x & 31;
-    int wid  = threadIdx.x >> 5;
+    // One slot per warp. 32 covers 1024-thread blocks at either warp size.
+    static __shared__ double smem[32];
+    const int lane = threadIdx.x % WARP_SIZE;
+    const int wid  = threadIdx.x / WARP_SIZE;
 
     x = warp_sum(x);
+
+    // Don't overwrite `smem` while warp 0 may still be reading it from a previous call.
+    __syncthreads();
     if (lane == 0) smem[wid] = x;
     __syncthreads();
 
-    x = (threadIdx.x < blockDim.x / 32) ? smem[lane] : 0.0;
+    x = (threadIdx.x < blockDim.x / WARP_SIZE) ? smem[lane] : 0.0;
     if (wid == 0) x = warp_sum(x);
     return x;
 }

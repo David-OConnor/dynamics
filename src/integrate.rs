@@ -9,6 +9,7 @@ use std::{
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 use lin_alg::f32::Vec3;
+use rayon::prelude::*;
 
 use crate::{
     CENTER_SIMBOX_RATIO, COMPUTATION_TIME_RATIO, ComMotionRemoval, ComputationDevice,
@@ -493,14 +494,14 @@ impl MdState {
             a.posit += a.vel * dt_drift; // drift
         }
 
-        for w in &mut self.water {
+        self.water.par_iter_mut().with_min_len(256).for_each(|w| {
             // Kick
             w.o.vel += w.o.accel * dt_kick;
             w.h0.vel += w.h0.accel * dt_kick;
             w.h1.vel += w.h1.accel * dt_kick;
 
             let _ = integrate_rigid_water(w, dt_drift, &self.cell, &self.water_model);
-        }
+        });
 
         match self.cfg.hydrogen_constraint {
             HydrogenConstraint::Shake { shake_tolerance } => {
@@ -546,7 +547,7 @@ impl MdState {
 
         let (accel_conv_o, accel_conv_h) = self.water_model.accel_conversions();
 
-        for w in &mut self.water {
+        self.water.par_iter_mut().with_min_len(256).for_each(|w| {
             // Take the force on M/EP, and instead apply it to the other atoms. This leaves it at 0.
             // w.project_ep_force_to_real_sites(&self.cell);
             w.project_ep_force(&self.water_model);
@@ -558,7 +559,7 @@ impl MdState {
             w.o.vel += w.o.accel * dt;
             w.h0.vel += w.h0.accel * dt;
             w.h1.vel += w.h1.accel * dt;
-        }
+        });
 
         if matches!(
             self.cfg.hydrogen_constraint,
@@ -580,9 +581,9 @@ impl MdState {
             a.posit += a.vel * dt;
         }
 
-        for w in &mut self.water {
+        self.water.par_iter_mut().with_min_len(256).for_each(|w| {
             let _ = integrate_rigid_water(w, dt, &self.cell, &self.water_model);
-        }
+        });
 
         match self.cfg.hydrogen_constraint {
             HydrogenConstraint::Shake { shake_tolerance } => {

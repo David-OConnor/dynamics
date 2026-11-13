@@ -8,7 +8,7 @@ use crate::{AtomDynamicsx8, AtomDynamicsx16, MdState};
 
 impl MdState {
     pub fn pack_atoms(&mut self) {
-        if is_x86_feature_detected!("avx512f") {
+        if lin_alg::simd_backend() == "AVX-512" {
             self.atoms_x16 = Vec::new();
 
             for chunk in self.atoms.chunks(16) {

@@ -1,80 +1,16 @@
-use std::{mem::size_of, sync::Arc};
-
-use cudarc::driver::{
-    CudaFunction, CudaSlice, CudaStream, DeviceRepr, HostSlice, LaunchConfig, PushKernelArg,
-    SyncOnDrop, result,
-};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 
 use crate::{
     AtomDynamics, ForcesOnWaterMol, MdOverrides,
     forces::LjModCoeffs,
+    gpu_backend::{DevBuf, GpuStream, Kernel, PinnedBuf},
     non_bonded::{BodyRef, LjTables, NonBondedPair, Scale14},
     solvent::{WaterMolOpc, WaterSite},
 };
 
-/// Page-locked host memory without the write-combined flag used by cudarc's
-/// `PinnedHostSlice`. Write-combined memory is ideal for H2D staging but very
-/// slow for the CPU reads required after D2H force copies.
-struct PinnedBuffer<T: DeviceRepr> {
-    ptr: *mut T,
-    len: usize,
-    stream: Arc<CudaStream>,
-}
-
-unsafe impl<T: DeviceRepr> Send for PinnedBuffer<T> {}
-unsafe impl<T: DeviceRepr> Sync for PinnedBuffer<T> {}
-
-impl<T: DeviceRepr> PinnedBuffer<T> {
-    fn new(stream: &Arc<CudaStream>, len: usize) -> Self {
-        let ptr = unsafe { result::malloc_host(len * size_of::<T>(), 0).unwrap() } as *mut T;
-        assert!(!ptr.is_null());
-        Self {
-            ptr,
-            len,
-            stream: stream.clone(),
-        }
-    }
-
-    fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
-
-    fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
-    }
-}
-
-impl<T: DeviceRepr> Drop for PinnedBuffer<T> {
-    fn drop(&mut self) {
-        let _ = self.stream.synchronize();
-        let _ = unsafe { result::free_host(self.ptr.cast()) };
-    }
-}
-
-impl<T: DeviceRepr> HostSlice<T> for PinnedBuffer<T> {
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    unsafe fn stream_synced_slice<'a>(
-        &'a self,
-        _stream: &'a CudaStream,
-    ) -> (&'a [T], SyncOnDrop<'a>) {
-        (self.as_slice(), SyncOnDrop::Sync(None))
-    }
-
-    unsafe fn stream_synced_mut_slice<'a>(
-        &'a mut self,
-        _stream: &'a CudaStream,
-    ) -> (&'a mut [T], SyncOnDrop<'a>) {
-        (self.as_mut_slice(), SyncOnDrop::Sync(None))
-    }
-}
-
 pub(crate) struct GpuKernels {
-    pub primary: CudaFunction, // Option only due to not impling Default.
-    pub alchemical: CudaFunction,
+    pub primary: Kernel,
+    pub alchemical: Kernel,
 }
 
 /// Device buffers that persist across all steps. Mutated on the GPU.
@@ -83,52 +19,51 @@ pub(crate) struct GpuKernels {
 ///
 /// Note: Forces and energies must be zeroed each step.
 pub(crate) struct ForcesPositsGpu {
-    pub forces_on_dyn: CudaSlice<f32>,
-    pub forces_on_water_o: CudaSlice<f32>,
-    pub forces_on_water_m: CudaSlice<f32>,
-    pub forces_on_water_h0: CudaSlice<f32>,
-    pub forces_on_water_h1: CudaSlice<f32>,
+    pub forces_on_dyn: DevBuf<f32>,
+    pub forces_on_water_o: DevBuf<f32>,
+    pub forces_on_water_m: DevBuf<f32>,
+    pub forces_on_water_h0: DevBuf<f32>,
+    pub forces_on_water_h1: DevBuf<f32>,
 
-    pub virial_gpu: CudaSlice<f64>,
-    pub energy_gpu: CudaSlice<f64>,
-    pub alch_dh_dl_gpu: CudaSlice<f64>,
+    pub virial_gpu: DevBuf<f64>,
+    pub energy_gpu: DevBuf<f64>,
+    pub alch_dh_dl_gpu: DevBuf<f64>,
 
     pub cutoff_ewald: f32,
     pub alpha_ewald: f32,
 
-    pub pos_dyn: CudaSlice<f32>,
-    pub pos_w_o: CudaSlice<f32>,
-    pub pos_w_m: CudaSlice<f32>,
-    pub pos_w_h0: CudaSlice<f32>,
-    pub pos_w_h1: CudaSlice<f32>,
+    pub pos_dyn: DevBuf<f32>,
+    pub pos_w_o: DevBuf<f32>,
+    pub pos_w_m: DevBuf<f32>,
+    pub pos_w_h0: DevBuf<f32>,
+    pub pos_w_h1: DevBuf<f32>,
 
     // Reused page-locked host buffers. In addition to avoiding per-step heap
-    // allocations, pinned memory prevents cudarc from synchronizing after every
-    // individual H2D/D2H copy.
-    host_pos_dyn: PinnedBuffer<f32>,
-    host_pos_w_o: PinnedBuffer<f32>,
-    host_pos_w_m: PinnedBuffer<f32>,
-    host_pos_w_h0: PinnedBuffer<f32>,
-    host_pos_w_h1: PinnedBuffer<f32>,
-    host_forces_dyn: PinnedBuffer<f32>,
-    host_forces_w_o: PinnedBuffer<f32>,
-    host_forces_w_m: PinnedBuffer<f32>,
-    host_forces_w_h0: PinnedBuffer<f32>,
-    host_forces_w_h1: PinnedBuffer<f32>,
-    host_virial: PinnedBuffer<f64>,
-    host_energy: PinnedBuffer<f64>,
-    host_alch_dh_dl: PinnedBuffer<f64>,
+    // allocations, pinned memory lets H2D/D2H copies run async, without a sync after each.
+    host_pos_dyn: PinnedBuf<f32>,
+    host_pos_w_o: PinnedBuf<f32>,
+    host_pos_w_m: PinnedBuf<f32>,
+    host_pos_w_h0: PinnedBuf<f32>,
+    host_pos_w_h1: PinnedBuf<f32>,
+    host_forces_dyn: PinnedBuf<f32>,
+    host_forces_w_o: PinnedBuf<f32>,
+    host_forces_w_m: PinnedBuf<f32>,
+    host_forces_w_h0: PinnedBuf<f32>,
+    host_forces_w_h1: PinnedBuf<f32>,
+    host_virial: PinnedBuf<f64>,
+    host_energy: PinnedBuf<f64>,
+    host_alch_dh_dl: PinnedBuf<f64>,
 }
 
 impl ForcesPositsGpu {
     pub(crate) fn new(
-        stream: &Arc<CudaStream>,
+        stream: GpuStream,
         n_dyn: usize,
         n_water: usize,
         cutoff_ewald: f32,
         alpha_ewald: f32,
     ) -> Self {
-        // CUDA host/device allocation APIs do not accept zero-length allocations.
+        // GPU host/device allocation APIs do not accept zero-length allocations.
         // Keep one unused element for systems with no solute or no water.
         let n_dyn_storage = n_dyn.max(1);
         let n_water_storage = n_water.max(1);
@@ -149,37 +84,19 @@ impl ForcesPositsGpu {
         let pos_w_m = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
         let pos_w_h0 = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
         let pos_w_h1 = stream.alloc_zeros::<f32>(n_water_storage * 3).unwrap();
-        let mut host_pos_dyn = PinnedBuffer::new(stream, n_dyn_storage * 3);
-        let mut host_pos_w_o = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_pos_w_m = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_pos_w_h0 = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_pos_w_h1 = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_forces_dyn = PinnedBuffer::new(stream, n_dyn_storage * 3);
-        let mut host_forces_w_o = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_forces_w_m = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_forces_w_h0 = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_forces_w_h1 = PinnedBuffer::new(stream, n_water_storage * 3);
-        let mut host_virial = PinnedBuffer::new(stream, 1);
-        let mut host_energy = PinnedBuffer::new(stream, 1);
-        let mut host_alch_dh_dl = PinnedBuffer::new(stream, 1);
-
-        for host in [
-            &mut host_pos_dyn,
-            &mut host_pos_w_o,
-            &mut host_pos_w_m,
-            &mut host_pos_w_h0,
-            &mut host_pos_w_h1,
-            &mut host_forces_dyn,
-            &mut host_forces_w_o,
-            &mut host_forces_w_m,
-            &mut host_forces_w_h0,
-            &mut host_forces_w_h1,
-        ] {
-            host.as_mut_slice().fill(0.0);
-        }
-        host_virial.as_mut_slice().fill(0.0);
-        host_energy.as_mut_slice().fill(0.0);
-        host_alch_dh_dl.as_mut_slice().fill(0.0);
+        let host_pos_dyn = PinnedBuf::new(stream, n_dyn_storage * 3);
+        let host_pos_w_o = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_pos_w_m = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_pos_w_h0 = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_pos_w_h1 = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_forces_dyn = PinnedBuf::new(stream, n_dyn_storage * 3);
+        let host_forces_w_o = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_forces_w_m = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_forces_w_h0 = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_forces_w_h1 = PinnedBuf::new(stream, n_water_storage * 3);
+        let host_virial = PinnedBuf::new(stream, 1);
+        let host_energy = PinnedBuf::new(stream, 1);
+        let host_alch_dh_dl = PinnedBuf::new(stream, 1);
 
         Self {
             forces_on_dyn,
@@ -221,32 +138,32 @@ impl ForcesPositsGpu {
 ///
 /// We pass this to the kernel each step, but don't transfer.
 pub(crate) struct PerNeighborGpu {
-    pub tgt_is: CudaSlice<u32>,
-    pub src_is: CudaSlice<u32>,
-    pub sigmas: CudaSlice<f32>,
-    pub epss: CudaSlice<f32>,
-    pub qs_tgt: CudaSlice<f32>,
-    pub qs_src: CudaSlice<f32>,
-    pub atom_types_tgt: CudaSlice<u8>,
-    pub water_types_tgt: CudaSlice<u8>,
-    pub atom_types_src: CudaSlice<u8>,
-    pub water_types_src: CudaSlice<u8>,
+    pub tgt_is: DevBuf<u32>,
+    pub src_is: DevBuf<u32>,
+    pub sigmas: DevBuf<f32>,
+    pub epss: DevBuf<f32>,
+    pub qs_tgt: DevBuf<f32>,
+    pub qs_src: DevBuf<f32>,
+    pub atom_types_tgt: DevBuf<u8>,
+    pub water_types_tgt: DevBuf<u8>,
+    pub atom_types_src: DevBuf<u8>,
+    pub water_types_src: DevBuf<u8>,
     /// Per pair: 0 for pairs that aren't 1-4. Otherwise, an index into the scale-factor tables.
-    pub scale_14: CudaSlice<u8>,
+    pub scale_14: DevBuf<u8>,
     /// Distinct 1-4 scale factors, indexed by `scale_14`. Index 0 is unscaled.
-    pub scale_14_lj_table: CudaSlice<f32>,
-    pub scale_14_coulomb_table: CudaSlice<f32>,
+    pub scale_14_lj_table: DevBuf<f32>,
+    pub scale_14_coulomb_table: DevBuf<f32>,
     // These are booleans for potentially safer FFI.
-    pub calc_ljs: CudaSlice<u8>,
-    pub calc_coulombs: CudaSlice<u8>,
-    pub symmetric: CudaSlice<u8>,
-    pub alch_interactions: CudaSlice<u8>,
+    pub calc_ljs: DevBuf<u8>,
+    pub calc_coulombs: DevBuf<u8>,
+    pub symmetric: DevBuf<u8>,
+    pub alch_interactions: DevBuf<u8>,
     pub has_alchemical_interactions: bool,
 }
 
 impl PerNeighborGpu {
     pub(crate) fn new(
-        stream: &Arc<CudaStream>,
+        stream: GpuStream,
         pairs: &[NonBondedPair],
         atoms_dyn: &[AtomDynamics],
         water: &[WaterMolOpc],
@@ -442,7 +359,7 @@ impl PerNeighborGpu {
 
 /// Run this each step, at the start of each GPU step.
 fn upload_positions(
-    stream: &Arc<CudaStream>,
+    stream: GpuStream,
     forces: &mut ForcesPositsGpu,
     atoms_dyn: &[AtomDynamics],
     water: &[WaterMolOpc],
@@ -491,7 +408,7 @@ fn upload_positions(
 /// Returns (force on non-solvent, force on solvent, virial sum, potential energy total,
 /// per-mol-pair potential energy, alchemical dH/dlambda)
 pub fn force_nonbonded_gpu(
-    stream: &Arc<CudaStream>,
+    stream: GpuStream,
     kernels: &GpuKernels,
     pairs: &[NonBondedPair],
     atoms_dyn: &[AtomDynamics],
@@ -552,7 +469,6 @@ pub fn force_nonbonded_gpu(
         cell_extent.z.recip(),
     );
 
-    let cfg = LaunchConfig::for_num_elems(n_u32);
     let kernel_to_launch = if alchemical_enabled {
         &kernels.alchemical
     } else {
@@ -631,7 +547,7 @@ pub fn force_nonbonded_gpu(
         launch_args.arg(&lambda_alch);
     }
 
-    unsafe { launch_args.launch(cfg) }.expect("Unable to launch the nonbonded CUDA kernel");
+    unsafe { launch_args.launch(n_u32) }.expect("Unable to launch the nonbonded GPU kernel");
 
     // Queue every result copy into persistent pinned buffers. Reading the final
     // scalar waits for the whole ordered stream once; the earlier copies then
@@ -702,7 +618,7 @@ pub fn force_nonbonded_gpu(
 }
 
 /// Zero forces and accumulators on the device. Run this each step.
-fn zero_forces_and_accums(stream: &Arc<CudaStream>, forces: &mut ForcesPositsGpu) {
+fn zero_forces_and_accums(stream: GpuStream, forces: &mut ForcesPositsGpu) {
     // Driver-level async memsets avoid eight kernel launches per MD step.
     stream.memset_zeros(&mut forces.forces_on_dyn).unwrap();
     stream.memset_zeros(&mut forces.forces_on_water_o).unwrap();

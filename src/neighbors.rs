@@ -11,7 +11,7 @@ use std::time::Instant;
 use lin_alg::f32::Vec3;
 use rayon::prelude::*;
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "hip"))]
 use crate::gpu_interface::PerNeighborGpu;
 use crate::{ComputationDevice, MdState, barostat::SimBox};
 
@@ -148,8 +148,10 @@ impl MdState {
 
         self.setup_pairs();
 
-        #[cfg(feature = "cuda")]
-        if let ComputationDevice::Gpu(stream) = dev {
+        #[cfg(any(feature = "cuda", feature = "hip"))]
+        if let Some(stream) = dev.gpu_stream()
+            && self.gpu_kernels.is_some()
+        {
             self.per_neighbor_gpu = if self.nb_pairs.is_empty() {
                 None
             } else {

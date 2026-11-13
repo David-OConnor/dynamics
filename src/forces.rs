@@ -1,6 +1,5 @@
 use lin_alg::f32::Vec3;
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 
 use crate::non_bonded::LjModifier;
@@ -125,11 +124,12 @@ pub(crate) fn force_e_lj_mod(
 
 /// SIMD variant
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
+#[inline]
 pub fn force_e_lj_x8(dir: Vec3x8, inv_dist: f32x8, sigma: f32x8, eps: f32x8) -> (Vec3x8, f32x8) {
     let sr = sigma * inv_dist;
-    let sr6 = sr.powi(6);
-    let sr12 = sr6.powi(2);
+    let sr2 = sr * sr;
+    let sr6 = sr2 * sr2 * sr2;
+    let sr12 = sr6 * sr6;
 
     let mag = f32x8::splat(24.) * eps * (f32x8::splat(2.) * sr12 - sr6) * inv_dist;
 
@@ -140,7 +140,7 @@ pub fn force_e_lj_x8(dir: Vec3x8, inv_dist: f32x8, sigma: f32x8, eps: f32x8) -> 
 /// SIMD variant of `force_e_lj_mod`. The modifier is branch-free across lanes; callers apply the
 /// cutoff itself.
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
+#[inline]
 pub(crate) fn force_e_lj_mod_x8(
     dir: Vec3x8,
     dist: f32x8,
@@ -172,10 +172,9 @@ pub(crate) fn force_e_lj_mod_x8(
     (f + dir * (four_eps * f_corr), e - four_eps * e_corr)
 }
 
-/// SIMD variant. Note: Having this code compiled, then run on an AVX-512 system is fine;
-/// just don't run it.
+/// SIMD variant.
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
+#[inline]
 pub fn force_e_lj_x16(
     dir: Vec3x16,
     inv_dist: f32x16,
@@ -183,8 +182,9 @@ pub fn force_e_lj_x16(
     eps: f32x16,
 ) -> (Vec3x16, f32x16) {
     let sr = sigma * inv_dist;
-    let sr6 = sr.powi(6);
-    let sr12 = sr6.powi(2);
+    let sr2 = sr * sr;
+    let sr6 = sr2 * sr2 * sr2;
+    let sr12 = sr6 * sr6;
 
     let mag = f32x16::splat(24.) * eps * (f32x16::splat(2.) * sr12 - sr6) * inv_dist;
 
@@ -195,7 +195,7 @@ pub fn force_e_lj_x16(
 /// SIMD variant of `force_e_lj_mod`. The modifier is branch-free across lanes; callers apply the
 /// cutoff itself.
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
+#[inline]
 pub(crate) fn force_e_lj_mod_x16(
     dir: Vec3x16,
     dist: f32x16,

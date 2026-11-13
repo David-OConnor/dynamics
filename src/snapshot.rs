@@ -30,8 +30,6 @@ use crate::{AtomDynamics, MdState, barostat::SimBox};
 // DCD, TRR, XTC. We want this to be such that we don't experience too much memory use.
 const TRAJ_FILE_SAVE_INTERVAL: usize = 2_000;
 
-const TRAJ_OUT_PATH: &str = "./md_out";
-
 #[cfg_attr(feature = "encode", derive(Encode, Decode))]
 #[derive(Debug, Clone, PartialEq)]
 /// For saving snapshots.
@@ -860,18 +858,7 @@ impl MdState {
     /// Save the initial structure and settings before stepping a run of known length.
     pub fn start_run_output(&mut self, n_steps: usize, dt: f32) -> io::Result<&Path> {
         if self.output_dir.is_none() {
-            let root = Path::new(TRAJ_OUT_PATH);
-            fs::create_dir_all(root)?;
-            let stamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S%.3f");
-            let dir = (0..)
-                .find_map(|i| {
-                    let path = root.join(format!("dynamics_{stamp}_{i}"));
-                    match fs::create_dir(&path) {
-                        Err(e) if e.kind() == ErrorKind::AlreadyExists => None,
-                        result => Some(result.map(|()| path)),
-                    }
-                })
-                .unwrap()?;
+            let dir = bio_files::md_out::create_run_dir("dynamics")?;
             self.cfg.save_mdp(&dir.join("md.mdp"), n_steps, dt)?;
             self.save_run_gro(&dir.join("conf.gro"))?;
             self.output_dir = Some(dir);

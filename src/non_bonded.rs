@@ -6,13 +6,12 @@ use std::{collections::HashMap, f64::consts::PI, ops::AddAssign};
 use bincode::{Decode, Encode};
 use ewald::{PmeRecip, force_coulomb_short_range, get_grid_n};
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{f32::Vec3, f64::Vec3 as Vec3F64};
 use rayon::prelude::*;
 use statrs::function::erf::erf;
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "hip"))]
 use crate::gpu_interface::force_nonbonded_gpu;
 use crate::{
     AtomDynamics, ComputationDevice, MdOverrides, MdState,
@@ -25,7 +24,6 @@ use crate::{
     validate_mol_start_indices,
 };
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 // // Å. 9-12 should be fine; there is very little VDW force > this range due to
@@ -200,7 +198,6 @@ pub struct LjTables {
 }
 
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 #[derive(Default)]
 pub struct LjTablesx8 {
     /// Non-solvent, non-solvent interactions. Upper triangle.
@@ -211,14 +208,13 @@ pub struct LjTablesx8 {
 }
 
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 #[derive(Default)]
 pub struct LjTablesx16 {
     /// Non-solvent, non-solvent interactions. Upper triangle.
     pub std: Vec<(f32x16, f32x16)>,
     /// Water, non-solvent interactions.
     pub water_std: Vec<(f32x16, f32x16)>,
-    pub n_std: [usize; 8],
+    pub n_std: [usize; 16],
 }
 
 // todo note: On large systems, this can have very high memory use. Consider
@@ -409,6 +405,106 @@ fn add_to_sink(
     }
 }
 
+lin_alg::simd_dispatch! {
+/// Pack current pair data; discard padding before accumulation.
+fn nonbonded_batch(
+    pairs: &[NonBondedPair],
+    atoms: &[AtomDynamics],
+    water: &[WaterMolOpc],
+    cell: &SimBox,
+    tables: &LjTables,
+    overrides: &MdOverrides,
+    lambda: f64,
+    alpha: f32,
+    cutoff: f32,
+    lj_mod: &LjModCoeffs,
+) -> [(Vec3, f32, f32, f64); 8] {
+    let mut diff = [Vec3::new_zero(); 8];
+    let mut sigma = [0.; 8];
+    let mut eps = [0.; 8];
+    let mut q0 = [0.; 8];
+    let mut q1 = [0.; 8];
+    let mut lj_scale = [1.; 8];
+    let mut coul_scale = [1.; 8];
+    for (i, p) in pairs.iter().enumerate() {
+        let tgt = p.tgt.get(atoms, water);
+        let src = p.src.get(atoms, water);
+        diff[i] = cell.min_image(tgt.posit - src.posit);
+        if p.alch_interaction || diff[i].magnitude_squared() < 1e-12 {
+            continue;
+        }
+
+        if p.calc_lj && !overrides.lj_disabled {
+            (sigma[i], eps[i]) = p
+                .pair_14
+                .and_then(|p| p.lj)
+                .unwrap_or_else(|| tables.lookup(&p.lj_indices));
+        }
+        if p.calc_coulomb && !overrides.coulomb_disabled {
+            q0[i] = tgt.partial_charge;
+            q1[i] = src.partial_charge;
+        }
+        if let Some(p) = p.pair_14 {
+            lj_scale[i] = p.scale.lj;
+            coul_scale[i] = p.scale.coulomb;
+        }
+    }
+
+    let s = f32x8::splat;
+    let diff_v = Vec3x8::from_array(diff);
+    let dist_sq = diff_v.magnitude_squared();
+    let safe_dist_sq = dist_sq.lt(s(1e-12)).select(s(1.), dist_sq);
+    let dist = safe_dist_sq.sqrt();
+    let inv = s(1.) / dist;
+    let dir = diff_v * inv;
+    let eps = dist
+        .gt(s(lj_mod.cutoff))
+        .select(s(0.), f32x8::from_array(eps));
+    let (flj, elj) =
+        crate::forces::force_e_lj_mod_x8(dir, dist, inv, f32x8::from_array(sigma), eps, lj_mod);
+    let (fc, ec) = ewald::force_coulomb_short_range_x8(
+        dir,
+        dist,
+        inv,
+        f32x8::from_array(q0),
+        f32x8::from_array(q1),
+        s(cutoff),
+        s(alpha),
+    );
+    let force = (flj * f32x8::from_array(lj_scale) + fc * f32x8::from_array(coul_scale)).to_array();
+    let energy =
+        (elj * f32x8::from_array(lj_scale) + ec * f32x8::from_array(coul_scale)).to_array();
+    let mut result = [(Vec3::new_zero(), 0., 0., 0.); 8];
+    for (i, p) in pairs.iter().enumerate() {
+        if p.alch_interaction {
+            let mut virial = 0.;
+            let (f, e, dh) = f_nonbonded_cpu(
+                &mut virial,
+                p.tgt.get(atoms, water),
+                p.src.get(atoms, water),
+                cell,
+                p.pair_14,
+                &p.lj_indices,
+                tables,
+                p.calc_lj,
+                p.calc_coulomb,
+                overrides,
+                alpha,
+                cutoff,
+                lj_mod,
+                Some(lambda as f32),
+            );
+            result[i] = (f, e, dh, virial);
+        } else if diff[i].magnitude_squared() >= 1e-12 {
+            result[i] = (force[i], energy[i], 0., diff[i].dot(force[i]) as f64);
+        }
+    }
+
+    result
+}
+
+}
+
 /// Applies non-bonded force in parallel (CPU thread-pool) over a set of atoms, with indices assigned
 /// upstream.
 ///
@@ -437,8 +533,15 @@ fn calc_force_cpu(
     // molecule starts twice for every non-water pair in the hot force loop.
     let atom_to_mol = atom_to_mol_indices(n_std, mol_start_indices);
 
+    let min_batches = pairs
+        .len()
+        .div_ceil(rayon::current_num_threads())
+        .div_ceil(8)
+        .max(32);
+
     pairs
-        .par_iter()
+        .par_chunks(8)
+        .with_min_len(min_batches)
         .fold(
             || {
                 (
@@ -459,63 +562,55 @@ fn calc_force_cpu(
                 mut energy_between_mols,
                 mut alch_dh_dl,
             ),
-             p| {
-                let a_t = p.tgt.get(atoms_std, water);
-                let a_s = p.src.get(atoms_std, water);
-
-                let alchemical_lambda = p
-                    .alch_interaction
-                    .then_some(lambda_alch.clamp(0.0, 1.0) as f32);
-
-                let (f, e_pair, dh_dl_pair) = f_nonbonded_cpu(
-                    &mut virial,
-                    a_t,
-                    a_s,
+             batch| {
+                let values = nonbonded_batch(
+                    batch,
+                    atoms_std,
+                    water,
                     cell,
-                    p.pair_14,
-                    &p.lj_indices,
                     lj_tables,
-                    p.calc_lj,
-                    p.calc_coulomb,
                     overrides,
+                    lambda_alch,
                     spme_alpha,
                     coulomb_cutoff,
                     lj_mod,
-                    alchemical_lambda,
                 );
+                for (p, (f, e_pair, dh_dl_pair, pair_virial)) in batch.iter().zip(values) {
+                    virial += pair_virial;
 
-                // Convert to f64 prior to summing.
-                let f: Vec3F64 = f.into();
-                add_to_sink(&mut f_std, &mut f_wat, p.tgt, f);
-                if p.symmetric {
-                    add_to_sink(&mut f_std, &mut f_wat, p.src, -f);
-                }
+                    // Convert to f64 prior to summing.
+                    let f: Vec3F64 = f.into();
+                    add_to_sink(&mut f_std, &mut f_wat, p.tgt, f);
+                    if p.symmetric {
+                        add_to_sink(&mut f_std, &mut f_wat, p.src, -f);
+                    }
 
-                // We are not interested, in this point, at potential energy that only involves solvent atoms.
-                // We skip solvent-solvent.
-                let involves_std =
-                    matches!(p.tgt, BodyRef::NonWater(_)) || matches!(p.src, BodyRef::NonWater(_));
+                    // We are not interested, in this point, at potential energy that only involves solvent atoms.
+                    // We skip solvent-solvent.
+                    let involves_std = matches!(p.tgt, BodyRef::NonWater(_))
+                        || matches!(p.src, BodyRef::NonWater(_));
 
-                if involves_std {
-                    energy += e_pair as f64;
-                }
+                    if involves_std {
+                        energy += e_pair as f64;
+                    }
 
-                if p.alch_interaction {
-                    alch_dh_dl += dh_dl_pair as f64;
-                }
+                    if p.alch_interaction {
+                        alch_dh_dl += dh_dl_pair as f64;
+                    }
 
-                // todo: QC this!
-                // Experimenting with per-mol potential energy.
-                if let (BodyRef::NonWater(i_tgt), BodyRef::NonWater(i_src)) = (p.tgt, p.src) {
-                    let m_t = atom_to_mol[i_tgt];
-                    let m_s = atom_to_mol[i_src];
-                    let idx_ts = m_t * n_mol + m_s;
-                    energy_between_mols[idx_ts] += e_pair as f64;
+                    // todo: QC this!
+                    // Experimenting with per-mol potential energy.
+                    if let (BodyRef::NonWater(i_tgt), BodyRef::NonWater(i_src)) = (p.tgt, p.src) {
+                        let m_t = atom_to_mol[i_tgt];
+                        let m_s = atom_to_mol[i_src];
+                        let idx_ts = m_t * n_mol + m_s;
+                        energy_between_mols[idx_ts] += e_pair as f64;
 
-                    // make it symmetric so callers don't have to
-                    if m_t != m_s {
-                        let idx_st = m_s * n_mol + m_t;
-                        energy_between_mols[idx_st] += e_pair as f64;
+                        // make it symmetric so callers don't have to
+                        if m_t != m_s {
+                            let idx_st = m_s * n_mol + m_t;
+                            energy_between_mols[idx_st] += e_pair as f64;
+                        }
                     }
                 }
 
@@ -604,69 +699,48 @@ impl MdState {
             return;
         }
 
+        #[cfg(any(feature = "cuda", feature = "hip"))]
+        let dev = if self.gpu_kernels.is_some()
+            && self.forces_posits_gpu.is_some()
+            && self.per_neighbor_gpu.is_some()
+        {
+            dev
+        } else {
+            &ComputationDevice::Cpu
+        };
+
         let lj_mod = LjModCoeffs::new(self.cfg.lj_modifier, self.cfg.lj_cutoff);
 
         let (f_on_non_water, f_on_water, virial, energy, energy_between_mols, alch_dh_dl) =
             match dev {
-                ComputationDevice::Cpu => {
-                    #[cfg(target_arch = "x86_64")]
-                    if is_x86_feature_detected!("avx512f") {
-                        // calc_force_x16(
-                        //     &self.nb_pairs,
-                        //     &self.atoms_x16,
-                        //     &self.solvent,
-                        //     &self.cell,
-                        //     &self.lj_tables,
-                        // )
-                    } else {
-                        // calc_force_x8(
-                        //     &self.nb_pairs,
-                        //     &self.atoms_x8,
-                        //     &self.solvent,
-                        //     &self.cell,
-                        //     &self.lj_tables,
-                        // )
-                    }
-
-                    calc_force_cpu(
-                        &self.nb_pairs,
-                        &self.atoms,
-                        &self.water,
-                        &self.cell,
-                        &self.lj_tables,
-                        &self.cfg.overrides,
-                        &self.mol_start_indices,
-                        self.alchemical.lambda,
-                        self.cfg.spme_alpha,
-                        self.cfg.coulomb_cutoff,
-                        &lj_mod,
-                    )
-                }
-                #[cfg(feature = "cuda")]
-                ComputationDevice::Gpu(stream) => {
-                    let (f_std, f_wat, virial, energy, energy_between_mols, alch_dh_dl) =
-                        force_nonbonded_gpu(
-                            stream,
-                            self.gpu_kernels.as_ref().unwrap(),
-                            &self.nb_pairs,
-                            &self.atoms,
-                            &self.water,
-                            self.cell.extent,
-                            self.forces_posits_gpu.as_mut().unwrap(),
-                            self.per_neighbor_gpu.as_ref().unwrap(),
-                            &self.cfg.overrides,
-                            self.alchemical.lambda,
-                            &lj_mod,
-                        );
-                    (
-                        f_std,
-                        f_wat,
-                        virial,
-                        energy,
-                        energy_between_mols,
-                        alch_dh_dl,
-                    )
-                }
+                ComputationDevice::Cpu => calc_force_cpu(
+                    &self.nb_pairs,
+                    &self.atoms,
+                    &self.water,
+                    &self.cell,
+                    &self.lj_tables,
+                    &self.cfg.overrides,
+                    &self.mol_start_indices,
+                    self.alchemical.lambda,
+                    self.cfg.spme_alpha,
+                    self.cfg.coulomb_cutoff,
+                    &lj_mod,
+                ),
+                // CUDA or HIP.
+                #[cfg(any(feature = "cuda", feature = "hip"))]
+                _ => force_nonbonded_gpu(
+                    dev.gpu_stream().unwrap(),
+                    self.gpu_kernels.as_ref().unwrap(),
+                    &self.nb_pairs,
+                    &self.atoms,
+                    &self.water,
+                    self.cell.extent,
+                    self.forces_posits_gpu.as_mut().unwrap(),
+                    self.per_neighbor_gpu.as_ref().unwrap(),
+                    &self.cfg.overrides,
+                    self.alchemical.lambda,
+                    &lj_mod,
+                ),
             };
 
         // println!("\nF short-range: {}", f_on_non_water[0]);
@@ -878,15 +952,27 @@ impl MdState {
                                 pme_recip.forces_and_virial(&pos_all, charges);
                             (forces, energy as f64, virial)
                         }
+                        // SPME runs on the CPU with HIP, for now.
+                        #[cfg(feature = "hip")]
+                        ComputationDevice::Hip(_) => {
+                            let (forces, energy, virial) =
+                                pme_recip.forces_and_virial(&pos_all, charges);
+                            (forces, energy as f64, virial)
+                        }
                         #[cfg(feature = "cuda")]
                         #[allow(unused)]
                         ComputationDevice::Gpu(stream) => {
-                            #[cfg(not(any(feature = "cufft", feature = "vkfft")))]
-                            let (f, e) = pme_recip.forces(&pos_all, charges);
                             #[cfg(any(feature = "cufft", feature = "vkfft"))]
-                            let (f, e) = pme_recip.forces_gpu(stream, &pos_all, charges);
+                            if pme_recip.gpu_ready() {
+                                let (f, e, virial) =
+                                    pme_recip.forces_and_virial_gpu(stream, &pos_all, charges);
 
-                            (f, e as f64, 0.0_f64)
+                                return (f, e as f64, virial);
+                            }
+
+                            let (f, e, virial) = pme_recip.forces_and_virial(&pos_all, charges);
+
+                            (f, e as f64, virial)
                         }
                     }
                 };
@@ -1088,6 +1174,9 @@ impl MdState {
         let n = get_grid_n(l, self.cfg.spme_mesh_spacing);
 
         self.pme_recip = Some(match dev {
+            // SPME runs on the CPU with HIP, for now.
+            #[cfg(feature = "hip")]
+            ComputationDevice::Hip(_) => return self.regen_pme(&ComputationDevice::Cpu),
             ComputationDevice::Cpu => {
                 #[cfg(any(feature = "vkfft", feature = "cufft"))]
                 let v = PmeRecip::new(None, n, l, self.cfg.spme_alpha);

@@ -33,7 +33,6 @@ use std::{
 #[cfg(feature = "encode")]
 use bincode::{Decode, Encode};
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 use lin_alg::f32::{Vec3x8, Vec3x16};
 use lin_alg::{
     f32::{Quaternion as QuaternionF32, Vec3 as Vec3F32, X_VEC, Z_VEC},
@@ -43,7 +42,6 @@ use na_seq::Element;
 
 use crate::{AtomDynamics, KCAL_TO_NATIVE, MolDynamics, SimBox, non_bonded::CHARGE_UNIT_SCALER};
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 use crate::{AtomDynamicsx8, AtomDynamicsx16};
 
 pub(crate) mod init;
@@ -463,7 +461,6 @@ pub struct ForcesOnWaterMol {
 
 #[allow(unused)]
 // todo: Note: These are 32-bit due to limits on 64-bit with. Be careful; you use 64-bit elsewhere.
-#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Default)]
 pub struct ForcesOnWaterMolx8 {
     pub f_o: Vec3x8,
@@ -474,7 +471,6 @@ pub struct ForcesOnWaterMolx8 {
 
 #[allow(unused)]
 // todo: Note: These are 32-bit due to limits on 64-bit with. Be careful; you use 64-bit elsewhere.
-#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Copy, Default)]
 pub struct ForcesOnWaterMolx16 {
     pub f_o: Vec3x16,
@@ -505,7 +501,6 @@ pub struct WaterMolOpc {
 }
 
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 pub struct WaterMolx8 {
     pub o: AtomDynamicsx8,
     pub h0: AtomDynamicsx8,
@@ -514,7 +509,6 @@ pub struct WaterMolx8 {
 }
 
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 pub struct WaterMolx16 {
     pub o: AtomDynamicsx16,
     pub h0: AtomDynamicsx16,

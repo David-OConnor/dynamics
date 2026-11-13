@@ -49,7 +49,6 @@ sha2 = "0.11"
 ureq = { version = "3.5", features = ["json"] }
 serde_json = "1"
 tempfile = "3"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libloading = "0.9"
 zip = { version = "9.5", default-features = false, features = ["deflate"] }
 
@@ -83,7 +82,8 @@ cuda_setup = { version = "0.1.10", optional = true }
 
 
 [patch.crates-io]
-#ewald = { path = "../ewald" }
+lin_alg = { path = "../../lin_alg" }
+ewald = { path = "../ewald" }
 bio_files = { path = "../bio_files" }
 #na_seq = { path = "../na_seq" }
 
@@ -97,6 +97,9 @@ bio_files = { path = "../bio_files" }
 cuda = ["cuda_setup", "cudarc", "lin_alg/cuda"]
 cufft = ["cuda", "ewald/cufft"]
 vkfft = ["cuda", "ewald/vkfft"]
+# AMD GPUs, for short-range interactions. Building requires `hipcc` (HIP SDK or ROCm); running
+# requires the HIP runtime, which AMD's Windows drivers include.
+hip = []
 
 #encode = ["bincode"]
 encode = ["bio_files/encode"]

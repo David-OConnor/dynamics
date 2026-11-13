@@ -91,7 +91,7 @@ mod non_bonded;
 pub mod params;
 pub use params::amber::charges as partial_charge_inference;
 mod prep;
-#[cfg(target_arch = "x86_64")]
+
 mod simd;
 pub mod snapshot;
 mod solvent;
@@ -99,8 +99,12 @@ mod thermostat;
 mod util;
 
 mod com_zero;
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "hip"))]
+mod gpu_backend;
+#[cfg(any(feature = "cuda", feature = "hip"))]
 mod gpu_interface;
+#[cfg(feature = "hip")]
+mod hip;
 pub mod minimize_energy;
 mod system_potential;
 
@@ -111,7 +115,7 @@ mod sa_surface;
 #[cfg(test)]
 mod tests;
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "hip"))]
 use std::sync::Arc;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -139,15 +143,11 @@ use bio_files::{
 pub use bonded::{LINCS_ITER_DEFAULT, LINCS_ORDER_DEFAULT, SHAKE_TOL_DEFAULT};
 pub use config::{ComMotionRemoval, MdConfig};
 #[cfg(feature = "cuda")]
-use cudarc::{
-    driver::{CudaContext, CudaStream},
-    nvrtc::Ptx,
-};
+use cudarc::driver::CudaStream;
 use ewald::PmeRecip;
 pub use import::ImportedSystem;
 pub use integrate::Integrator;
 #[allow(unused)]
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use lin_alg::f32::{Vec3x8, Vec3x16, f32x8, f32x16};
 use lin_alg::{
     f32::{Quaternion, Vec3},
@@ -172,9 +172,11 @@ pub use solvent::{
     template_creation::{CustomSolventCount, make_water_mols_grid},
 };
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", feature = "hip"))]
 use crate::gpu_interface::{ForcesPositsGpu, GpuKernels, PerNeighborGpu};
-#[cfg(target_arch = "x86_64")]
+#[cfg(feature = "hip")]
+pub use crate::hip::{HipError, HipStream};
+
 use crate::solvent::{WaterMolx8, WaterMolx16};
 use crate::{
     alchemical::StateAlchemical,
@@ -191,9 +193,6 @@ pub use crate::{
     solvent::octanol::make_octanol,
     thermostat::{LANGEVIN_GAMMA_DEFAULT, TAU_TEMP_DEFAULT},
 };
-
-#[cfg(feature = "cuda")]
-const PTX: &str = include_str!(concat!(env!("OUT_DIR"), "/dynamics.ptx"));
 
 // Multiply by this to convert from kcal/mol to amu • (Å/ps)²  Multiply all accelerations by this.
 // Converts *into* our internal units.
@@ -222,6 +221,9 @@ pub enum ComputationDevice {
     Cpu,
     #[cfg(feature = "cuda")]
     Gpu(Arc<CudaStream>),
+    /// An AMD GPU. Long-range SPME runs on the CPU with this.
+    #[cfg(feature = "hip")]
+    Hip(Arc<HipStream>),
 }
 
 /// Represents problems loading parameters. For example, if an atom is missing a force field type
@@ -512,7 +514,6 @@ impl bio_files::md_params::AtomFfSource for AtomDynamics {
 }
 
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug)]
 pub(crate) struct AtomDynamicsx8 {
     pub serial_number: [u32; 8],
@@ -530,7 +531,6 @@ pub(crate) struct AtomDynamicsx8 {
 }
 
 #[allow(unused)]
-#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug)]
 pub(crate) struct AtomDynamicsx16 {
     pub serial_number: [u32; 16],
@@ -637,17 +637,13 @@ pub struct MdState {
     pub water_model: WaterModel,
     pub atoms: Vec<AtomDynamics>,
     #[allow(unused)]
-    #[cfg(target_arch = "x86_64")]
     pub(crate) atoms_x8: Vec<AtomDynamicsx8>,
     #[allow(unused)]
-    #[cfg(target_arch = "x86_64")]
     pub(crate) atoms_x16: Vec<AtomDynamicsx16>,
     pub water: Vec<WaterMolOpc>,
     #[allow(unused)]
-    #[cfg(target_arch = "x86_64")]
     pub(crate) water_x8: Vec<WaterMolx8>,
     #[allow(unused)]
-    #[cfg(target_arch = "x86_64")]
     pub(crate) water_x16: Vec<WaterMolx16>,
     /// Note: We don't use bond structs once the simulation is set up; the adjacency list is the
     /// source of this.
@@ -694,13 +690,13 @@ pub struct MdState {
     snapshot_queue_for_dcd: Vec<Snapshot>,
     snapshot_queue_for_trr: Vec<Snapshot>,
     snapshot_queue_for_xtc: Vec<Snapshot>,
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "hip"))]
     gpu_kernels: Option<GpuKernels>,
     /// These store handles to data structures on the GPU. We pass them to the kernel each
     /// step, but don't transfer. Init to None. Populated during the run.
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "hip"))]
     forces_posits_gpu: Option<ForcesPositsGpu>,
-    #[cfg(feature = "cuda")]
+    #[cfg(any(feature = "cuda", feature = "hip"))]
     per_neighbor_gpu: Option<PerNeighborGpu>,
     pub neighbor_rebuild_count: usize,
     /// A cache of accel_factor / mass, per atom. Built once, at init.
@@ -1157,43 +1153,44 @@ impl MdState {
         // Allocate force buffers on the GPU, and store a handle. Used for the entire run.
         // Initialize the per-neighbor data as well; we will do this again every time
         // we compute neighbors.
-        #[cfg(feature = "cuda")]
-        if let ComputationDevice::Gpu(stream) = dev {
-            let ctx = CudaContext::new(0).unwrap();
-            let module = ctx.load_module(Ptx::from_src(PTX)).unwrap();
-
-            result.gpu_kernels = Some(GpuKernels {
-                primary: module.load_function("nonbonded_force_kernel").unwrap(),
-                alchemical: module
-                    .load_function("nonbonded_force_alchemical_kernel")
-                    .unwrap(),
+        #[cfg(any(feature = "cuda", feature = "hip"))]
+        if let Some(stream) = dev.gpu_stream() {
+            let kernels = stream.load_module().and_then(|module| {
+                Ok(GpuKernels {
+                    primary: module.function("nonbonded_force_kernel")?,
+                    alchemical: module.function("nonbonded_force_alchemical_kernel")?,
+                })
             });
 
-            result.forces_posits_gpu = Some(ForcesPositsGpu::new(
-                stream,
-                result.atoms.len(),
-                result.water.len(),
-                result.cfg.coulomb_cutoff,
-                result.cfg.spme_alpha,
-            ));
+            match kernels {
+                Ok(kernels) => {
+                    result.gpu_kernels = Some(kernels);
 
-            result.per_neighbor_gpu = if result.nb_pairs.is_empty() {
-                None
-            } else {
-                Some(PerNeighborGpu::new(
-                    stream,
-                    &result.nb_pairs,
-                    &result.atoms,
-                    &result.water,
-                    &result.lj_tables,
-                ))
-            };
+                    result.forces_posits_gpu = Some(ForcesPositsGpu::new(
+                        stream,
+                        result.atoms.len(),
+                        result.water.len(),
+                        result.cfg.coulomb_cutoff,
+                        result.cfg.spme_alpha,
+                    ));
+
+                    result.per_neighbor_gpu = if result.nb_pairs.is_empty() {
+                        None
+                    } else {
+                        Some(PerNeighborGpu::new(
+                            stream,
+                            &result.nb_pairs,
+                            &result.atoms,
+                            &result.water,
+                            &result.lj_tables,
+                        ))
+                    };
+                }
+                Err(e) => {
+                    eprintln!("Unable to load MD GPU kernels; using CPU nonbonded forces: {e}")
+                }
+            }
         }
-
-        // todo: Move this AR
-        // Pack SIMD once at init.
-        #[cfg(target_arch = "x86_64")]
-        result.pack_atoms();
 
         if !result.cfg.overrides.skip_water_relaxation {
             result.md_on_solute_only(dev);

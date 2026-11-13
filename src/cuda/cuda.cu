@@ -1,6 +1,12 @@
 #include <cstdint>
 #include <initializer_list>
+
+// This source compiles with both nvcc (CUDA) and hipcc (HIP, for AMD GPUs).
+#ifdef __HIPCC__
+#include <hip/hip_runtime.h>
+#else
 #include <math_constants.h> // CUDART_PI_F
+#endif
 
 #include "util.cu"
 
