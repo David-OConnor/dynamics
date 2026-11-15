@@ -2,7 +2,7 @@
 
 use lin_alg::f32::{Mat3 as Mat3F32, Vec3};
 use na_seq::Element;
-use rand::{RngExt, distr::Distribution, prelude::ThreadRng};
+use rand::{RngExt, distr::Distribution, rngs::StdRng};
 use rand_distr::{ChiSquared, StandardNormal};
 
 use crate::{ComMotionRemoval, HydrogenConstraint, MdState, NATIVE_TO_KCAL};
@@ -29,7 +29,7 @@ pub const TAU_TEMP_WATER_INIT: f64 = 0.01; // for CSVR
 pub const LANGEVIN_GAMMA_DEFAULT: f32 = 0.5;
 pub const LANGEVIN_GAMMA_WATER_INIT: f32 = 15.;
 
-fn sample_normal_vec(rng: &mut ThreadRng, sigma: f32) -> Vec3 {
+fn sample_normal_vec(rng: &mut StdRng, sigma: f32) -> Vec3 {
     let x: f32 = rng.sample(StandardNormal);
     let y: f32 = rng.sample(StandardNormal);
     let z: f32 = rng.sample(StandardNormal);
@@ -164,7 +164,7 @@ impl MdState {
 
             let inertia = Mat3F32::from_arr(inertia_arr);
             let (eigvecs, eigvals) = inertia.eigen_vecs_vals();
-            let sample_angular_momentum = |rng: &mut ThreadRng, moment: f32| {
+            let sample_angular_momentum = |rng: &mut StdRng, moment: f32| {
                 let n: f32 = rng.sample(StandardNormal);
                 n * (k_t * moment.max(0.0)).sqrt()
             };
