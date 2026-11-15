@@ -451,6 +451,7 @@ pub(super) fn run_reference_files(
         FrameSlice::Index {
             start: None,
             end: None,
+            step: 1,
         },
     )
     .unwrap();

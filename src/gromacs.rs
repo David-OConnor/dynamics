@@ -23,7 +23,7 @@ pub fn topology_config(set: &FfParamSet, water: Option<&WaterModel>) -> Topology
         force_field: match set.family {
             ForceFieldFamily::Amber => ForceField::Amber,
             ForceFieldFamily::Charmm36 => ForceField::Charmm36,
-            ForceFieldFamily::Opls => ForceField::Opls,
+            ForceFieldFamily::Opls | ForceFieldFamily::OplsNucleic => ForceField::Opls,
             ForceFieldFamily::Custom => ForceField::Amber,
             ForceFieldFamily::Gfnn => unreachable!("GFN-FF requires its native evaluator"),
         },
@@ -91,6 +91,8 @@ pub fn make_topology(
     let mut s = cfg.defaults_text();
     s.push_str("[ atomtypes ]\n");
     let mut type_map = HashMap::<String, Vec<String>>::new();
+    let mut export_types = Vec::with_capacity(molecules.len());
+    let mut nucleotide_types = HashMap::new();
     let mut nbfix = set.nonbonded_rules.nbfix.clone();
     for (mi, (_, mol, _)) in molecules.iter().enumerate() {
         let p = mol
@@ -101,8 +103,27 @@ pub fn make_topology(
             return Err(ParamError::new("Invalid explicit parameter lengths"));
         }
         nbfix.extend(p.nbfix.clone());
+        let mut names = Vec::with_capacity(mol.atoms.len());
         for (i, a) in mol.atoms.iter().enumerate() {
-            let t = format!("DYN_{mi}_{i}");
+            let mut t = format!("DYN_{mi}_{i}");
+
+            // GROMACS builds a square LJ type table. Reuse nucleotide types for long chains.
+            // CMAP entries still need per-atom types.
+            if set.family == ForceFieldFamily::OplsNucleic && p.cmaps.is_empty() {
+                let key = (
+                    a.force_field_type.as_deref(),
+                    p.masses[i].to_bits(),
+                    p.lj[i].0.to_bits(),
+                    p.lj[i].1.to_bits(),
+                );
+                if let Some(existing) = nucleotide_types.get(&key) {
+                    names.push(String::clone(existing));
+                    continue;
+                }
+                t = format!("DYN_NA_{}", nucleotide_types.len());
+                nucleotide_types.insert(key, t.clone());
+            }
+
             if let Some(original) = &a.force_field_type {
                 type_map
                     .entry(original.clone())
@@ -117,7 +138,9 @@ pub fn make_topology(
                 p.lj[i].1 * 4.184
             )
             .unwrap();
+            names.push(t);
         }
+        export_types.push(names);
     }
     s.push_str(&cfg.solvent_atomtypes(include_water));
     let w = water.unwrap_or(&set.default_water);
@@ -147,9 +170,10 @@ pub fn make_topology(
         let p = mol.explicit_params.as_ref().unwrap();
         writeln!(blocks, "\n[ moleculetype ]\n{name} 0\n[ atoms ]").unwrap();
         for (i, a) in mol.atoms.iter().enumerate() {
+            let atom_type = &export_types[mi][i];
             writeln!(
                 blocks,
-                "{} DYN_{mi}_{i} 1 {name} A{} {} {:.12} {:.8}",
+                "{} {atom_type} 1 {name} A{} {} {:.12} {:.8}",
                 i + 1,
                 i + 1,
                 i + 1,

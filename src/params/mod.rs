@@ -61,6 +61,8 @@ pub enum ForceFieldFamily {
     // OrcaSurff,
     /// A caller-supplied classical force field. Construct its set with `FfParamSet::custom`.
     Custom,
+    /// OPLS-AA/RESP DNA and RNA (Golovin and Polyakov). Uses Lorentz-Berthelot LJ mixing.
+    OplsNucleic,
 }
 
 /// 1-4 scale factors for each molecule type.
@@ -127,6 +129,7 @@ impl FfParamSet {
             ForceFieldFamily::Amber => Self::new_amber(),
             ForceFieldFamily::Charmm36 => Self::new_charmm(),
             ForceFieldFamily::Opls => Self::new_opls(),
+            ForceFieldFamily::OplsNucleic => Self::new_opls_nucleic(),
             ForceFieldFamily::Gfnn => Ok(Self::new_gfnff()),
             ForceFieldFamily::Custom => Err(io::Error::other(
                 "Custom force fields require a backend, nonbonded rules and water model",
@@ -193,6 +196,19 @@ impl FfParamSet {
             backend: Box::new(OplsSet::bundled()?),
             nonbonded_rules: NonBondedRules {
                 lj_combining: LjCombiningRule::Geometric,
+                scale_14: Scale14ByMolType::uniform(Scale14::OPLS),
+                nbfix: NbFix::default(),
+            },
+            default_water: WaterModel::TIP4P_OPLS,
+        })
+    }
+
+    pub fn new_opls_nucleic() -> io::Result<Self> {
+        Ok(Self {
+            family: ForceFieldFamily::OplsNucleic,
+            backend: Box::new(opls::nucleic::NucleotideSet::bundled()?),
+            nonbonded_rules: NonBondedRules {
+                lj_combining: LjCombiningRule::LorentzBerthelot,
                 scale_14: Scale14ByMolType::uniform(Scale14::OPLS),
                 nbfix: NbFix::default(),
             },

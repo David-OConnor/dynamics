@@ -57,6 +57,7 @@ mod known;
 pub mod ligpargen;
 mod ligpargen_local;
 mod ligpargen_service;
+pub(crate) mod nucleic;
 mod small_mol;
 mod smarts;
 
@@ -162,7 +163,7 @@ impl OplsSet {
         atoms: &[AtomGeneric],
         bonds: &[BondGeneric],
         residues: &[ResidueGeneric],
-    ) -> Result<TypedOplsPeptide, ParamError> {
+    ) -> Result<TypedOplsPolymer, ParamError> {
         let n = atoms.len();
         let mut types = vec![String::new(); n];
         let mut charges = vec![0.; n];
@@ -475,8 +476,10 @@ impl OplsSet {
             instances.push(template);
         }
 
-        Ok(TypedOplsPeptide {
+        Ok(TypedOplsPolymer {
             tables: self.tables.to_itp(),
+            source: "OPLS-AA/L residue templates",
+            comb_rule: 3,
             types,
             charges,
             previous,
@@ -490,9 +493,10 @@ impl OplsSet {
 }
 
 #[derive(Debug)]
-struct TypedOplsPeptide {
-    /// `OplsSet::tables`, as topology text.
+struct TypedOplsPolymer {
     tables: String,
+    source: &'static str,
+    comb_rule: u8,
     types: Vec<String>,
     charges: Vec<f32>,
     previous: Vec<Option<usize>>,
@@ -503,12 +507,12 @@ struct TypedOplsPeptide {
     owner: Vec<usize>,
 }
 
-impl crate::params::TypedTopology for TypedOplsPeptide {
+impl crate::params::TypedTopology for TypedOplsPolymer {
     fn atom_types(&self) -> &[String] {
         &self.types
     }
     fn source(&self) -> &str {
-        "OPLS-AA/L residue templates"
+        self.source
     }
     fn assign_partial_charges(&self) -> Result<crate::params::PartialCharges, ParamError> {
         Ok(crate::params::PartialCharges {
@@ -530,6 +534,8 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
             instances,
             adjacency,
             owner,
+            comb_rule,
+            ..
         } = self;
         let n = types.len();
         let resolve = |ri: usize, atom: &str| -> Option<usize> {
@@ -582,7 +588,7 @@ impl crate::params::TypedTopology for TypedOplsPeptide {
         }
 
         let mut text = format!(
-            "[ defaults ]\n1 3 yes 0.5 0.5\n{tables}\n[ moleculetype ]\nOPLS_PROTEIN 3\n[ atoms ]\n"
+            "[ defaults ]\n1 {comb_rule} yes 0.5 0.5\n{tables}\n[ moleculetype ]\nOPLS_POLYMER 3\n[ atoms ]\n"
         );
 
         for (i, atom_type) in types.iter().enumerate() {
@@ -731,6 +737,10 @@ impl crate::params::ForceFieldBackend for OplsSet {
                     residues,
                 )?))
             }
+
+            crate::FfMolType::Dna | crate::FfMolType::Rna => Err(error(
+                "Select OPLS-AA/RESP (DNA/RNA) to parameterize nucleotides",
+            )),
 
             crate::FfMolType::SmallOrganic => Ok(Box::new(self.small_mol.prepare_provider(
                 &molecule.atoms,

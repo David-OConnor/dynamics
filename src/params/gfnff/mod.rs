@@ -4,13 +4,18 @@
 //! Dynamics integrates; libxtb supplies forces, with an executable fallback.
 
 mod libxtb;
+mod topology_cache;
 
 use std::{
     env,
     fs::{self, File},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -88,8 +93,11 @@ pub struct GfnffSet {
     /// `None` evaluates in vacuum. Applies to both inspection and MD; keep
     /// `MdConfig::solvent` set to `Solvent::None` to avoid generating explicit solvent.
     pub alpb_solvent: Option<String>,
-    /// Executable timeout. In-process libxtb calls run synchronously.
+    /// Executable timeout, once the topology exists. Building it is unbounded: it scales steeply
+    /// with atom count. In-process libxtb calls run synchronously.
     pub timeout: Duration,
+    /// Setting this kills a running xTB executable; the evaluation then fails.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for GfnffSet {
@@ -102,6 +110,7 @@ impl Default for GfnffSet {
             total_charge: None,
             alpb_solvent: None,
             timeout: Duration::from_secs(300),
+            cancel: None,
         }
     }
 }
@@ -146,6 +155,66 @@ impl GfnffSet {
         let mut evaluator = XtbPotential::new(self, elements, charge)?;
 
         evaluator.evaluate(&positions)
+    }
+
+    /// The cached `gfnff_topo` for this system, if any; e.g. to seed a native xTB MD run.
+    pub fn cached_topology(
+        &self,
+        elements: &[na_seq::Element],
+        positions: &[Vec3],
+    ) -> Result<Option<PathBuf>, ParamError> {
+        let key = self.topology_key(elements, positions)?;
+
+        Ok(topology_cache::lookup(&key))
+    }
+
+    /// Cache a `gfnff_topo` that xTB built for this system, e.g. in a native MD run directory.
+    pub fn cache_topology(
+        &self,
+        elements: &[na_seq::Element],
+        positions: &[Vec3],
+        file: &Path,
+    ) -> Result<(), ParamError> {
+        let key = self.topology_key(elements, positions)?;
+        topology_cache::store(&key, file);
+
+        Ok(())
+    }
+
+    fn topology_key(
+        &self,
+        elements: &[na_seq::Element],
+        positions: &[Vec3],
+    ) -> Result<String, ParamError> {
+        if elements.len() != positions.len() {
+            return Err(ParamError::new(
+                "GFN-FF requires matching elements and coordinates",
+            ));
+        }
+
+        let parameters = self.parameter_file.as_ref().map(fs::read).transpose()?;
+        let base = topology_cache::base(
+            &self.resolved_executable()?,
+            self.charge()?,
+            parameters.as_deref(),
+        );
+
+        Ok(topology_cache::key(&base, elements, positions))
+    }
+
+    /// `executable`, else XTB_EXECUTABLE, else `xtb` on PATH.
+    fn resolved_executable(&self) -> Result<PathBuf, ParamError> {
+        let executable = self
+            .executable
+            .clone()
+            .or_else(|| env::var_os("XTB_EXECUTABLE").map(PathBuf::from))
+            .unwrap_or_else(|| "xtb".into());
+        if executable.components().count() <= 1 {
+            return Ok(executable);
+        }
+
+        fs::canonicalize(&executable)
+            .map_err(|e| ParamError::new(&format!("xTB executable {}: {e}", executable.display())))
     }
 }
 
@@ -252,6 +321,9 @@ struct XtbPotential {
     charge: f64,
     alpb_solvent: Option<String>,
     timeout: Duration,
+    cancel: Option<Arc<AtomicBool>>,
+    /// Non-geometric topology cache key inputs: charge, parameters, and xTB build.
+    cache_base: Vec<u8>,
     initialized: bool,
 }
 
@@ -277,23 +349,13 @@ impl XtbPotential {
         let directory = tempfile::Builder::new()
             .prefix("dynamics-gfnff-")
             .tempdir()?;
-        if let Some(path) = &set.parameter_file {
-            fs::copy(path, directory.path().join(".param_gfnff.xtb"))?;
+        let parameters = set.parameter_file.as_ref().map(fs::read).transpose()?;
+        if let Some(parameters) = &parameters {
+            fs::write(directory.path().join(".param_gfnff.xtb"), parameters)?;
         }
 
-        let executable = set
-            .executable
-            .clone()
-            .or_else(|| env::var_os("XTB_EXECUTABLE").map(PathBuf::from))
-            .unwrap_or_else(|| "xtb".into());
-
-        let executable = if executable.components().count() > 1 {
-            fs::canonicalize(&executable).map_err(|e| {
-                ParamError::new(&format!("xTB executable {}: {e}", executable.display()))
-            })?
-        } else {
-            executable
-        };
+        let executable = set.resolved_executable()?;
+        let cache_base = topology_cache::base(&executable, charge, parameters.as_deref());
 
         Ok(Self {
             directory,
@@ -302,6 +364,8 @@ impl XtbPotential {
             charge,
             alpb_solvent,
             timeout: set.timeout,
+            cancel: set.cancel.clone(),
+            cache_base,
             initialized: false,
         })
     }
@@ -337,7 +401,8 @@ impl XtbPotential {
         command
     }
 
-    fn run(&self) -> Result<String, ParamError> {
+    /// `timeout` of `None` waits until completion or cancellation.
+    fn run(&self, timeout: Option<Duration>) -> Result<String, ParamError> {
         let stdout = File::create(self.directory.path().join("stdout"))?;
         let stderr = File::create(self.directory.path().join("stderr"))?;
         let mut command = self.command();
@@ -350,16 +415,24 @@ impl XtbPotential {
 
         let start = Instant::now();
         let status = loop {
+            let cancelled = self
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.load(Ordering::Relaxed));
+            let timed_out = timeout.is_some_and(|t| start.elapsed() >= t);
+
             match child.try_wait() {
                 Ok(Some(status)) => break status,
-                Ok(None) if start.elapsed() < self.timeout => {
-                    thread::sleep(Duration::from_millis(5))
-                }
+                Ok(None) if !cancelled && !timed_out => thread::sleep(Duration::from_millis(5)),
                 Ok(None) => {
                     let _ = child.kill();
                     let _ = child.wait();
 
-                    return Err(ParamError::new("GFN-FF evaluation timed out"));
+                    return Err(ParamError::new(if cancelled {
+                        "GFN-FF evaluation cancelled"
+                    } else {
+                        "GFN-FF evaluation timed out"
+                    }));
                 }
                 Err(error) => {
                     let _ = child.kill();
@@ -434,8 +507,17 @@ impl SystemPotential for XtbPotential {
             }
         }
 
-        let output = self.run()?;
-        if self.initialized && !output.contains("GFN-FF topology read from file successfully") {
+        let topology = self.directory.path().join("gfnff_topo");
+        let cache_key = (!self.initialized).then(|| {
+            let key = topology_cache::key(&self.cache_base, &self.elements, positions);
+            topology_cache::fetch(&key, &topology);
+
+            key
+        });
+
+        let output = self.run(self.initialized.then_some(self.timeout))?;
+        let reused = output.contains("GFN-FF topology read from file successfully");
+        if self.initialized && !reused {
             return Err(ParamError::new(
                 "xTB did not reuse the fixed GFN-FF topology",
             ));
@@ -482,6 +564,12 @@ impl SystemPotential for XtbPotential {
                 .any(|v| !v.is_finite())
         {
             return Err(ParamError::new("Invalid GFN-FF forces or charges"));
+        }
+
+        if let Some(key) = cache_key
+            && !reused
+        {
+            topology_cache::store(&key, &topology);
         }
         self.initialized = true;
 

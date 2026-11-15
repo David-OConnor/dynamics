@@ -301,8 +301,7 @@ pub struct MolDynamics {
     /// We use these instead of assigning parameters by force field type, and ignore `ff_mol_type`
     /// and `mol_specific_params`. See `import`.
     pub explicit_params: Option<ExplicitParams>,
-    /// The residues of a peptide, referring to atoms by serial number. Force fields that build
-    /// proteins from residue topologies (e.g. CHARMM) need these.
+    /// Polymer residues, referring to atoms by serial number. Required by residue-template force fields.
     pub residues: Option<Vec<ResidueGeneric>>,
 }
 
@@ -915,12 +914,15 @@ impl MdState {
                 atoms_md.push(atom);
             }
 
-            // OPLS protein typing completes heavy-atom connectivity from the
-            // residue templates when coordinate-based bond inference misses a
-            // bond. Use the resolved topology for MD adjacency as well.
-            let adjacency_list_ = if param_set.family == ForceFieldFamily::Opls
-                && mol.ff_mol_type == FfMolType::Peptide
-            {
+            // Use the same connectivity as the resolved OPLS templates.
+            let adjacency_list_ = if matches!(
+                (param_set.family, mol.ff_mol_type),
+                (ForceFieldFamily::Opls, FfMolType::Peptide)
+                    | (
+                        ForceFieldFamily::OplsNucleic,
+                        FfMolType::Dna | FfMolType::Rna
+                    )
+            ) {
                 let mut adjacency = vec![Vec::new(); atoms.len()];
                 for &((i, j), _) in &explicit.bonds {
                     adjacency[i].push(j);
@@ -1525,6 +1527,10 @@ pub fn compute_energy_snapshot(
         hydrogen_constraint: HydrogenConstraint::Flexible,
         max_init_relaxation_iters: None,
         solvent: Solvent::None,
+        snapshot_handlers: snapshot::SnapshotHandlers {
+            memory: Some(1),
+            ..Default::default()
+        },
         ..MdConfig::for_family(param_set.family)
     };
 

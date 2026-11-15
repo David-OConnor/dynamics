@@ -163,7 +163,10 @@ impl MdConfig {
 
         match ff_family {
             // OPLS uses the same 10 Å hard LJ cutoff and PME configuration.
-            ForceFieldFamily::Amber | ForceFieldFamily::Opls | ForceFieldFamily::Custom => (),
+            ForceFieldFamily::Amber
+            | ForceFieldFamily::Opls
+            | ForceFieldFamily::OplsNucleic
+            | ForceFieldFamily::Custom => (),
             ForceFieldFamily::Gfnn => {
                 result.solvent = Solvent::None;
                 result.barostat_cfg = None;
