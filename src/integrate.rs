@@ -185,11 +185,8 @@ impl MdState {
                         &mut self.water,
                         &self.water_model,
                     );
+                    self.regen_pme(dev);
                 }
-
-                // The box dimensions changed; update PME so the next force computation
-                // uses the correct reciprocal lattice vectors.
-                self.regen_pme(dev);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
@@ -308,10 +305,8 @@ impl MdState {
                         &mut self.water,
                         &self.water_model,
                     );
+                    self.regen_pme(dev);
                 }
-                // The box dimensions changed; update PME so the next force computation
-                // uses the correct reciprocal lattice vectors.
-                self.regen_pme(dev);
 
                 if log_time {
                     let elapsed = start.elapsed().as_micros() as u64;
