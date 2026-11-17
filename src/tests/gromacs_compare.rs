@@ -21,9 +21,9 @@ use bio_files::{
             PmeConfig, Thermostat, VdwModifier, VdwType,
         },
         run_gmx,
-        trr::read_trr,
     },
     md_params::{AngleBendingParams, BondStretchingParams, DihedralParams},
+    trr::read_trr,
 };
 use ewald::force_coulomb_short_range;
 use lin_alg::f32::Vec3;

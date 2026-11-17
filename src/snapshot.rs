@@ -17,9 +17,9 @@ use bio_files::{
     gromacs::{
         GromacsFrame, GromacsOutput, OutputControl,
         gro::{AtomGro, Gro},
-        trr::write_trr_with_metadata,
     },
-    xtc::write_xtc,
+    trr::write_trr_with_metadata,
+    xtc::write_xtc_with_steps,
 };
 use lin_alg::f32::Vec3;
 use na_seq::Element;
@@ -305,7 +305,8 @@ impl Snapshot {
         }
 
         DcdFrame {
-            time: self.time,
+            // DcdFrame.time is in fs; Snapshot.time is in ps.
+            time: self.time * 1_000.0,
             atom_posits,
             unit_cell: DcdUnitCell {
                 bounds_low: cell.bounds_low,
@@ -321,7 +322,7 @@ impl Snapshot {
 
         for frame in &dcd.frames {
             result.push(Snapshot {
-                time: frame.time,
+                time: frame.time / 1_000.0,
                 atom_posits: frame.atom_posits.clone(),
                 ..Default::default()
             })
@@ -990,15 +991,19 @@ impl MdState {
             self.energy_output.clear();
         }
 
-        // todo: Make sure this fails gracefully if mdtraj isn't available.
         if !self.snapshot_queue_for_xtc.is_empty() {
             let frames: Vec<_> = self
                 .snapshot_queue_for_xtc
                 .iter()
                 .map(|ss| ss.to_dcd(&self.cell, true))
                 .collect();
+            let steps: Vec<_> = self
+                .snapshot_queue_for_xtc
+                .iter()
+                .map(|ss| (ss.time / f64::from(self.output_dt)).round() as i32)
+                .collect();
 
-            write_xtc(&dir.join("traj.xtc"), &frames)?;
+            write_xtc_with_steps(&dir.join("traj.xtc"), &frames, &steps)?;
 
             self.snapshot_queue_for_xtc.clear();
         }
